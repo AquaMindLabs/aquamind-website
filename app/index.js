@@ -5754,6 +5754,7 @@ export default function HomeScreen() {
   const [isForgotPasswordModalVisible, setIsForgotPasswordModalVisible] =
     useState(false);
   const [forgotPasswordEmail, setForgotPasswordEmail] = useState('');
+  const [pendingGoogleAuthIntent, setPendingGoogleAuthIntent] = useState(null);
   const googleAndroidClientId = getOptionalEnvValue(
     process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID
   );
@@ -5779,7 +5780,7 @@ export default function HomeScreen() {
   const isGoogleAuthConfiguredForPlatform = Boolean(
     googleClientIdForCurrentPlatform
   );
-  const [googleAuthRequest, , promptGoogleAuthAsync] =
+  const [googleAuthRequest, googleAuthResponse, promptGoogleAuthAsync] =
     Google.useIdTokenAuthRequest({
       androidClientId:
         googleClientIdForCurrentPlatform ??
@@ -7263,6 +7264,69 @@ export default function HomeScreen() {
     },
     [t]
   );
+  const getGoogleAuthTokens = useCallback((result) => {
+    const idToken =
+      result?.authentication?.idToken ?? result?.params?.id_token ?? '';
+    const accessToken =
+      result?.authentication?.accessToken ?? result?.params?.access_token ?? '';
+
+    return {
+      idToken,
+      accessToken,
+      hasToken: Boolean(idToken || accessToken),
+      hasCode: Boolean(result?.params?.code),
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!pendingGoogleAuthIntent || !googleAuthResponse) {
+      return;
+    }
+
+    const isDeleteAccountGoogleReauth =
+      pendingGoogleAuthIntent === 'reauth-delete-account';
+
+    if (googleAuthResponse.type !== 'success') {
+      setPendingGoogleAuthIntent(null);
+      if (isDeleteAccountGoogleReauth) {
+        setDeleteAccountReauthBusy(false);
+      } else {
+        setAuthBusy(false);
+      }
+      return;
+    }
+
+    const { idToken, accessToken, hasToken, hasCode } =
+      getGoogleAuthTokens(googleAuthResponse);
+
+    if (hasToken) {
+      setPendingGoogleAuthIntent(null);
+      completeGoogleAuthWithTokens(
+        { idToken, accessToken },
+        isDeleteAccountGoogleReauth
+      );
+      return;
+    }
+
+    if (hasCode) {
+      return;
+    }
+
+    setPendingGoogleAuthIntent(null);
+    if (isDeleteAccountGoogleReauth) {
+      setDeleteAccountReauthBusy(false);
+    } else {
+      setAuthBusy(false);
+    }
+    alert(
+      'Logowanie Google wrocilo do aplikacji, ale Google nie przekazal tokenu. Sprobuj ponownie za chwile.'
+    );
+  }, [
+    completeGoogleAuthWithTokens,
+    getGoogleAuthTokens,
+    googleAuthResponse,
+    pendingGoogleAuthIntent,
+  ]);
 
   const handleGoogleAuth = async (intent = 'sign-in') => {
     const isDeleteAccountGoogleReauth = intent === 'reauth-delete-account';
@@ -7305,10 +7369,12 @@ export default function HomeScreen() {
     } else {
       setAuthBusy(true);
     }
+    setPendingGoogleAuthIntent(intent);
 
     try {
       const result = await promptGoogleAuthAsync();
       if (result.type !== 'success') {
+        setPendingGoogleAuthIntent(null);
         if (isDeleteAccountGoogleReauth) {
           setDeleteAccountReauthBusy(false);
         } else {
@@ -7317,12 +7383,15 @@ export default function HomeScreen() {
         return;
       }
 
-      const idToken =
-        result?.authentication?.idToken ?? result?.params?.id_token;
-      const accessToken =
-        result?.authentication?.accessToken ?? result?.params?.access_token;
+      const { idToken, accessToken, hasToken, hasCode } =
+        getGoogleAuthTokens(result);
 
-      if (!idToken && !accessToken) {
+      if (!hasToken && hasCode) {
+        return;
+      }
+
+      if (!hasToken) {
+        setPendingGoogleAuthIntent(null);
         if (isDeleteAccountGoogleReauth) {
           setDeleteAccountReauthBusy(false);
         } else {
@@ -7334,11 +7403,13 @@ export default function HomeScreen() {
         return;
       }
 
+      setPendingGoogleAuthIntent(null);
       await completeGoogleAuthWithTokens(
         { idToken, accessToken },
         isDeleteAccountGoogleReauth
       );
     } catch (error) {
+      setPendingGoogleAuthIntent(null);
       if (isDeleteAccountGoogleReauth) {
         setDeleteAccountReauthBusy(false);
       } else {
