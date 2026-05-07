@@ -18,7 +18,6 @@
     "expo": "~54.0.33",
     "expo-auth-session": "~7.0.10",
     "expo-constants": "~18.0.13",
-    "expo-dev-client": "~6.0.21",
     "expo-linking": "~8.0.11",
     "expo-notifications": "~0.32.17",
     "expo-router": "~6.0.23",
