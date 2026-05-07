@@ -44,7 +44,6 @@ import {
   View,
 } from 'react-native';
 import Constants from 'expo-constants';
-import * as AuthSession from 'expo-auth-session';
 import * as Google from 'expo-auth-session/providers/google';
 import * as WebBrowser from 'expo-web-browser';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -5758,6 +5757,12 @@ export default function HomeScreen() {
   const googleAndroidClientId = getOptionalEnvValue(
     process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID
   );
+  const googleAndroidDebugClientId = getOptionalEnvValue(
+    process.env.EXPO_PUBLIC_GOOGLE_ANDROID_DEBUG_CLIENT_ID
+  );
+  const googleAndroidReleaseClientId = getOptionalEnvValue(
+    process.env.EXPO_PUBLIC_GOOGLE_ANDROID_RELEASE_CLIENT_ID
+  );
   const googleIosClientId = getOptionalEnvValue(
     process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID
   );
@@ -5766,24 +5771,18 @@ export default function HomeScreen() {
   );
   const googleClientIdForCurrentPlatform = Platform.select({
     ios: googleIosClientId,
-    android: googleAndroidClientId,
+    android:
+      (__DEV__ ? googleAndroidDebugClientId : googleAndroidReleaseClientId) ??
+      googleAndroidClientId,
     default: googleWebClientId,
   });
-  const googleRedirectUri = useMemo(
-    () =>
-      AuthSession.makeRedirectUri({
-        scheme: 'aquariummobile',
-        path: 'oauthredirect',
-      }),
-    []
-  );
   const isGoogleAuthConfiguredForPlatform = Boolean(
     googleClientIdForCurrentPlatform
   );
   const [googleAuthRequest, , promptGoogleAuthAsync] =
     Google.useIdTokenAuthRequest({
       androidClientId:
-        googleAndroidClientId ??
+        googleClientIdForCurrentPlatform ??
         'missing-google-android-client-id.apps.googleusercontent.com',
       iosClientId:
         googleIosClientId ??
@@ -5791,7 +5790,6 @@ export default function HomeScreen() {
       webClientId:
         googleWebClientId ??
         'missing-google-web-client-id.apps.googleusercontent.com',
-      redirectUri: googleRedirectUri,
       scopes: ['openid', 'profile', 'email'],
       selectAccount: true,
     });
