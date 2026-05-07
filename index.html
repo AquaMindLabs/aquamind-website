@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="pl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AquaMind - Strona informacyjna</title>
+    <style>
+      :root {
+        --bg: #f6fbff;
+        --card: #ffffff;
+        --text: #15202b;
+        --muted: #4a5a6a;
+        --line: #d6e3ef;
+        --accent: #0a6fdc;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        line-height: 1.6;
+      }
+      .wrap {
+        max-width: 880px;
+        margin: 0 auto;
+        padding: 28px 18px 40px;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 20px;
+        margin-top: 14px;
+      }
+      h1,
+      h2 {
+        margin: 0 0 10px;
+        line-height: 1.25;
+      }
+      p,
+      li {
+        color: var(--muted);
+      }
+      nav {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-top: 14px;
+      }
+      a {
+        color: var(--accent);
+        text-decoration: none;
+        font-weight: 600;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+      .foot {
+        margin-top: 20px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <section class="card">
+        <h1>AquaMind</h1>
+        <p>
+          AquaMind to aplikacja do prowadzenia akwarium: pomiary, historia, analiza
+          trendow i zarzadzanie danymi zbiornika.
+        </p>
+        <nav>
+          <a href="./privacy.html">Polityka prywatnosci</a>
+          <a href="./delete-account.html">Usuwanie konta i danych</a>
+        </nav>
+      </section>
+
+      <section class="card">
+        <h2>Kontakt</h2>
+        <p>
+          W sprawach prywatnosci, konta i danych: <a href="mailto:support@aquamind.app">support@aquamind.app</a>
+        </p>
+      </section>
+
+      <p class="foot">Ostatnia aktualizacja: 7 maja 2026</p>
+    </main>
+  </body>
+  </html>
