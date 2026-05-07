@@ -8,26 +8,25 @@ import {
 import { getFirestore } from 'firebase/firestore';
 import { Platform } from 'react-native';
 
-function readRequiredEnv(name) {
-  const value = process.env[name];
-
-  if (!value) {
-    throw new Error(
-      `Missing required environment variable: ${name}. Fill it in .env (based on .env.example).`
-    );
-  }
-
-  return value;
-}
-
 const firebaseConfig = {
-  apiKey: readRequiredEnv('EXPO_PUBLIC_FIREBASE_API_KEY'),
-  authDomain: readRequiredEnv('EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN'),
-  projectId: readRequiredEnv('EXPO_PUBLIC_FIREBASE_PROJECT_ID'),
-  storageBucket: readRequiredEnv('EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET'),
-  messagingSenderId: readRequiredEnv('EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID'),
-  appId: readRequiredEnv('EXPO_PUBLIC_FIREBASE_APP_ID'),
+  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,
+  authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,
+  projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID,
+  storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
+  appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID,
 };
+
+const missingFirebaseConfigKeys = Object.entries(firebaseConfig)
+  .filter(([, value]) => !value)
+  .map(([key]) => key);
+
+if (missingFirebaseConfigKeys.length > 0) {
+  throw new Error(
+    `Missing required Firebase config: ${missingFirebaseConfigKeys.join(', ')}. ` +
+      'Set EXPO_PUBLIC_FIREBASE_* variables in EAS and rebuild the app.'
+  );
+}
 
 const app = initializeApp(firebaseConfig);
 
