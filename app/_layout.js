@@ -5,6 +5,7 @@ import { ThemeProvider } from '@react-navigation/native';
 import { Drawer } from 'expo-router/drawer';
 import { StatusBar } from 'expo-status-bar';
 import Constants from 'expo-constants';
+import * as WebBrowser from 'expo-web-browser';
 import { InteractionManager, useColorScheme } from 'react-native';
 
 import CustomDrawer from '@/features/aquarium/components/CustomDrawer';
@@ -18,6 +19,8 @@ import {
   initializeObservability,
   markStartupReady,
 } from '@/shared/services/observability';
+
+WebBrowser.maybeCompleteAuthSession();
 
 function RootAppShell() {
   const { navigationTheme, isDarkTheme, colors } = useAppTheme();
@@ -50,6 +53,13 @@ function RootAppShell() {
           options={{
             drawerLabel: 'Home',
             title: 'Home',
+          }}
+        />
+        <Drawer.Screen
+          name="oauthredirect"
+          options={{
+            drawerItemStyle: { display: 'none' },
+            title: '',
           }}
         />
       </Drawer>
