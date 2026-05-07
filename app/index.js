@@ -7220,10 +7220,13 @@ export default function HomeScreen() {
     }
   };
 
-  const completeGoogleAuthWithToken = useCallback(
-    async (idToken, isDeleteAccountGoogleReauth) => {
+  const completeGoogleAuthWithTokens = useCallback(
+    async ({ idToken, accessToken }, isDeleteAccountGoogleReauth) => {
       try {
-        const credential = GoogleAuthProvider.credential(idToken);
+        const credential = GoogleAuthProvider.credential(
+          idToken || null,
+          accessToken || null
+        );
         if (isDeleteAccountGoogleReauth) {
           const currentAuthUser = auth.currentUser;
           if (!currentAuthUser) {
@@ -7316,8 +7319,10 @@ export default function HomeScreen() {
 
       const idToken =
         result?.authentication?.idToken ?? result?.params?.id_token;
+      const accessToken =
+        result?.authentication?.accessToken ?? result?.params?.access_token;
 
-      if (!idToken) {
+      if (!idToken && !accessToken) {
         if (isDeleteAccountGoogleReauth) {
           setDeleteAccountReauthBusy(false);
         } else {
@@ -7329,7 +7334,10 @@ export default function HomeScreen() {
         return;
       }
 
-      await completeGoogleAuthWithToken(idToken, isDeleteAccountGoogleReauth);
+      await completeGoogleAuthWithTokens(
+        { idToken, accessToken },
+        isDeleteAccountGoogleReauth
+      );
     } catch (error) {
       if (isDeleteAccountGoogleReauth) {
         setDeleteAccountReauthBusy(false);
