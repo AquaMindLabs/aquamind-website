@@ -1,4 +1,4 @@
-export const FISH_CATALOG_STARTER = [
+const RAW_FISH_CATALOG_STARTER = [
   {
     commonName: 'Gupik',
     latinName: 'Poecilia reticulata',
@@ -557,3 +557,88 @@ export const FISH_CATALOG_STARTER = [
     notes: 'Drapiezny slimak pomagajacy ograniczac inne slimaki.',
   },
 ];
+
+const GENERIC_FISH_IMAGE_URL =
+  'https://upload.wikimedia.org/wikipedia/commons/thumb/e/e0/Poecilia_reticulata_male.jpg/640px-Poecilia_reticulata_male.jpg';
+
+const FISH_COMMONS_FILE_OVERRIDES_BY_LATIN = Object.freeze({
+  'xiphophorus hellerii': 'Xiphophorus_hellerii_-_male_and_female.jpg',
+  'inpaichthys kerri': '05.Inpaichtys_kerri.JPG',
+  'danio rerio': 'Danio_rerio.JPG',
+  'otocinclus affinis': 'Otocinclus_affinis.jpg',
+  'ancistrus cf. cirrhosus': 'Ancistrus_cirrhosus.jpg',
+  'caridina multidentata': 'Caridina_multidentata_close.jpg',
+  'caridina cf. cantonensis': 'Caridina-cf-cantonensis-crystal-red.jpg',
+  'caridina cf. babaulti': 'Caridina_cf._babaulti.jpg',
+  'atyopsis moluccensis': 'Atyopsis_moluccensis.jpg',
+});
+
+function normalizeLatinCatalogKey(value) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ');
+}
+
+function buildCommonsFileThumbnailUrl(fileName, width = 420) {
+  const normalizedFileName = String(fileName ?? '').trim();
+  if (!normalizedFileName) {
+    return '';
+  }
+
+  const encodedFileName = encodeURIComponent(
+    normalizedFileName.replace(/\s+/g, '_')
+  );
+  const normalizedWidth = Number(width);
+  const widthQuery =
+    Number.isFinite(normalizedWidth) && normalizedWidth > 0
+      ? `?width=${Math.round(normalizedWidth)}`
+      : '';
+
+  return `https://commons.wikimedia.org/wiki/Special:FilePath/${encodedFileName}${widthQuery}`;
+}
+
+function buildDefaultCommonsFileName(latinName) {
+  const words = String(latinName ?? '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+
+  if (words.length < 2) {
+    return '';
+  }
+
+  return `${words[0]}_${words[1]}.jpg`;
+}
+
+function buildFishImageUrls(latinName) {
+  const normalizedLatinKey = normalizeLatinCatalogKey(latinName);
+  const manualFileName = normalizedLatinKey
+    ? FISH_COMMONS_FILE_OVERRIDES_BY_LATIN[normalizedLatinKey]
+    : '';
+  const defaultFileName = buildDefaultCommonsFileName(latinName);
+  const fileName = manualFileName || defaultFileName;
+
+  if (!fileName) {
+    return {
+      imagePreviewUrl: GENERIC_FISH_IMAGE_URL,
+      imageUrl: GENERIC_FISH_IMAGE_URL,
+    };
+  }
+
+  const imagePreviewUrl = buildCommonsFileThumbnailUrl(fileName, 420);
+  const imageUrl = buildCommonsFileThumbnailUrl(fileName, 900);
+
+  return {
+    imagePreviewUrl: imagePreviewUrl || GENERIC_FISH_IMAGE_URL,
+    imageUrl: imageUrl || imagePreviewUrl || GENERIC_FISH_IMAGE_URL,
+  };
+}
+
+export const FISH_CATALOG_STARTER = RAW_FISH_CATALOG_STARTER.map((item) => ({
+  ...item,
+  ...buildFishImageUrls(item.latinName),
+}));

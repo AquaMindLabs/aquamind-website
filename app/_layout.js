@@ -20,7 +20,7 @@ import {
 } from '@/shared/services/observability';
 
 function RootAppShell() {
-  const { navigationTheme, isDarkTheme } = useAppTheme();
+  const { navigationTheme, isDarkTheme, colors } = useAppTheme();
 
   return (
     <ThemeProvider value={navigationTheme}>
@@ -30,6 +30,20 @@ function RootAppShell() {
           headerShown: false,
           drawerPosition: 'left',
           swipeEdgeWidth: 40,
+          sceneStyle: {
+            backgroundColor: colors.pageBg,
+          },
+          drawerType: 'slide',
+          overlayColor: colors.overlay,
+          drawerStyle: {
+            width: 312,
+            borderTopRightRadius: 24,
+            borderBottomRightRadius: 24,
+            overflow: 'hidden',
+            backgroundColor: colors.modalBg,
+            borderRightWidth: 1,
+            borderRightColor: colors.border,
+          },
         }}>
         <Drawer.Screen
           name="index"

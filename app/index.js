@@ -44,6 +44,7 @@ import {
   View,
 } from 'react-native';
 import Constants from 'expo-constants';
+import * as AuthSession from 'expo-auth-session';
 import * as Google from 'expo-auth-session/providers/google';
 import * as WebBrowser from 'expo-web-browser';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -89,7 +90,8 @@ const IS_EXPO_GO =
   Constants.appOwnership === 'expo' ||
   Constants.executionEnvironment === 'storeClient';
 const IS_IOS_EXPO_GO = Platform.OS === 'ios' && IS_EXPO_GO;
-const ENABLE_FISH_AND_PLANT_IMAGES = false;
+const ENABLE_FISH_IMAGES = true;
+const ENABLE_PLANT_IMAGES = false;
 const CATALOG_EAGER_RENDER_LIMIT = 24;
 const DISEASE_IMAGE_PLACEHOLDER_SOURCE = require('../assets/images/icon.png');
 const REMOTE_JSON_REQUEST_HEADERS = Object.freeze({
@@ -3152,6 +3154,25 @@ const FISH_COMMONS_FILE_BY_LATIN = Object.freeze({
   ...FISH_COMMONS_FILE_OVERRIDES_BY_LATIN,
 });
 
+function buildFishCatalogImageUrl(latinName) {
+  const normalizedLatinKey = normalizeLatinCatalogKey(latinName);
+  const manualCommonsFileName = normalizedLatinKey
+    ? FISH_COMMONS_FILE_BY_LATIN[normalizedLatinKey]
+    : '';
+
+  if (manualCommonsFileName) {
+    return (
+      buildCommonsFileThumbnailUrl(manualCommonsFileName, 900) ||
+      GENERIC_FISH_IMAGE_URL
+    );
+  }
+
+  return (
+    buildFishCommonsFallbackImageUrl(String(latinName ?? '').trim(), 900) ||
+    GENERIC_FISH_IMAGE_URL
+  );
+}
+
 const PLANT_COMMONS_FILE_OVERRIDES_BY_LATIN = Object.freeze({
   'anubias barteri var. nana': 'Anubias_barteri_var._nana_01.jpg',
   'microsorum pteropus': 'Microsorum_pteropus1.jpg',
@@ -5099,8 +5120,11 @@ function BottomSheetModal({
   title,
   children,
   themeCardBg,
+  themeCardBgAlt = themeCardBg,
   themeBorder,
   themeTextPrimary,
+  themeOverlay = 'rgba(0, 0, 0, 0.48)',
+  themeDragHandle = '#4b5563',
   isLightTheme,
   keyboardVerticalOffset = 0,
   maxWidth = 760,
@@ -5194,7 +5218,7 @@ function BottomSheetModal({
             right: 0,
             bottom: 0,
             left: 0,
-            backgroundColor: 'rgba(0, 0, 0, 0.48)',
+            backgroundColor: themeOverlay,
             opacity: backdropOpacity,
           }}
         />
@@ -5262,7 +5286,7 @@ function BottomSheetModal({
                       width: 44,
                       height: 5,
                       borderRadius: 999,
-                      backgroundColor: isLightTheme ? '#cbd5e1' : '#4b5563',
+                      backgroundColor: themeDragHandle,
                     }}
                   />
                 </View>
@@ -5294,7 +5318,7 @@ function BottomSheetModal({
                       borderRadius: 10,
                       alignItems: 'center',
                       justifyContent: 'center',
-                      backgroundColor: isLightTheme ? '#ffffff' : '#111827',
+                      backgroundColor: themeCardBgAlt,
                     }}>
                     <Text
                       style={{
@@ -5731,7 +5755,6 @@ export default function HomeScreen() {
   const [isForgotPasswordModalVisible, setIsForgotPasswordModalVisible] =
     useState(false);
   const [forgotPasswordEmail, setForgotPasswordEmail] = useState('');
-  const [googleAuthIntent, setGoogleAuthIntent] = useState('sign-in');
   const googleAndroidClientId = getOptionalEnvValue(
     process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID
   );
@@ -5746,10 +5769,18 @@ export default function HomeScreen() {
     android: googleAndroidClientId,
     default: googleWebClientId,
   });
+  const googleRedirectUri = useMemo(
+    () =>
+      AuthSession.makeRedirectUri({
+        scheme: 'aquariummobile',
+        path: 'oauthredirect',
+      }),
+    []
+  );
   const isGoogleAuthConfiguredForPlatform = Boolean(
     googleClientIdForCurrentPlatform
   );
-  const [googleAuthRequest, googleAuthResponse, promptGoogleAuthAsync] =
+  const [googleAuthRequest, , promptGoogleAuthAsync] =
     Google.useIdTokenAuthRequest({
       androidClientId:
         googleAndroidClientId ??
@@ -5760,6 +5791,8 @@ export default function HomeScreen() {
       webClientId:
         googleWebClientId ??
         'missing-google-web-client-id.apps.googleusercontent.com',
+      redirectUri: googleRedirectUri,
+      scopes: ['openid', 'profile', 'email'],
       selectAccount: true,
     });
 
@@ -6061,7 +6094,6 @@ export default function HomeScreen() {
         setIsDeleteAccountReauthModalVisible(false);
         setDeleteAccountReauthPassword('');
         setDeleteAccountReauthBusy(false);
-        setGoogleAuthIntent('sign-in');
         setInitialDataReady(true);
       }
     });
@@ -6488,6 +6520,38 @@ export default function HomeScreen() {
           patch,
         };
       }).filter(Boolean);
+      const existingImageUrlBackfills = allowedExisting.map((item) => {
+        const currentImageUrl = String(item?.imageUrl ?? '').trim();
+        if (currentImageUrl) {
+          return null;
+        }
+
+        const fallbackImageUrl = buildFishCatalogImageUrl(item?.latinName);
+        if (!fallbackImageUrl) {
+          return null;
+        }
+
+        return {
+          id: item.id,
+          patch: {
+            imageUrl: fallbackImageUrl,
+          },
+        };
+      }).filter(Boolean);
+      const catalogUpdatesById = new Map();
+      [...existingSeedUpdates, ...existingImageUrlBackfills].forEach((item) => {
+        const currentPatch = catalogUpdatesById.get(item.id) ?? {};
+        catalogUpdatesById.set(item.id, {
+          ...currentPatch,
+          ...item.patch,
+        });
+      });
+      const catalogUpdates = Array.from(catalogUpdatesById.entries()).map(
+        ([id, patch]) => ({
+          id,
+          patch,
+        })
+      );
 
       let added = [];
       let patched = [];
@@ -6510,14 +6574,14 @@ export default function HomeScreen() {
         }));
       }
 
-      if (existingSeedUpdates.length > 0) {
+      if (catalogUpdates.length > 0) {
         await Promise.all(
-          existingSeedUpdates.map((item) =>
+          catalogUpdates.map((item) =>
             updateDoc(doc(db, 'fishCatalog', item.id), item.patch)
           )
         );
 
-        patched = existingSeedUpdates.map((item) => ({
+        patched = catalogUpdates.map((item) => ({
           id: item.id,
           ...item.patch,
         }));
@@ -7158,40 +7222,8 @@ export default function HomeScreen() {
     }
   };
 
-  useEffect(() => {
-    if (!googleAuthResponse) {
-      return;
-    }
-
-    const isDeleteAccountGoogleReauth =
-      googleAuthIntent === 'reauth-delete-account';
-
-    if (googleAuthResponse.type !== 'success') {
-      if (isDeleteAccountGoogleReauth) {
-        setDeleteAccountReauthBusy(false);
-      } else {
-        setAuthBusy(false);
-      }
-      setGoogleAuthIntent('sign-in');
-      return;
-    }
-
-    const idToken =
-      googleAuthResponse?.authentication?.idToken ??
-      googleAuthResponse?.params?.id_token;
-
-    if (!idToken) {
-      if (isDeleteAccountGoogleReauth) {
-        setDeleteAccountReauthBusy(false);
-      } else {
-        setAuthBusy(false);
-      }
-      setGoogleAuthIntent('sign-in');
-      alert('Nie udalo sie pobrac tokenu Google. Sprobuj ponownie.');
-      return;
-    }
-
-    const completeGoogleAuth = async () => {
+  const completeGoogleAuthWithToken = useCallback(
+    async (idToken, isDeleteAccountGoogleReauth) => {
       try {
         const credential = GoogleAuthProvider.credential(idToken);
         if (isDeleteAccountGoogleReauth) {
@@ -7226,12 +7258,10 @@ export default function HomeScreen() {
         } else {
           setAuthBusy(false);
         }
-        setGoogleAuthIntent('sign-in');
       }
-    };
-
-    completeGoogleAuth();
-  }, [googleAuthIntent, googleAuthResponse, t]);
+    },
+    [t]
+  );
 
   const handleGoogleAuth = async (intent = 'sign-in') => {
     const isDeleteAccountGoogleReauth = intent === 'reauth-delete-account';
@@ -7269,7 +7299,6 @@ export default function HomeScreen() {
       return;
     }
 
-    setGoogleAuthIntent(intent);
     if (isDeleteAccountGoogleReauth) {
       setDeleteAccountReauthBusy(true);
     } else {
@@ -7284,15 +7313,31 @@ export default function HomeScreen() {
         } else {
           setAuthBusy(false);
         }
-        setGoogleAuthIntent('sign-in');
+        return;
       }
+
+      const idToken =
+        result?.authentication?.idToken ?? result?.params?.id_token;
+
+      if (!idToken) {
+        if (isDeleteAccountGoogleReauth) {
+          setDeleteAccountReauthBusy(false);
+        } else {
+          setAuthBusy(false);
+        }
+        alert(
+          'Logowanie Google nie zwrocilo tokenu. Sprawdz konfiguracje OAuth i sprobuj ponownie.'
+        );
+        return;
+      }
+
+      await completeGoogleAuthWithToken(idToken, isDeleteAccountGoogleReauth);
     } catch (error) {
       if (isDeleteAccountGoogleReauth) {
         setDeleteAccountReauthBusy(false);
       } else {
         setAuthBusy(false);
       }
-      setGoogleAuthIntent('sign-in');
       alert(
         isDeleteAccountGoogleReauth
           ? t('deleteAccountReauthGoogleStartError', {
@@ -9482,7 +9527,6 @@ export default function HomeScreen() {
     !isSettingsSection &&
     Boolean(selectedTank) &&
     tanks.length > 1;
-  const headerSideSlotWidth = 44;
   const selectedTankLiters = Number(selectedTank?.liters);
   const currentMeasurement = useMemo(() => measurements[0] ?? null, [measurements]);
   const selectedTankEnvironmentProfile = useMemo(
@@ -10142,7 +10186,7 @@ export default function HomeScreen() {
   ]);
   const visibleFilteredFishCatalog = useMemo(() => {
     if (
-      !ENABLE_FISH_AND_PLANT_IMAGES ||
+      !ENABLE_FISH_IMAGES ||
       !IS_IOS_EXPO_GO ||
       String(stockFishSearch ?? '').trim().length > 0
     ) {
@@ -10153,7 +10197,7 @@ export default function HomeScreen() {
   }, [filteredFishCatalog, stockFishSearch]);
   const visibleFilteredPlantCatalog = useMemo(() => {
     if (
-      !ENABLE_FISH_AND_PLANT_IMAGES ||
+      !ENABLE_PLANT_IMAGES ||
       !IS_IOS_EXPO_GO ||
       String(stockPlantSearch ?? '').trim().length > 0
     ) {
@@ -10396,7 +10440,7 @@ export default function HomeScreen() {
         return '';
       }
 
-      if (!ENABLE_FISH_AND_PLANT_IMAGES) {
+      if (!ENABLE_FISH_IMAGES) {
         return '';
       }
 
@@ -10408,7 +10452,7 @@ export default function HomeScreen() {
       const cacheKey = getFishImageCacheKey(fish);
 
       const directPreview = String(
-        fish.imagePreviewUrl ?? fish.imageUrl ?? ''
+        fish.imageUrl ?? fish.imagePreviewUrl ?? ''
       ).trim();
       if (directPreview) {
         return directPreview;
@@ -10422,7 +10466,7 @@ export default function HomeScreen() {
         (fish.catalogFishId && fishCatalogById.get(fish.catalogFishId)) ||
         fishCatalogByLatinName.get(normalizeLatinCatalogKey(fish.latinName));
       const catalogPreview = String(
-        catalogEntry?.imagePreviewUrl ?? catalogEntry?.imageUrl ?? ''
+        catalogEntry?.imageUrl ?? catalogEntry?.imagePreviewUrl ?? ''
       ).trim();
       if (catalogPreview) {
         return catalogPreview;
@@ -10450,9 +10494,18 @@ export default function HomeScreen() {
       getFishImageCacheKey,
     ]
   );
+  const getFishPreviewImageSource = useCallback(
+    (fish, options = {}) => {
+      const previewUri = getFishPreviewImageUri(fish, options);
+      return previewUri
+        ? getDiseaseRemoteImageSource(previewUri)
+        : DISEASE_IMAGE_PLACEHOLDER_SOURCE;
+    },
+    [getFishPreviewImageUri]
+  );
   const requestFishImageLookup = useCallback(
     (fish) => {
-      if (!ENABLE_FISH_AND_PLANT_IMAGES) {
+      if (!ENABLE_FISH_IMAGES) {
         return;
       }
 
@@ -10541,7 +10594,7 @@ export default function HomeScreen() {
   );
   const handleOpenFishImageModal = useCallback(
     (fish) => {
-      if (!ENABLE_FISH_AND_PLANT_IMAGES) {
+      if (!ENABLE_FISH_IMAGES) {
         return;
       }
 
@@ -10583,7 +10636,7 @@ export default function HomeScreen() {
         return '';
       }
 
-      if (!ENABLE_FISH_AND_PLANT_IMAGES) {
+      if (!ENABLE_PLANT_IMAGES) {
         return '';
       }
 
@@ -10643,7 +10696,7 @@ export default function HomeScreen() {
   );
   const requestPlantImageLookup = useCallback(
     (plant) => {
-      if (!ENABLE_FISH_AND_PLANT_IMAGES) {
+      if (!ENABLE_PLANT_IMAGES) {
         return;
       }
 
@@ -10748,7 +10801,7 @@ export default function HomeScreen() {
   );
   const handleOpenPlantImageModal = useCallback(
     (plant) => {
-      if (!ENABLE_FISH_AND_PLANT_IMAGES) {
+      if (!ENABLE_PLANT_IMAGES) {
         return;
       }
 
@@ -10775,7 +10828,6 @@ export default function HomeScreen() {
     },
     [getPlantPreviewImageUri, handleOpenDiseaseImageModal]
   );
-  void handleFishPreviewImageError;
   void handleOpenFishImageModal;
   void getPlantPreviewImageSource;
   void handlePlantPreviewImageError;
@@ -10804,7 +10856,7 @@ export default function HomeScreen() {
     };
   }, [isEditingFish]);
   useEffect(() => {
-    if (!ENABLE_FISH_AND_PLANT_IMAGES) {
+    if (!ENABLE_FISH_IMAGES) {
       return;
     }
 
@@ -10848,7 +10900,7 @@ export default function HomeScreen() {
     };
   }, [isEditingPlant]);
   useEffect(() => {
-    if (!ENABLE_FISH_AND_PLANT_IMAGES) {
+    if (!ENABLE_PLANT_IMAGES) {
       return;
     }
 
@@ -11306,14 +11358,16 @@ export default function HomeScreen() {
   const themeChartGrid = colors.chartGrid;
   const themeChartPointBorder = colors.chartPointBorder;
   const themeChartAxis = colors.chartAxis;
-  const issueAccentText = isLightTheme ? '#1f4e79' : '#c7f7ff';
-  const issueSuccessText = isLightTheme ? '#1f7a3a' : '#9be7a3';
-  const issueScheduleText = isLightTheme ? '#24526f' : '#d7f5dd';
-  const issueMutedText = isLightTheme ? '#4b5b6c' : '#cdd6df';
-  const issueMetaText = isLightTheme ? '#3f4a59' : '#9da3af';
-  const issueWarningText = isLightTheme ? '#8a5a12' : '#ffdd99';
-  const issueDangerText = isLightTheme ? '#8f1d1d' : '#ffb3b3';
-  const issueDivider = isLightTheme ? '#d5dbe3' : '#2d2d2d';
+  const themeOverlay = colors.overlay;
+  const themeDragHandle = colors.dragHandle;
+  const issueAccentText = themeAccentText;
+  const issueSuccessText = themeSuccessText;
+  const issueScheduleText = themeTextSecondary;
+  const issueMutedText = themeTextMuted;
+  const issueMetaText = themeTextSecondary;
+  const issueWarningText = themeWarningText;
+  const issueDangerText = themeDangerText;
+  const issueDivider = themeBorder;
   const issueBodyTextSize = 13;
   const diseaseImageModalFrameWidth = Math.max(windowWidth - 24, 280);
   const diseaseImageModalFrameHeight = Math.max(windowHeight - 220, 260);
@@ -12615,7 +12669,7 @@ export default function HomeScreen() {
             name: tn('notificationChannelName'),
             importance: Notifications.AndroidImportance.DEFAULT,
             vibrationPattern: [0, 250, 250, 250],
-            lightColor: '#6cb6ff',
+            lightColor: themeAccent,
           });
         }
 
@@ -12714,6 +12768,7 @@ export default function HomeScreen() {
     hasTaskReminderAccess,
     selectedTank?.id,
     selectedTank?.name,
+    themeAccent,
   ]);
 
   if (loading) {
@@ -12797,26 +12852,63 @@ export default function HomeScreen() {
     const isRegisterMode = authMode === 'register';
 
     return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: themeModalBg }}>
+      <SafeAreaView style={{ flex: 1, backgroundColor: themePageBg }}>
         <KeyboardAvoidingView
           style={{ flex: 1 }}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <ScrollView
-            style={{ flex: 1 }}
+            style={{ flex: 1, backgroundColor: themePageBg }}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode="on-drag"
             onScrollBeginDrag={Keyboard.dismiss}
             contentContainerStyle={{
               flexGrow: 1,
               justifyContent: 'center',
-              padding: 24,
+              paddingHorizontal: 22,
+              paddingVertical: 26,
             }}>
+              <View
+                style={{
+                  borderWidth: 1,
+                  borderColor: themeBorder,
+                  borderRadius: 24,
+                  backgroundColor: themeCardBg,
+                  paddingHorizontal: 18,
+                  paddingVertical: 20,
+                  shadowColor: '#001322',
+                  shadowOpacity: isLightTheme ? 0.14 : 0.36,
+                  shadowRadius: 24,
+                  shadowOffset: { width: 0, height: 12 },
+                  elevation: 8,
+                }}>
+              <View
+                style={{
+                  alignSelf: 'center',
+                  borderWidth: 1,
+                  borderColor: themeAccent,
+                  borderRadius: 999,
+                  backgroundColor: themeAccentSoftBg,
+                  paddingHorizontal: 12,
+                  paddingVertical: 6,
+                  marginBottom: 14,
+                }}>
+                <Text
+                  style={{
+                    color: themeAccentText,
+                    fontSize: 11,
+                    letterSpacing: 0.5,
+                    fontWeight: '700',
+                    textTransform: 'uppercase',
+                  }}>
+                  Premium Experience
+                </Text>
+              </View>
               <Text
                 style={{
                   color: themeTextPrimary,
-                  fontSize: 24,
+                  fontSize: 26,
                   fontWeight: '700',
-                  marginBottom: 8,
+                  marginBottom: 6,
                   textAlign: 'center',
                 }}>
                 {t('aquariumAssistant')}
@@ -12827,6 +12919,7 @@ export default function HomeScreen() {
                   color: themeTextSecondary,
                   textAlign: 'center',
                   marginBottom: 24,
+                  lineHeight: 21,
                 }}>
                 {isRegisterMode
                   ? t('authRegisterSubtitle')
@@ -12836,7 +12929,7 @@ export default function HomeScreen() {
               {isRegisterMode ? (
                 <TextInput
                   placeholder={t('nameOrNick')}
-                  placeholderTextColor="gray"
+                  placeholderTextColor={themePlaceholder}
                   value={authNickname}
                   onChangeText={setAuthNickname}
                   autoCapitalize="words"
@@ -12845,15 +12938,16 @@ export default function HomeScreen() {
                     borderColor: themeInputBorder,
                     color: themeInputText,
                     padding: 12,
-                    borderRadius: 8,
+                    borderRadius: 12,
                     marginBottom: 10,
+                    backgroundColor: themeInputBg,
                   }}
                 />
               ) : null}
 
               <TextInput
                 placeholder={t('email')}
-                placeholderTextColor="gray"
+                placeholderTextColor={themePlaceholder}
                 value={email}
                 onChangeText={setEmail}
                 autoCapitalize="none"
@@ -12863,14 +12957,15 @@ export default function HomeScreen() {
                   borderColor: themeInputBorder,
                   color: themeInputText,
                   padding: 12,
-                  borderRadius: 8,
+                  borderRadius: 12,
                   marginBottom: 10,
+                  backgroundColor: themeInputBg,
                 }}
               />
 
               <TextInput
                 placeholder={t('password')}
-                placeholderTextColor="gray"
+                placeholderTextColor={themePlaceholder}
                 value={password}
                 onChangeText={setPassword}
                 secureTextEntry
@@ -12879,8 +12974,9 @@ export default function HomeScreen() {
                   borderColor: themeInputBorder,
                   color: themeInputText,
                   padding: 12,
-                  borderRadius: 8,
+                  borderRadius: 12,
                   marginBottom: 14,
+                  backgroundColor: themeInputBg,
                 }}
               />
 
@@ -12891,9 +12987,10 @@ export default function HomeScreen() {
                   style={{ marginBottom: 14, opacity: authBusy ? 0.7 : 1 }}>
                   <Text
                     style={{
-                      color: '#6cb6ff',
+                      color: themeAccentText,
                       textAlign: 'right',
                       fontSize: 12,
+                      fontWeight: '600',
                     }}>
                     {t('forgotPassword')}
                   </Text>
@@ -12903,15 +13000,20 @@ export default function HomeScreen() {
               <Pressable
                 onPress={handleAuthSubmit}
                 style={{
-                  backgroundColor: 'green',
+                  backgroundColor: themeAccent,
                   padding: 14,
-                  borderRadius: 8,
+                  borderRadius: 12,
                   marginBottom: 10,
                   opacity: authBusy ? 0.7 : 1,
+                  shadowColor: themeAccent,
+                  shadowOpacity: isLightTheme ? 0.18 : 0.28,
+                  shadowRadius: 16,
+                  shadowOffset: { width: 0, height: 8 },
+                  elevation: 4,
                 }}>
                 <Text
                   style={{
-                    color: 'white',
+                    color: themeAccentOnStrong,
                     textAlign: 'center',
                     fontWeight: '700',
                   }}>
@@ -12928,10 +13030,10 @@ export default function HomeScreen() {
                     }
                     style={{
                       borderWidth: 1,
-                      borderColor: themeBorderStrong,
-                      backgroundColor: themeCardBg,
+                      borderColor: themeBorder,
+                      backgroundColor: themeCardBgAlt,
                       padding: 14,
-                      borderRadius: 8,
+                      borderRadius: 12,
                       marginBottom: 10,
                       opacity:
                         authBusy || IS_EXPO_GO || !isGoogleAuthConfiguredForPlatform
@@ -12977,14 +13079,16 @@ export default function HomeScreen() {
                 }>
                 <Text
                   style={{
-                    color: '#6cb6ff',
+                    color: themeAccentText,
                     textAlign: 'center',
+                    fontWeight: '600',
                   }}>
                   {isRegisterMode
                     ? t('haveAccount')
                     : t('noAccount')}
                 </Text>
               </Pressable>
+              </View>
           </ScrollView>
         </KeyboardAvoidingView>
 
@@ -12996,6 +13100,9 @@ export default function HomeScreen() {
             themeCardBg={themeCardBg}
             themeBorder={themeBorder}
             themeTextPrimary={themeTextPrimary}
+            themeCardBgAlt={themeCardBgAlt}
+            themeOverlay={themeOverlay}
+            themeDragHandle={themeDragHandle}
             isLightTheme={isLightTheme}
             maxWidth={560}
             heightPercent={48}
@@ -13015,7 +13122,7 @@ export default function HomeScreen() {
 
               <TextInput
                 placeholder={t('email')}
-                placeholderTextColor="gray"
+                placeholderTextColor={themePlaceholder}
                 value={forgotPasswordEmail}
                 onChangeText={setForgotPasswordEmail}
                 autoCapitalize="none"
@@ -13035,12 +13142,17 @@ export default function HomeScreen() {
                 onPress={handleForgotPassword}
                 disabled={authBusy}
                 style={{
-                  backgroundColor: '#1f4e79',
+                  backgroundColor: themeAccent,
                   padding: 12,
-                  borderRadius: 8,
+                  borderRadius: 12,
                   opacity: authBusy ? 0.7 : 1,
                 }}>
-                <Text style={{ color: 'white', textAlign: 'center', fontWeight: '700' }}>
+                <Text
+                  style={{
+                    color: themeAccentOnStrong,
+                    textAlign: 'center',
+                    fontWeight: '700',
+                  }}>
                   {t('forgotPasswordSendButton')}
                 </Text>
               </Pressable>
@@ -13078,60 +13190,76 @@ export default function HomeScreen() {
             />
           }
           contentContainerStyle={{
-            padding: 20,
+            paddingHorizontal: 18,
+            paddingTop: 18,
+            paddingBottom: 24,
           }}>
           <View
             style={{
               flexDirection: 'row',
               alignItems: 'center',
-              marginBottom: 20,
+              gap: 10,
+              marginBottom: 18,
             }}>
-            <View
+            <Pressable
+              onPress={handleOpenDrawer}
               style={{
-                width: headerSideSlotWidth,
-                flexDirection: 'row',
+                width: 44,
+                height: 44,
+                borderWidth: 1,
+                borderColor: themeBorder,
+                borderRadius: 14,
                 alignItems: 'center',
+                justifyContent: 'center',
+                backgroundColor: themeCardBg,
+                shadowColor: '#001322',
+                shadowOpacity: isLightTheme ? 0.1 : 0.22,
+                shadowRadius: 12,
+                shadowOffset: { width: 0, height: 6 },
+                elevation: 3,
               }}>
-              <Pressable
-                onPress={handleOpenDrawer}
-                style={{
-                  width: 38,
-                  height: 38,
-                  borderWidth: 1,
-                  borderColor: themeBorderStrong,
-                  borderRadius: 8,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}>
-                <View
-                  style={{
-                    width: 16,
-                    height: 2,
-                    backgroundColor: themeTextPrimary,
-                    marginBottom: 3,
-                  }}
-                />
-                <View
-                  style={{
-                    width: 16,
-                    height: 2,
-                    backgroundColor: themeTextPrimary,
-                    marginBottom: 3,
-                  }}
-                />
-                <View
-                  style={{
-                    width: 16,
-                    height: 2,
-                    backgroundColor: themeTextPrimary,
-                  }}
-                />
-              </Pressable>
-            </View>
-
               <View
                 style={{
-                  flex: 1,
+                  width: 16,
+                  height: 2,
+                  backgroundColor: themeTextPrimary,
+                  marginBottom: 3,
+                }}
+              />
+              <View
+                style={{
+                  width: 16,
+                  height: 2,
+                  backgroundColor: themeTextPrimary,
+                  marginBottom: 3,
+                }}
+              />
+              <View
+                style={{
+                  width: 16,
+                  height: 2,
+                  backgroundColor: themeTextPrimary,
+                }}
+              />
+            </Pressable>
+
+            <View
+              style={{
+                flex: 1,
+                borderWidth: 1,
+                borderColor: themeBorder,
+                borderRadius: 20,
+                backgroundColor: themeCardBg,
+                paddingHorizontal: 12,
+                paddingVertical: 10,
+                shadowColor: '#001322',
+                shadowOpacity: isLightTheme ? 0.1 : 0.26,
+                shadowRadius: 16,
+                shadowOffset: { width: 0, height: 8 },
+                elevation: 4,
+              }}>
+              <View
+                style={{
                   flexDirection: 'row',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -13141,23 +13269,25 @@ export default function HomeScreen() {
                 <Pressable
                   onPress={() => handleSwitchTank('prev')}
                   style={{
-                    width: 28,
-                    height: 28,
+                    width: 32,
+                    height: 32,
                     borderWidth: 1,
-                    borderColor: themeBorderStrong,
-                    borderRadius: 8,
+                    borderColor: themeBorder,
+                    borderRadius: 10,
                     alignItems: 'center',
                     justifyContent: 'center',
+                    backgroundColor: themeCardBgAlt,
                   }}>
                   <Text style={{ color: themeTextPrimary, fontWeight: '700' }}>{'<'}</Text>
                 </Pressable>
               )}
               <Text
                 numberOfLines={1}
-                style={{
-                  color: themeTextPrimary,
-                  fontSize: 22,
-                  textAlign: 'center',
+                  style={{
+                    color: themeTextPrimary,
+                    fontSize: 23,
+                    fontWeight: '700',
+                    textAlign: 'center',
                   flex: 1,
                   paddingHorizontal: 4,
                 }}>
@@ -13167,20 +13297,20 @@ export default function HomeScreen() {
                 <Pressable
                   onPress={() => handleSwitchTank('next')}
                   style={{
-                    width: 28,
-                    height: 28,
+                    width: 32,
+                    height: 32,
                     borderWidth: 1,
-                    borderColor: themeBorderStrong,
-                    borderRadius: 8,
+                    borderColor: themeBorder,
+                    borderRadius: 10,
                     alignItems: 'center',
                     justifyContent: 'center',
+                    backgroundColor: themeCardBgAlt,
                   }}>
                   <Text style={{ color: themeTextPrimary, fontWeight: '700' }}>{'>'}</Text>
                 </Pressable>
               )}
             </View>
-
-            <View style={{ width: headerSideSlotWidth }} />
+            </View>
           </View>
 
           {(isAquariumSection || isHealthTankMode) && (
@@ -14420,7 +14550,27 @@ export default function HomeScreen() {
                                       flex: 1,
                                       flexDirection: 'row',
                                       alignItems: 'center',
+                                      gap: 10,
                                     }}>
+                                    <Pressable
+                                      onPress={() => handleOpenFishImageModal(item)}
+                                      hitSlop={6}>
+                                      <Image
+                                        source={getFishPreviewImageSource(item, {
+                                          allowRemote: true,
+                                        })}
+                                        onError={() => handleFishPreviewImageError(item)}
+                                        resizeMode="cover"
+                                        style={{
+                                          width: 46,
+                                          height: 46,
+                                          borderRadius: 12,
+                                          borderWidth: 1,
+                                          borderColor: themeBorder,
+                                          backgroundColor: themeCardBg,
+                                        }}
+                                      />
+                                    </Pressable>
                                     <View style={{ flex: 1, paddingRight: 10 }}>
                                       <Text
                                         style={{
@@ -15297,6 +15447,9 @@ export default function HomeScreen() {
                         themeCardBg={themeCardBg}
                         themeBorder={themeBorder}
                         themeTextPrimary={themeTextPrimary}
+                        themeCardBgAlt={themeCardBgAlt}
+                        themeOverlay={themeOverlay}
+                        themeDragHandle={themeDragHandle}
                         isLightTheme={isLightTheme}
                         keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}>
                         <View
@@ -15386,7 +15539,7 @@ export default function HomeScreen() {
                             </Text>
                           ) : (
                             <View style={{ marginBottom: 10 }}>
-                              {ENABLE_FISH_AND_PLANT_IMAGES &&
+                              {ENABLE_FISH_IMAGES &&
                               IS_IOS_EXPO_GO &&
                               String(stockFishSearch ?? '').trim().length === 0 &&
                               filteredFishCatalog.length > visibleFilteredFishCatalog.length ? (
@@ -15438,19 +15591,48 @@ export default function HomeScreen() {
                                               prev === fish.id ? null : fish.id
                                             );
                                           }}
-                                          style={{ flex: 1 }}>
-                                          <Text
-                                            style={{ color: themeTextPrimary, fontWeight: '700' }}>
-                                            {fish.commonName}
-                                          </Text>
-                                          <Text
-                                            style={{
-                                              color: themeTextSecondary,
-                                              fontSize: 12,
-                                              marginTop: 2,
-                                            }}>
-                                            {fish.latinName}
-                                          </Text>
+                                          style={{
+                                            flex: 1,
+                                            flexDirection: 'row',
+                                            alignItems: 'center',
+                                            gap: 10,
+                                          }}>
+                                          <Pressable
+                                            onPress={() => handleOpenFishImageModal(fish)}
+                                            hitSlop={6}>
+                                            <Image
+                                              source={getFishPreviewImageSource(fish, {
+                                                allowRemote: true,
+                                              })}
+                                              onError={() => handleFishPreviewImageError(fish)}
+                                              resizeMode="cover"
+                                              style={{
+                                                width: 46,
+                                                height: 46,
+                                                borderRadius: 12,
+                                                borderWidth: 1,
+                                                borderColor: themeBorder,
+                                                backgroundColor: themeCardBg,
+                                              }}
+                                            />
+                                          </Pressable>
+                                          <View style={{ flex: 1 }}>
+                                            <Text
+                                              style={{
+                                                color: themeTextPrimary,
+                                                fontWeight: '700',
+                                              }}>
+                                              {fish.commonName}
+                                            </Text>
+                                            <Text
+                                              style={{
+                                                color: themeTextSecondary,
+                                                fontSize: 12,
+                                                marginTop: 2,
+                                              }}>
+                                              {fish.latinName}
+                                            </Text>
+                                          </View>
                                         </Pressable>
                                       </View>
                                       <Pressable
@@ -15602,6 +15784,9 @@ export default function HomeScreen() {
                         themeCardBg={themeCardBg}
                         themeBorder={themeBorder}
                         themeTextPrimary={themeTextPrimary}
+                        themeCardBgAlt={themeCardBgAlt}
+                        themeOverlay={themeOverlay}
+                        themeDragHandle={themeDragHandle}
                         isLightTheme={isLightTheme}
                         keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}>
                         <ScrollView
@@ -15654,7 +15839,7 @@ export default function HomeScreen() {
                       </Text>
                     ) : (
                       <View style={{ marginBottom: 10 }}>
-                        {ENABLE_FISH_AND_PLANT_IMAGES &&
+                        {ENABLE_PLANT_IMAGES &&
                         IS_IOS_EXPO_GO &&
                         String(stockPlantSearch ?? '').trim().length === 0 &&
                         filteredPlantCatalog.length > visibleFilteredPlantCatalog.length ? (
@@ -17640,7 +17825,7 @@ export default function HomeScreen() {
                     flex: 1,
                     borderWidth: 1,
                     borderColor:
-                      appSettings.themeMode === 'dark' ? '#6cb6ff' : '#444',
+                      appSettings.themeMode === 'dark' ? themeAccent : themeBorderStrong,
                     backgroundColor:
                       appSettings.themeMode === 'dark'
                         ? '#102235'
@@ -17669,7 +17854,7 @@ export default function HomeScreen() {
                     flex: 1,
                     borderWidth: 1,
                     borderColor:
-                      appSettings.themeMode === 'light' ? '#6cb6ff' : '#444',
+                      appSettings.themeMode === 'light' ? themeAccent : themeBorderStrong,
                     backgroundColor:
                       appSettings.themeMode === 'light'
                         ? '#102235'
@@ -17767,8 +17952,8 @@ export default function HomeScreen() {
                       alignItems: 'flex-start',
                       borderWidth: 1,
                       borderColor: appSettings.prefillMeasurementFromLast
-                        ? '#2b8a3e'
-                        : '#444',
+                        ? themeSuccessBg
+                        : themeBorderStrong,
                       borderRadius: 8,
                       padding: 10,
                       marginBottom: 10,
@@ -17792,7 +17977,7 @@ export default function HomeScreen() {
                         marginRight: 10,
                         marginTop: 1,
                         backgroundColor: appSettings.prefillMeasurementFromLast
-                          ? '#2b8a3e'
+                          ? themeSuccessBg
                           : 'transparent',
                       }}>
                       <Text style={{ color: 'white', fontSize: 11 }}>
@@ -17836,7 +18021,7 @@ export default function HomeScreen() {
                       flexDirection: 'row',
                       alignItems: 'flex-start',
                       borderWidth: 1,
-                      borderColor: checked ? '#2b8a3e' : '#444',
+                      borderColor: checked ? themeSuccessBg : themeBorderStrong,
                       borderRadius: 8,
                       padding: 10,
                       marginBottom: 8,
@@ -17857,7 +18042,7 @@ export default function HomeScreen() {
                         justifyContent: 'center',
                         marginRight: 10,
                         marginTop: 1,
-                        backgroundColor: checked ? '#2b8a3e' : 'transparent',
+                        backgroundColor: checked ? themeSuccessBg : 'transparent',
                       }}>
                       <Text style={{ color: 'white', fontSize: 11 }}>
                         {checked ? 'X' : ''}
@@ -17912,7 +18097,7 @@ export default function HomeScreen() {
                       borderRadius: 999,
                       borderWidth: 1,
                       borderColor:
-                        appSettings.language === option.value ? '#6cb6ff' : '#444',
+                        appSettings.language === option.value ? themeAccent : themeBorderStrong,
                       backgroundColor:
                         appSettings.language === option.value
                           ? '#102235'
@@ -19047,7 +19232,7 @@ export default function HomeScreen() {
               />
               <TextInput
                 placeholder={t('tankLitersPlaceholder')}
-                placeholderTextColor="gray"
+                placeholderTextColor={themePlaceholder}
                 value={tankLiters}
                 onChangeText={setTankLiters}
                 keyboardType="numeric"
@@ -19081,7 +19266,7 @@ export default function HomeScreen() {
                     style={{
                       borderWidth: 1,
                       borderColor:
-                        tankAquariumType === option.value ? '#6cb6ff' : '#444',
+                        tankAquariumType === option.value ? themeAccent : themeBorderStrong,
                       backgroundColor:
                         tankAquariumType === option.value
                           ? '#102235'
@@ -19127,7 +19312,7 @@ export default function HomeScreen() {
                     style={{
                       borderWidth: 1,
                       borderColor:
-                        tankOnboardingMode === option.value ? '#6cb6ff' : '#444',
+                        tankOnboardingMode === option.value ? themeAccent : themeBorderStrong,
                       backgroundColor:
                         tankOnboardingMode === option.value
                           ? '#102235'
@@ -19173,7 +19358,7 @@ export default function HomeScreen() {
                     style={{
                       borderWidth: 1,
                       borderColor:
-                        tankSubstrateType === option.value ? '#6cb6ff' : '#444',
+                        tankSubstrateType === option.value ? themeAccent : themeBorderStrong,
                       backgroundColor:
                         tankSubstrateType === option.value
                           ? '#102235'
@@ -19220,7 +19405,7 @@ export default function HomeScreen() {
                     style={{
                       borderWidth: 1,
                       borderColor:
-                        tankLightIntensity === option.value ? '#6cb6ff' : '#444',
+                        tankLightIntensity === option.value ? themeAccent : themeBorderStrong,
                       backgroundColor:
                         tankLightIntensity === option.value
                           ? '#102235'
@@ -19247,7 +19432,7 @@ export default function HomeScreen() {
 
               <TextInput
                 placeholder={t('lightHoursPlaceholder')}
-                placeholderTextColor="gray"
+                placeholderTextColor={themePlaceholder}
                 value={tankLightHours}
                 onChangeText={setTankLightHours}
                 keyboardType="numeric"
@@ -19262,7 +19447,7 @@ export default function HomeScreen() {
               <Pressable
                 onPress={handleSaveTank}
                 style={{
-                  backgroundColor: '#2b8a3e',
+                  backgroundColor: themeSuccessBg,
                   padding: 12,
                   borderRadius: 8,
                   opacity: addTankBusy ? 0.7 : 1,
@@ -19344,7 +19529,7 @@ export default function HomeScreen() {
                     />
                     <TextInput
                       placeholder={t('tankLitersPlaceholder')}
-                      placeholderTextColor="gray"
+                      placeholderTextColor={themePlaceholder}
                       value={tankLiters}
                       onChangeText={setTankLiters}
                       keyboardType="numeric"
@@ -19378,7 +19563,7 @@ export default function HomeScreen() {
                           style={{
                             borderWidth: 1,
                             borderColor:
-                              tankAquariumType === option.value ? '#6cb6ff' : '#444',
+                              tankAquariumType === option.value ? themeAccent : themeBorderStrong,
                             backgroundColor:
                               tankAquariumType === option.value
                                 ? '#102235'
@@ -19424,7 +19609,7 @@ export default function HomeScreen() {
                           style={{
                             borderWidth: 1,
                             borderColor:
-                              tankOnboardingMode === option.value ? '#6cb6ff' : '#444',
+                              tankOnboardingMode === option.value ? themeAccent : themeBorderStrong,
                             backgroundColor:
                               tankOnboardingMode === option.value
                                 ? '#102235'
@@ -19470,7 +19655,7 @@ export default function HomeScreen() {
                           style={{
                             borderWidth: 1,
                             borderColor:
-                              tankSubstrateType === option.value ? '#6cb6ff' : '#444',
+                              tankSubstrateType === option.value ? themeAccent : themeBorderStrong,
                             backgroundColor:
                               tankSubstrateType === option.value
                                 ? '#102235'
@@ -19517,7 +19702,7 @@ export default function HomeScreen() {
                           style={{
                             borderWidth: 1,
                             borderColor:
-                              tankLightIntensity === option.value ? '#6cb6ff' : '#444',
+                              tankLightIntensity === option.value ? themeAccent : themeBorderStrong,
                             backgroundColor:
                               tankLightIntensity === option.value
                                 ? '#102235'
@@ -19544,7 +19729,7 @@ export default function HomeScreen() {
 
                     <TextInput
                       placeholder={t('lightHoursPlaceholder')}
-                      placeholderTextColor="gray"
+                      placeholderTextColor={themePlaceholder}
                       value={tankLightHours}
                       onChangeText={setTankLightHours}
                       keyboardType="numeric"
@@ -19560,7 +19745,7 @@ export default function HomeScreen() {
                     <Pressable
                       onPress={handleSaveTank}
                       style={{
-                        backgroundColor: '#2b8a3e',
+                        backgroundColor: themeSuccessBg,
                         padding: 12,
                         borderRadius: 8,
                         opacity: addTankBusy ? 0.7 : 1,
@@ -19965,7 +20150,7 @@ export default function HomeScreen() {
                     contentContainerStyle={{ padding: 16, paddingBottom: 24 }}>
                     <TextInput
                       placeholder={t('newTankNamePlaceholder')}
-                      placeholderTextColor="gray"
+                      placeholderTextColor={themePlaceholder}
                       value={tankName}
                       onChangeText={setTankName}
                 style={{
@@ -19978,7 +20163,7 @@ export default function HomeScreen() {
                     />
                     <TextInput
                       placeholder={t('newTankLitersPlaceholder')}
-                      placeholderTextColor="gray"
+                      placeholderTextColor={themePlaceholder}
                       value={tankLiters}
                       onChangeText={setTankLiters}
                       keyboardType="numeric"
@@ -20012,7 +20197,7 @@ export default function HomeScreen() {
                           style={{
                             borderWidth: 1,
                             borderColor:
-                              tankAquariumType === option.value ? '#6cb6ff' : '#444',
+                              tankAquariumType === option.value ? themeAccent : themeBorderStrong,
                             backgroundColor:
                               tankAquariumType === option.value
                                 ? '#102235'
@@ -20058,7 +20243,7 @@ export default function HomeScreen() {
                           style={{
                             borderWidth: 1,
                             borderColor:
-                              tankSubstrateType === option.value ? '#6cb6ff' : '#444',
+                              tankSubstrateType === option.value ? themeAccent : themeBorderStrong,
                             backgroundColor:
                               tankSubstrateType === option.value
                                 ? '#102235'
@@ -20105,7 +20290,7 @@ export default function HomeScreen() {
                           style={{
                             borderWidth: 1,
                             borderColor:
-                              tankLightIntensity === option.value ? '#6cb6ff' : '#444',
+                              tankLightIntensity === option.value ? themeAccent : themeBorderStrong,
                             backgroundColor:
                               tankLightIntensity === option.value
                                 ? '#102235'
@@ -20132,7 +20317,7 @@ export default function HomeScreen() {
 
                     <TextInput
                       placeholder={t('lightHoursPlaceholder')}
-                      placeholderTextColor="gray"
+                      placeholderTextColor={themePlaceholder}
                       value={tankLightHours}
                       onChangeText={setTankLightHours}
                       keyboardType="numeric"
@@ -20148,7 +20333,7 @@ export default function HomeScreen() {
                     <Pressable
                       onPress={handleSaveTank}
                       style={{
-                        backgroundColor: '#1f4e79',
+                        backgroundColor: themeAccent,
                         padding: 12,
                         borderRadius: 8,
                         opacity: addTankBusy ? 0.7 : 1,
@@ -20214,6 +20399,9 @@ export default function HomeScreen() {
               themeCardBg={themeCardBg}
               themeBorder={themeBorder}
               themeTextPrimary={themeTextPrimary}
+              themeCardBgAlt={themeCardBgAlt}
+              themeOverlay={themeOverlay}
+              themeDragHandle={themeDragHandle}
               isLightTheme={isLightTheme}
               maxWidth={620}
               heightPercent={62}
@@ -20303,6 +20491,9 @@ export default function HomeScreen() {
               themeCardBg={themeCardBg}
               themeBorder={themeBorder}
               themeTextPrimary={themeTextPrimary}
+              themeCardBgAlt={themeCardBgAlt}
+              themeOverlay={themeOverlay}
+              themeDragHandle={themeDragHandle}
               isLightTheme={isLightTheme}
               maxWidth={560}
               heightPercent={62}
@@ -20372,6 +20563,9 @@ export default function HomeScreen() {
               themeCardBg={themeCardBg}
               themeBorder={themeBorder}
               themeTextPrimary={themeTextPrimary}
+              themeCardBgAlt={themeCardBgAlt}
+              themeOverlay={themeOverlay}
+              themeDragHandle={themeDragHandle}
               isLightTheme={isLightTheme}
               maxWidth={620}
               heightPercent={68}
@@ -20487,6 +20681,9 @@ export default function HomeScreen() {
               themeCardBg={themeCardBg}
               themeBorder={themeBorder}
               themeTextPrimary={themeTextPrimary}
+              themeCardBgAlt={themeCardBgAlt}
+              themeOverlay={themeOverlay}
+              themeDragHandle={themeDragHandle}
               isLightTheme={isLightTheme}
               maxWidth={640}
               heightPercent={78}
@@ -20658,7 +20855,7 @@ export default function HomeScreen() {
                       onPress={handleSaveMeasurement}
                       disabled={saveBusy || historyLoading || !selectedTank}
                       style={{
-                        backgroundColor: selectedTank ? '#2b8a3e' : '#555',
+                        backgroundColor: selectedTank ? themeSuccessBg : '#555',
                         padding: 14,
                         borderRadius: 10,
                         opacity:
@@ -22252,7 +22449,7 @@ export default function HomeScreen() {
                             }
                             style={{
                               borderWidth: 1,
-                              borderColor: isSelected ? '#6cb6ff' : themeBorder,
+                              borderColor: isSelected ? themeAccent : themeBorder,
                               borderRadius: 8,
                               padding: 12,
                               marginBottom: 8,
@@ -22666,6 +22863,9 @@ export default function HomeScreen() {
             themeCardBg={themeCardBg}
             themeBorder={themeBorder}
             themeTextPrimary={themeTextPrimary}
+            themeCardBgAlt={themeCardBgAlt}
+            themeOverlay={themeOverlay}
+            themeDragHandle={themeDragHandle}
             isLightTheme={isLightTheme}
             maxWidth={560}
             heightPercent={58}

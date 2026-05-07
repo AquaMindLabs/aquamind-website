@@ -3,6 +3,7 @@ import { Pressable, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { createTranslator } from '@/constants/translations';
+import { useAppTheme } from '@/features/aquarium/context/AppThemeContext';
 import { useTank } from '@/features/aquarium/context/TankContext';
 import { auth } from '@/shared/services/firebase';
 
@@ -25,7 +26,7 @@ const SECTION_ITEMS = [
 
 export default function CustomDrawer({ navigation }: CustomDrawerProps) {
   const { activeSection, setActiveSection, appSettings } = useTank();
-  const isLightTheme = appSettings.themeMode === 'light';
+  const { colors, isLightTheme } = useAppTheme();
   const t = createTranslator(appSettings.language);
 
   const handleSelectSection = (sectionId: string) => {
@@ -58,35 +59,71 @@ export default function CustomDrawer({ navigation }: CustomDrawerProps) {
     <SafeAreaView
       style={{
         flex: 1,
-        backgroundColor: isLightTheme ? '#f4f6f8' : 'black',
-        paddingHorizontal: 20,
-        paddingTop: 12,
+        backgroundColor: colors.modalBg,
+        paddingHorizontal: 18,
+        paddingTop: 8,
         paddingBottom: 20,
       }}>
-      <View style={{ flex: 1 }}>
+      <View
+        style={{
+          borderWidth: 1,
+          borderColor: colors.border,
+          borderRadius: 18,
+          backgroundColor: colors.cardBg,
+          paddingVertical: 14,
+          paddingHorizontal: 14,
+          marginBottom: 16,
+        }}>
         <Text
           style={{
-            color: isLightTheme ? '#111' : 'white',
-            fontSize: 22,
+            color: colors.textSecondary,
+            fontSize: 11,
             fontWeight: '700',
-            marginBottom: 18,
+            letterSpacing: 1.3,
+            textTransform: 'uppercase',
+            marginBottom: 6,
           }}>
           {t('menu')}
         </Text>
+        <Text
+          style={{
+            color: colors.textPrimary,
+            fontSize: 22,
+            fontWeight: '700',
+            marginBottom: 2,
+          }}>
+          AquaMind
+        </Text>
+        <Text
+          numberOfLines={2}
+          style={{
+            color: colors.textMuted,
+            fontSize: 12,
+            lineHeight: 18,
+          }}>
+          {t('loggedInAs', {
+            value: auth.currentUser?.email ?? auth.currentUser?.uid ?? '-',
+          })}
+        </Text>
+      </View>
 
+      <View style={{ flex: 1 }}>
         <View
           style={{
             borderTopWidth: 1,
-            borderTopColor: '#333',
-            paddingTop: 14,
+            borderTopColor: colors.border,
+            paddingTop: 10,
           }}>
           <Text
             style={{
-              color: isLightTheme ? '#5b6470' : '#9da3af',
-              fontSize: 13,
+              color: colors.textMuted,
+              fontSize: 12,
+              fontWeight: '600',
               marginBottom: 10,
+              textTransform: 'uppercase',
+              letterSpacing: 0.4,
             }}>
-            {t('appSections')}
+              {t('appSections')}
           </Text>
 
           {SECTION_ITEMS.map((section) => (
@@ -97,24 +134,32 @@ export default function CustomDrawer({ navigation }: CustomDrawerProps) {
                 paddingVertical: 12,
                 paddingHorizontal: 14,
                 borderWidth: 1,
-                borderColor:
-                  isSectionActive(section.id) ? '#6cb6ff' : '#444',
-                borderRadius: 8,
+                borderColor: isSectionActive(section.id)
+                  ? colors.accent
+                  : colors.border,
+                borderRadius: 12,
                 marginBottom: 8,
-                backgroundColor:
-                  isSectionActive(section.id)
-                    ? '#102235'
-                    : isLightTheme
-                      ? '#ffffff'
-                      : '#101010',
+                backgroundColor: isSectionActive(section.id)
+                  ? colors.accentStrongBg
+                  : colors.cardBgAlt,
+                shadowColor: isSectionActive(section.id)
+                  ? colors.accent
+                  : '#000000',
+                shadowOpacity: isSectionActive(section.id)
+                  ? (isLightTheme ? 0.2 : 0.32)
+                  : 0,
+                shadowRadius: 12,
+                shadowOffset: { width: 0, height: 5 },
+                elevation: isSectionActive(section.id) ? 3 : 0,
               }}>
               <Text
                 style={{
-                  color: isLightTheme && !isSectionActive(section.id) ? '#111' : 'white',
+                  color: isSectionActive(section.id)
+                    ? colors.accentOnStrong
+                    : colors.textPrimary,
                   fontSize: 15,
-                  textAlign: 'center',
-                  fontWeight:
-                    isSectionActive(section.id) ? '700' : '400',
+                  textAlign: 'left',
+                  fontWeight: isSectionActive(section.id) ? '700' : '500',
                 }}>
                 {t(section.labelKey)}
               </Text>
@@ -123,36 +168,26 @@ export default function CustomDrawer({ navigation }: CustomDrawerProps) {
         </View>
       </View>
 
-      <Text
-        style={{
-          color: isLightTheme ? '#2f6fb8' : '#8dc7ff',
-          fontSize: 12,
-          marginBottom: 8,
-        }}>
-        {t('loggedInAs', {
-          value: auth.currentUser?.email ?? auth.currentUser?.uid ?? '-',
-        })}
-      </Text>
-
       <Pressable
         onPress={() => handleSelectSection('settings')}
         style={{
           borderWidth: 1,
-          borderColor: activeSection === 'settings' ? '#6cb6ff' : '#444',
-          borderRadius: 8,
+          borderColor: activeSection === 'settings'
+            ? colors.accent
+            : colors.border,
+          borderRadius: 12,
           paddingVertical: 12,
           paddingHorizontal: 12,
-          backgroundColor:
-            activeSection === 'settings'
-              ? '#102235'
-              : isLightTheme
-                ? '#ffffff'
-                : '#101010',
+          backgroundColor: activeSection === 'settings'
+            ? colors.accentStrongBg
+            : colors.cardBgAlt,
           marginBottom: 10,
         }}>
         <Text
           style={{
-            color: isLightTheme && activeSection !== 'settings' ? '#111' : 'white',
+            color: activeSection === 'settings'
+              ? colors.accentOnStrong
+              : colors.textPrimary,
             textAlign: 'center',
             fontWeight: '700',
           }}>
@@ -164,15 +199,15 @@ export default function CustomDrawer({ navigation }: CustomDrawerProps) {
         onPress={handleLogout}
         style={{
           borderWidth: 1,
-          borderColor: '#7a1e1e',
-          borderRadius: 8,
+          borderColor: colors.dangerBg,
+          borderRadius: 12,
           paddingVertical: 12,
           paddingHorizontal: 12,
-          backgroundColor: '#2a1212',
+          backgroundColor: colors.dangerSoftBg,
         }}>
         <Text
           style={{
-            color: '#ffb3b3',
+            color: colors.dangerText,
             textAlign: 'center',
             fontWeight: '700',
           }}>
