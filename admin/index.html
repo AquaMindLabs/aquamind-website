@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="pl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AquaMind Admin</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="bg-orb bg-orb-a"></div>
+    <div class="bg-orb bg-orb-b"></div>
+
+    <main class="layout">
+      <header class="hero">
+        <div class="hero-top">
+          <p class="eyebrow">AQUAMIND</p>
+          <button id="toggleConfigBtn" class="btn btn-ghost btn-sm" type="button">
+            Konfiguracja
+          </button>
+        </div>
+        <h1>Panel Admina</h1>
+        <p class="hero-copy">
+          Zarzadzanie katalogami i danymi administracyjnymi z konta Firebase z
+          claimem <code>admin: true</code>.
+        </p>
+      </header>
+
+      <section class="card hidden" id="configCard">
+        <div class="card-head">
+          <h2>Konfiguracja Firebase</h2>
+          <span class="hint">zapis lokalny w przegladarce</span>
+        </div>
+
+        <div class="grid two">
+          <label><span>apiKey</span><input id="cfgApiKey" type="text" autocomplete="off" /></label>
+          <label><span>authDomain</span><input id="cfgAuthDomain" type="text" autocomplete="off" /></label>
+          <label><span>projectId</span><input id="cfgProjectId" type="text" autocomplete="off" /></label>
+          <label><span>storageBucket</span><input id="cfgStorageBucket" type="text" autocomplete="off" /></label>
+          <label><span>messagingSenderId</span><input id="cfgMessagingSenderId" type="text" autocomplete="off" /></label>
+          <label><span>appId</span><input id="cfgAppId" type="text" autocomplete="off" /></label>
+        </div>
+
+        <div class="row actions">
+          <button id="saveConfigBtn" class="btn btn-primary" type="button">Zapisz i polacz</button>
+          <button id="clearConfigBtn" class="btn btn-ghost" type="button">Wyczysc</button>
+        </div>
+      </section>
+
+      <section class="card hidden" id="authCard">
+        <div class="card-head">
+          <h2>Logowanie</h2>
+          <span class="hint">email + haslo</span>
+        </div>
+
+        <div class="grid two">
+          <label><span>Email</span><input id="loginEmail" type="email" autocomplete="username" /></label>
+          <label><span>Haslo</span><input id="loginPassword" type="password" autocomplete="current-password" /></label>
+        </div>
+
+        <div class="row actions">
+          <button id="loginBtn" class="btn btn-primary" type="button">Zaloguj</button>
+          <button id="authLogoutBtn" class="btn btn-ghost hidden" type="button">Wyloguj</button>
+        </div>
+      </section>
+
+      <section class="card hidden" id="panelCard">
+        <div class="panel-head">
+          <div>
+            <h2>Zalogowano</h2>
+            <p id="sessionMeta" class="muted">-</p>
+            <p id="adminStateBadge" class="badge badge-ok">Admin aktywny</p>
+          </div>
+          <div class="row actions compact">
+            <button id="refreshBtn" class="btn btn-ghost" type="button">Odswiez wszystko</button>
+            <button id="logoutBtn" class="btn btn-danger" type="button">Wyloguj</button>
+          </div>
+        </div>
+
+        <div class="admin-shell">
+          <aside class="admin-sidebar">
+            <p class="sidebar-title">Sekcje</p>
+            <div class="tabs sidebar-tabs" role="tablist" aria-label="Sekcje panelu">
+              <button class="tab is-active" data-section="fish" type="button">Katalog ryb</button>
+              <button class="tab" data-section="plant" type="button">Katalog roslin</button>
+              <button class="tab" data-section="algae" type="button">Katalog glonow</button>
+              <button class="tab" data-section="fishDisease" type="button">Choroby ryb</button>
+              <button class="tab" data-section="plantDisease" type="button">Choroby roslin</button>
+              <button class="tab" data-section="requests" type="button">Sugestie brakow</button>
+              <button class="tab" data-section="users" type="button">Uzytkownicy i plany</button>
+            </div>
+          </aside>
+
+          <div class="admin-main">
+            <section class="section-panel" data-panel="fish">
+              <div class="toolbar">
+                <input id="fishSearch" type="search" placeholder="Szukaj ryby" autocomplete="off" />
+                <button id="addFishBtn" class="btn btn-primary" type="button">Dodaj rybe</button>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Nazwa</th><th>Lacinska</th><th>pH</th><th>GH</th><th>Temp</th><th>Min L</th>
+                      <th>Lawicowa</th><th>Min grupa</th><th>Agresja</th><th>Source</th><th>Notatki</th>
+                      <th>Img preview</th><th>Img</th><th>Norm common</th><th>Norm latin</th><th>Akcje</th>
+                    </tr>
+                  </thead>
+                  <tbody id="fishTableBody"></tbody>
+                </table>
+              </div>
+              <div class="pagination">
+                <button id="fishPrevBtn" class="btn btn-ghost btn-sm" type="button">Poprzednia</button>
+                <span id="fishPageInfo" class="hint">Strona 1/1</span>
+                <button id="fishNextBtn" class="btn btn-ghost btn-sm" type="button">Nastepna</button>
+              </div>
+            </section>
+
+            <section class="section-panel hidden" data-panel="plant">
+              <div class="toolbar">
+                <input id="plantSearch" type="search" placeholder="Szukaj rosliny" autocomplete="off" />
+                <button id="addPlantBtn" class="btn btn-primary" type="button">Dodaj rosline</button>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Nazwa</th><th>Lacinska</th><th>pH</th><th>GH</th><th>Temp</th><th>Min L</th>
+                      <th>Source</th><th>Notatki</th><th>Img preview</th><th>Img</th><th>Norm common</th><th>Norm latin</th><th>Akcje</th>
+                    </tr>
+                  </thead>
+                  <tbody id="plantTableBody"></tbody>
+                </table>
+              </div>
+              <div class="pagination">
+                <button id="plantPrevBtn" class="btn btn-ghost btn-sm" type="button">Poprzednia</button>
+                <span id="plantPageInfo" class="hint">Strona 1/1</span>
+                <button id="plantNextBtn" class="btn btn-ghost btn-sm" type="button">Nastepna</button>
+              </div>
+            </section>
+
+            <section class="section-panel hidden" data-panel="algae">
+              <div class="toolbar">
+                <input id="algaeSearch" type="search" placeholder="Szukaj glonu" autocomplete="off" />
+                <button id="addAlgaeBtn" class="btn btn-primary" type="button">Dodaj glon</button>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Id</th><th>Nazwa</th><th>Severity</th><th>Objawy</th><th>Srodek</th><th>Zrodlo zdjecia</th><th>Akcje</th>
+                    </tr>
+                  </thead>
+                  <tbody id="algaeTableBody"></tbody>
+                </table>
+              </div>
+              <div class="pagination">
+                <button id="algaePrevBtn" class="btn btn-ghost btn-sm" type="button">Poprzednia</button>
+                <span id="algaePageInfo" class="hint">Strona 1/1</span>
+                <button id="algaeNextBtn" class="btn btn-ghost btn-sm" type="button">Nastepna</button>
+              </div>
+            </section>
+
+            <section class="section-panel hidden" data-panel="fishDisease">
+              <div class="toolbar">
+                <input id="fishDiseaseSearch" type="search" placeholder="Szukaj choroby ryb" autocomplete="off" />
+                <button id="addFishDiseaseBtn" class="btn btn-primary" type="button">Dodaj chorobe ryb</button>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Id</th><th>Nazwa</th><th>Severity</th><th>Objawy</th><th>Srodek</th><th>Zrodlo zdjecia</th><th>Akcje</th>
+                    </tr>
+                  </thead>
+                  <tbody id="fishDiseaseTableBody"></tbody>
+                </table>
+              </div>
+              <div class="pagination">
+                <button id="fishDiseasePrevBtn" class="btn btn-ghost btn-sm" type="button">Poprzednia</button>
+                <span id="fishDiseasePageInfo" class="hint">Strona 1/1</span>
+                <button id="fishDiseaseNextBtn" class="btn btn-ghost btn-sm" type="button">Nastepna</button>
+              </div>
+            </section>
+
+            <section class="section-panel hidden" data-panel="plantDisease">
+              <div class="toolbar">
+                <input id="plantDiseaseSearch" type="search" placeholder="Szukaj choroby roslin" autocomplete="off" />
+                <button id="addPlantDiseaseBtn" class="btn btn-primary" type="button">Dodaj chorobe roslin</button>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Id</th><th>Nazwa</th><th>Severity</th><th>Objawy</th><th>Srodek</th><th>Zrodlo zdjecia</th><th>Akcje</th>
+                    </tr>
+                  </thead>
+                  <tbody id="plantDiseaseTableBody"></tbody>
+                </table>
+              </div>
+              <div class="pagination">
+                <button id="plantDiseasePrevBtn" class="btn btn-ghost btn-sm" type="button">Poprzednia</button>
+                <span id="plantDiseasePageInfo" class="hint">Strona 1/1</span>
+                <button id="plantDiseaseNextBtn" class="btn btn-ghost btn-sm" type="button">Nastepna</button>
+              </div>
+            </section>
+
+            <section class="section-panel hidden" data-panel="requests">
+              <div class="toolbar">
+                <input id="requestSearch" type="search" placeholder="Szukaj zgloszenia" autocomplete="off" />
+                <button id="refreshRequestsBtn" class="btn btn-ghost" type="button">Odswiez sugestie</button>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Typ</th><th>Nazwa</th><th>Lacinska</th><th>Status</th><th>UID</th>
+                      <th>Email</th><th>Zbiornik</th><th>Data</th><th>Akcje</th>
+                    </tr>
+                  </thead>
+                  <tbody id="requestsTableBody"></tbody>
+                </table>
+              </div>
+              <div class="pagination">
+                <button id="requestsPrevBtn" class="btn btn-ghost btn-sm" type="button">Poprzednia</button>
+                <span id="requestsPageInfo" class="hint">Strona 1/1</span>
+                <button id="requestsNextBtn" class="btn btn-ghost btn-sm" type="button">Nastepna</button>
+              </div>
+            </section>
+
+            <section class="section-panel hidden" data-panel="users">
+              <div class="toolbar">
+                <input id="userSearch" type="search" placeholder="Szukaj po UID lub email" autocomplete="off" />
+                <button id="addUserPlanBtn" class="btn btn-primary" type="button">Dodaj plan po UID</button>
+                <button id="refreshUsersBtn" class="btn btn-ghost" type="button">Odswiez uzytkownikow</button>
+              </div>
+              <p class="hint">
+                Dane subskrypcji sa czytane z kolekcji <code>userSubscriptions</code>.
+                Lista UID budowana jest na podstawie dokumentow w bazie i tej kolekcji.
+              </p>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>UID</th><th>Email</th><th>Plan</th><th>Status</th><th>Source</th>
+                      <th>Od kiedy</th><th>Do kiedy</th><th>Odnowienie</th><th>Walidacja</th><th>Plan v</th><th>Akcje</th>
+                    </tr>
+                  </thead>
+                  <tbody id="usersTableBody"></tbody>
+                </table>
+              </div>
+              <div class="pagination">
+                <button id="usersPrevBtn" class="btn btn-ghost btn-sm" type="button">Poprzednia</button>
+                <span id="usersPageInfo" class="hint">Strona 1/1</span>
+                <button id="usersNextBtn" class="btn btn-ghost btn-sm" type="button">Nastepna</button>
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <section class="card hidden" id="editorCard">
+        <div class="card-head">
+          <h2 id="editorTitle">Edycja</h2>
+          <span id="editorHint" class="hint"></span>
+        </div>
+
+        <form id="catalogForm">
+          <div id="stockFields">
+            <div class="grid two">
+              <label><span>Nazwa potoczna</span><input id="fCommonName" name="commonName" type="text" /></label>
+              <label><span>Nazwa lacinska</span><input id="fLatinName" name="latinName" type="text" /></label>
+              <label><span>pH min</span><input id="fPhMin" name="phMin" type="number" min="0" max="14" step="0.1" /></label>
+              <label><span>pH max</span><input id="fPhMax" name="phMax" type="number" min="0" max="14" step="0.1" /></label>
+              <label><span>GH min</span><input id="fGhMin" name="ghMin" type="number" min="0" max="60" step="0.1" /></label>
+              <label><span>GH max</span><input id="fGhMax" name="ghMax" type="number" min="0" max="60" step="0.1" /></label>
+              <label><span>Temp min (C)</span><input id="fTempMin" name="tempMin" type="number" min="-5" max="50" step="0.1" /></label>
+              <label><span>Temp max (C)</span><input id="fTempMax" name="tempMax" type="number" min="-5" max="50" step="0.1" /></label>
+              <label><span>Min litraz</span><input id="fMinLiters" name="minLiters" type="number" min="1" max="20000" step="1" /></label>
+              <label><span>Zrodlo</span><input id="fSource" name="source" type="text" placeholder="manual" /></label>
+              <label><span>URL miniatury</span><input id="fImagePreviewUrl" name="imagePreviewUrl" type="url" /></label>
+              <label><span>URL obrazka</span><input id="fImageUrl" name="imageUrl" type="url" /></label>
+            </div>
+            <label><span>Notatki</span><textarea id="fNotes" name="notes" rows="3"></textarea></label>
+            <div class="grid two" id="fishExtraFields">
+              <label><span>Poziom agresji</span><input id="fAggressionLevel" name="aggressionLevel" type="text" placeholder="peaceful" /></label>
+              <label><span>Minimalna grupa</span><input id="fMinGroupSize" name="minGroupSize" type="number" min="0" max="1000" step="1" /></label>
+              <label class="checkbox"><input id="fIsSchooling" name="isSchooling" type="checkbox" /><span>Ryba lawicowa</span></label>
+            </div>
+          </div>
+
+          <div id="algaeFields" class="hidden">
+            <div class="grid two">
+              <label><span>Id (slug)</span><input id="aId" name="aId" type="text" placeholder="green-dust-algae" /></label>
+              <label><span>Nazwa</span><input id="aName" name="aName" type="text" /></label>
+              <label><span>Severity</span><input id="aSeverity" name="aSeverity" type="text" placeholder="low / medium / high" /></label>
+              <label><span>Sugerowany srodek</span><input id="aSuggestedRemedy" name="aSuggestedRemedy" type="text" /></label>
+              <label><span>Source label</span><input id="aImageSourceLabel" name="aImageSourceLabel" type="text" /></label>
+              <label><span>Objawy (CSV ids)</span><input id="aSymptoms" name="aSymptoms" type="text" placeholder="green_dust_glass,after_light_change" /></label>
+              <label><span>Image URL</span><input id="aImageUrl" name="aImageUrl" type="url" /></label>
+              <label><span>Image Preview URL</span><input id="aImagePreviewUrl" name="aImagePreviewUrl" type="url" /></label>
+              <label><span>Image Fallback URL</span><input id="aImageFallbackUrl" name="aImageFallbackUrl" type="url" /></label>
+              <label><span>Image Fallback Preview URL</span><input id="aImageFallbackPreviewUrl" name="aImageFallbackPreviewUrl" type="url" /></label>
+            </div>
+            <label><span>Podsumowanie</span><textarea id="aSummary" name="aSummary" rows="2"></textarea></label>
+            <label><span>Przyczyny (1 linia = 1 wpis)</span><textarea id="aCauses" name="aCauses" rows="4"></textarea></label>
+            <label><span>Dzialania usuniecia (1 linia = 1 wpis)</span><textarea id="aRemoveActions" name="aRemoveActions" rows="4"></textarea></label>
+            <label><span>Prewencja (1 linia = 1 wpis)</span><textarea id="aPreventionActions" name="aPreventionActions" rows="4"></textarea></label>
+            <label><span>Uwaga</span><textarea id="aCaution" name="aCaution" rows="2"></textarea></label>
+          </div>
+
+          <div id="diseaseFields" class="hidden">
+            <div class="grid two">
+              <label><span>Id (slug)</span><input id="dId" name="dId" type="text" placeholder="ich" /></label>
+              <label><span>Nazwa</span><input id="dName" name="dName" type="text" /></label>
+              <label><span>Severity</span><input id="dSeverity" name="dSeverity" type="text" placeholder="low / medium / high" /></label>
+              <label><span>Sugerowany srodek</span><input id="dSuggestedRemedy" name="dSuggestedRemedy" type="text" /></label>
+              <label><span>Source label</span><input id="dImageSourceLabel" name="dImageSourceLabel" type="text" /></label>
+              <label><span>Objawy (CSV ids)</span><input id="dSymptoms" name="dSymptoms" type="text" placeholder="white_spots,flashing" /></label>
+              <label><span>Image URL</span><input id="dImageUrl" name="dImageUrl" type="url" /></label>
+              <label><span>Image Preview URL</span><input id="dImagePreviewUrl" name="dImagePreviewUrl" type="url" /></label>
+              <label><span>Image Fallback URL</span><input id="dImageFallbackUrl" name="dImageFallbackUrl" type="url" /></label>
+              <label><span>Image Fallback Preview URL</span><input id="dImageFallbackPreviewUrl" name="dImageFallbackPreviewUrl" type="url" /></label>
+            </div>
+            <label><span>Podsumowanie</span><textarea id="dSummary" name="dSummary" rows="2"></textarea></label>
+            <label><span>Leczenie (1 linia = 1 krok)</span><textarea id="dTreatment" name="dTreatment" rows="4"></textarea></label>
+            <label><span>Uwaga</span><textarea id="dCaution" name="dCaution" rows="2"></textarea></label>
+          </div>
+
+          <div id="userSubscriptionFields" class="hidden">
+            <label><span>UID</span><input id="uUid" name="uUid" type="text" /></label>
+            <div class="grid two">
+              <label><span>Email</span><input id="uEmail" name="uEmail" type="email" /></label>
+              <label>
+                <span>Tier</span>
+                <select id="uTier" name="uTier">
+                  <option value="free">free</option>
+                  <option value="premium">premium</option>
+                  <option value="pro">pro</option>
+                </select>
+              </label>
+              <label><span>Status</span><input id="uStatus" name="uStatus" type="text" placeholder="active / inactive / grace_period / paused / cancelled" /></label>
+              <label><span>Source</span><input id="uSource" name="uSource" type="text" placeholder="system / app_store / play_store / stripe / promo / admin" /></label>
+              <label><span>Started at (ISO)</span><input id="uStartedAt" name="uStartedAt" type="text" placeholder="2026-05-08T10:00:00.000Z" /></label>
+              <label><span>Expires at (ISO)</span><input id="uExpiresAt" name="uExpiresAt" type="text" placeholder="2026-06-08T10:00:00.000Z" /></label>
+              <label><span>Renews at (ISO)</span><input id="uRenewsAt" name="uRenewsAt" type="text" /></label>
+              <label><span>Last validated at (ISO)</span><input id="uLastValidatedAt" name="uLastValidatedAt" type="text" /></label>
+              <label><span>Plan version</span><input id="uPlanVersion" name="uPlanVersion" type="number" min="1" step="1" /></label>
+            </div>
+          </div>
+
+          <div class="row actions">
+            <button class="btn btn-primary" type="submit">Zapisz</button>
+            <button id="cancelEditBtn" class="btn btn-ghost" type="button">Anuluj</button>
+          </div>
+        </form>
+      </section>
+
+      <p id="status" class="status" aria-live="polite"></p>
+    </main>
+
+    <script src="./firebase-config.local.js"></script>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

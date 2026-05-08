@@ -318,3 +318,157 @@ test('authenticated user can read fish and plant catalog', async () => {
   await assertSucceeds(getDoc(doc(userDb, 'fishCatalog', 'fish_read_1')));
   await assertSucceeds(getDoc(doc(userDb, 'plantCatalog', 'plant_read_1')));
 });
+
+test('authenticated user can read algae catalog, but only admin can write', async () => {
+  await seedDoc('algaeCatalog', 'algae_read_1', {
+    id: 'green-dust-algae',
+    name: 'Zielenice pylowe',
+    severity: 'medium',
+  });
+
+  const userDb = asUser('user_a');
+  const adminDb = asAdmin('admin_a');
+
+  await assertSucceeds(getDoc(doc(userDb, 'algaeCatalog', 'algae_read_1')));
+
+  await assertFails(
+    setDoc(doc(userDb, 'algaeCatalog', 'algae_user_write'), {
+      id: 'x',
+      name: 'test',
+      severity: 'low',
+    })
+  );
+
+  await assertSucceeds(
+    setDoc(doc(adminDb, 'algaeCatalog', 'algae_admin_write'), {
+      id: 'x',
+      name: 'test',
+      severity: 'low',
+    })
+  );
+});
+
+test('authenticated user can read disease catalogs, but only admin can write', async () => {
+  await seedDoc('fishDiseaseCatalog', 'ich', {
+    id: 'ich',
+    name: 'Ospa rybia',
+    severity: 'high',
+  });
+  await seedDoc('plantDiseaseCatalog', 'potassium_deficiency', {
+    id: 'potassium_deficiency',
+    name: 'Niedobor potasu',
+    severity: 'medium',
+  });
+
+  const userDb = asUser('user_a');
+  const adminDb = asAdmin('admin_a');
+
+  await assertSucceeds(getDoc(doc(userDb, 'fishDiseaseCatalog', 'ich')));
+  await assertSucceeds(
+    getDoc(doc(userDb, 'plantDiseaseCatalog', 'potassium_deficiency'))
+  );
+
+  await assertFails(
+    setDoc(doc(userDb, 'fishDiseaseCatalog', 'user_write'), {
+      id: 'x',
+      name: 'test',
+      severity: 'low',
+    })
+  );
+  await assertFails(
+    setDoc(doc(userDb, 'plantDiseaseCatalog', 'user_write'), {
+      id: 'x',
+      name: 'test',
+      severity: 'low',
+    })
+  );
+
+  await assertSucceeds(
+    setDoc(doc(adminDb, 'fishDiseaseCatalog', 'admin_write_fish'), {
+      id: 'x',
+      name: 'test',
+      severity: 'low',
+    })
+  );
+  await assertSucceeds(
+    setDoc(doc(adminDb, 'plantDiseaseCatalog', 'admin_write_plant'), {
+      id: 'x',
+      name: 'test',
+      severity: 'low',
+    })
+  );
+});
+
+test('userSubscriptions: admin can write, owner can read only own doc', async () => {
+  const adminDb = asAdmin('admin_a');
+  const userDb = asUser('user_a');
+  const otherUserDb = asUser('user_b');
+
+  await assertSucceeds(
+    setDoc(doc(adminDb, 'userSubscriptions', 'user_a'), {
+      userId: 'user_a',
+      tier: 'premium',
+      status: 'active',
+      source: 'admin',
+      startedAt: '2026-05-08T10:00:00.000Z',
+      expiresAt: '2026-06-08T10:00:00.000Z',
+      renewsAt: null,
+      lastValidatedAt: '2026-05-08T10:00:00.000Z',
+      planVersion: 3,
+    })
+  );
+
+  await assertSucceeds(getDoc(doc(adminDb, 'userSubscriptions', 'user_a')));
+  await assertSucceeds(getDoc(doc(userDb, 'userSubscriptions', 'user_a')));
+  await assertFails(getDoc(doc(otherUserDb, 'userSubscriptions', 'user_a')));
+  await assertFails(
+    setDoc(doc(userDb, 'userSubscriptions', 'user_a'), {
+      userId: 'user_a',
+      tier: 'pro',
+      status: 'active',
+      source: 'admin',
+      startedAt: '2026-05-08T10:00:00.000Z',
+      expiresAt: '2026-06-08T10:00:00.000Z',
+      renewsAt: null,
+      lastValidatedAt: '2026-05-08T10:00:00.000Z',
+      planVersion: 3,
+    })
+  );
+});
+
+test('admin can read and update fish/plant catalog requests', async () => {
+  await seedDoc('fishCatalogRequests', 'fish_req_1', {
+    type: 'missing_fish',
+    commonName: 'Nowa ryba',
+    latinName: 'Fishus testus',
+    userId: 'user_a',
+    userEmail: 'a@example.com',
+    tankId: 'tank_a',
+    tankName: 'Akwarium A',
+    status: 'new',
+    createdAt: new Date('2026-05-07T09:00:00.000Z'),
+  });
+
+  await seedDoc('plantCatalogRequests', 'plant_req_1', {
+    type: 'missing_plant',
+    commonName: 'Nowa roslina',
+    latinName: 'Plantus testus',
+    userId: 'user_a',
+    userEmail: 'a@example.com',
+    tankId: 'tank_a',
+    tankName: 'Akwarium A',
+    status: 'new',
+    createdAt: new Date('2026-05-07T09:00:00.000Z'),
+  });
+
+  const adminDb = asAdmin('admin_a');
+
+  await assertSucceeds(getDoc(doc(adminDb, 'fishCatalogRequests', 'fish_req_1')));
+  await assertSucceeds(getDoc(doc(adminDb, 'plantCatalogRequests', 'plant_req_1')));
+
+  await assertSucceeds(
+    updateDoc(doc(adminDb, 'fishCatalogRequests', 'fish_req_1'), {
+      status: 'accepted',
+    })
+  );
+});

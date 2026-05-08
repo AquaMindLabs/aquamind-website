@@ -71,6 +71,12 @@ npm install
 npm start
 ```
 
+## Panel admina (web)
+
+Webowy panel admina znajduje sie w katalogu `admin/`.
+
+Szczegoly uruchomienia i zakres funkcji: `admin/README.md`.
+
 ## Zdjecia chorob
 
 Aplikacja pobiera zdjecia chorob z Wikimedia Commons i wysyla naglowki wymagane przez mobilne pobieranie obrazow. Nie wymaga to Firebase Storage ani podnoszenia planu Firebase.

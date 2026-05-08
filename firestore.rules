@@ -433,7 +433,7 @@ service cloud.firestore {
     }
 
     match /tanks/{tankId} {
-      allow read: if isOwnerData(resource.data);
+      allow read: if isOwnerData(resource.data) || isAdmin();
       allow create: if isValidTankDoc(request.resource.data);
       allow update: if isOwnerData(resource.data) &&
         request.resource.data.userId == resource.data.userId &&
@@ -443,7 +443,7 @@ service cloud.firestore {
     }
 
     match /measurements/{measurementId} {
-      allow read: if isOwnerData(resource.data);
+      allow read: if isOwnerData(resource.data) || isAdmin();
       allow create: if isValidMeasurementDoc(request.resource.data);
       allow update: if isOwnerData(resource.data) &&
         request.resource.data.userId == resource.data.userId &&
@@ -454,7 +454,7 @@ service cloud.firestore {
     }
 
     match /stockItems/{stockItemId} {
-      allow read: if isOwnerData(resource.data);
+      allow read: if isOwnerData(resource.data) || isAdmin();
       allow create: if isValidStockItemDoc(request.resource.data);
       allow update: if isOwnerData(resource.data) &&
         request.resource.data.userId == resource.data.userId &&
@@ -465,7 +465,7 @@ service cloud.firestore {
     }
 
     match /tankDiseaseCases/{caseId} {
-      allow read: if isOwnerData(resource.data);
+      allow read: if isOwnerData(resource.data) || isAdmin();
       allow create: if isValidTankDiseaseCaseDoc(request.resource.data);
       allow update: if isOwnerData(resource.data) &&
         request.resource.data.userId == resource.data.userId &&
@@ -477,12 +477,12 @@ service cloud.firestore {
 
     match /fishCatalogRequests/{requestId} {
       allow create: if isValidRequestDoc(request.resource.data, 'missing_fish');
-      allow read, update, delete: if isOwnerData(resource.data);
+      allow read, update, delete: if isOwnerData(resource.data) || isAdmin();
     }
 
     match /plantCatalogRequests/{requestId} {
       allow create: if isValidRequestDoc(request.resource.data, 'missing_plant');
-      allow read, update, delete: if isOwnerData(resource.data);
+      allow read, update, delete: if isOwnerData(resource.data) || isAdmin();
     }
 
     match /adminNotifications/{notificationId} {
@@ -511,6 +511,26 @@ service cloud.firestore {
 
     match /plantCatalog/{docId} {
       allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /algaeCatalog/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /fishDiseaseCatalog/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /plantDiseaseCatalog/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /userSubscriptions/{uid} {
+      allow read: if isAdmin() || isOwnerUid(uid);
       allow write: if isAdmin();
     }
 

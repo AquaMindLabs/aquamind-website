@@ -19,6 +19,7 @@ import {
   doc,
   getDocs,
   query,
+  setDoc,
   updateDoc,
   where,
 } from 'firebase/firestore';
@@ -4898,18 +4899,19 @@ function buildRecommendedRange(minValues, maxValues) {
   };
 }
 
-function buildDiseaseSuggestions(selectedSymptomIds) {
+function buildDiseaseSuggestions(selectedSymptomIds, catalogEntries = DISEASE_CATALOG) {
   const selected = [...new Set(selectedSymptomIds)];
 
   if (selected.length === 0) {
     return [];
   }
 
-  return DISEASE_CATALOG.map((disease) => {
-    const matches = disease.symptoms.filter((symptomId) =>
+  return catalogEntries.map((disease) => {
+    const symptoms = Array.isArray(disease?.symptoms) ? disease.symptoms : [];
+    const matches = symptoms.filter((symptomId) =>
       selected.includes(symptomId)
     );
-    const precision = matches.length / disease.symptoms.length;
+    const precision = matches.length / Math.max(1, symptoms.length);
     const coverage = matches.length / selected.length;
     const score = precision * 0.7 + coverage * 0.3;
     const confidencePercent = Math.round(score * 100);
@@ -4958,18 +4960,22 @@ function buildDiseaseTreatmentSchedule(disease) {
   });
 }
 
-function buildPlantDiseaseSuggestions(selectedSymptomIds) {
+function buildPlantDiseaseSuggestions(
+  selectedSymptomIds,
+  catalogEntries = PLANT_DISEASE_CATALOG
+) {
   const selected = [...new Set(selectedSymptomIds)];
 
   if (selected.length === 0) {
     return [];
   }
 
-  return PLANT_DISEASE_CATALOG.map((disease) => {
-    const matches = disease.symptoms.filter((symptomId) =>
+  return catalogEntries.map((disease) => {
+    const symptoms = Array.isArray(disease?.symptoms) ? disease.symptoms : [];
+    const matches = symptoms.filter((symptomId) =>
       selected.includes(symptomId)
     );
-    const precision = matches.length / disease.symptoms.length;
+    const precision = matches.length / Math.max(1, symptoms.length);
     const coverage = matches.length / selected.length;
     const score = precision * 0.7 + coverage * 0.3;
     const confidencePercent = Math.round(score * 100);
@@ -5018,18 +5024,19 @@ function buildPlantDiseaseTreatmentSchedule(disease) {
   });
 }
 
-function buildAlgaeSuggestions(selectedSymptomIds) {
+function buildAlgaeSuggestions(selectedSymptomIds, catalogEntries = ALGAE_CATALOG) {
   const selected = [...new Set(selectedSymptomIds)];
 
   if (selected.length === 0) {
     return [];
   }
 
-  return ALGAE_CATALOG.map((algae) => {
-    const matches = algae.symptoms.filter((symptomId) =>
+  return catalogEntries.map((algae) => {
+    const symptoms = Array.isArray(algae?.symptoms) ? algae.symptoms : [];
+    const matches = symptoms.filter((symptomId) =>
       selected.includes(symptomId)
     );
-    const precision = matches.length / algae.symptoms.length;
+    const precision = matches.length / Math.max(1, symptoms.length);
     const coverage = matches.length / selected.length;
     const score = precision * 0.7 + coverage * 0.3;
     const confidencePercent = Math.round(score * 100);
@@ -5812,6 +5819,13 @@ export default function HomeScreen() {
   const [fishCatalogLoading, setFishCatalogLoading] = useState(false);
   const [plantCatalog, setPlantCatalog] = useState([]);
   const [plantCatalogLoading, setPlantCatalogLoading] = useState(false);
+  const [algaeCatalog, setAlgaeCatalog] = useState([]);
+  const [algaeCatalogLoading, setAlgaeCatalogLoading] = useState(false);
+  const [diseaseCatalog, setDiseaseCatalog] = useState([]);
+  const [diseaseCatalogLoading, setDiseaseCatalogLoading] = useState(false);
+  const [plantDiseaseCatalog, setPlantDiseaseCatalog] = useState([]);
+  const [plantDiseaseCatalogLoading, setPlantDiseaseCatalogLoading] =
+    useState(false);
   const [stockFishSearch, setStockFishSearch] = useState('');
   const [stockPlantSearch, setStockPlantSearch] = useState('');
   const [fishQuantity, setFishQuantity] = useState('1');
@@ -6857,6 +6871,143 @@ export default function HomeScreen() {
     }
   }, []);
 
+  const normalizeIssueCatalogEntry = useCallback((raw, fallbackId = '') => {
+    const entryId = String(raw?.id ?? fallbackId ?? '')
+      .trim()
+      .toLowerCase();
+
+    return {
+      ...raw,
+      id: entryId,
+      name: String(raw?.name ?? '').trim(),
+      severity: String(raw?.severity ?? 'medium').trim().toLowerCase() || 'medium',
+      summary: String(raw?.summary ?? '').trim(),
+      suggestedRemedy: String(raw?.suggestedRemedy ?? '').trim(),
+      imageSourceLabel: String(raw?.imageSourceLabel ?? '').trim(),
+      symptoms: Array.isArray(raw?.symptoms)
+        ? raw.symptoms
+            .map((item) => String(item ?? '').trim())
+            .filter(Boolean)
+        : [],
+      treatment: Array.isArray(raw?.treatment)
+        ? raw.treatment
+            .map((item) => String(item ?? '').trim())
+            .filter(Boolean)
+        : [],
+      causes: Array.isArray(raw?.causes)
+        ? raw.causes
+            .map((item) => String(item ?? '').trim())
+            .filter(Boolean)
+        : [],
+      removeActions: Array.isArray(raw?.removeActions)
+        ? raw.removeActions
+            .map((item) => String(item ?? '').trim())
+            .filter(Boolean)
+        : [],
+      preventionActions: Array.isArray(raw?.preventionActions)
+        ? raw.preventionActions
+            .map((item) => String(item ?? '').trim())
+            .filter(Boolean)
+        : [],
+      caution: String(raw?.caution ?? '').trim(),
+      imageUrl: String(raw?.imageUrl ?? '').trim(),
+      imagePreviewUrl: String(raw?.imagePreviewUrl ?? '').trim(),
+      imageFallbackUrl: String(raw?.imageFallbackUrl ?? '').trim(),
+      imageFallbackPreviewUrl: String(raw?.imageFallbackPreviewUrl ?? '').trim(),
+    };
+  }, []);
+
+  const fetchIssueCatalogWithSeed = useCallback(
+    async (collectionName, seedEntries, setCatalog, setLoading, errorLabel) => {
+      setLoading(true);
+
+      try {
+        const catalogCollection = collection(db, collectionName);
+        const snapshot = await getDocs(catalogCollection);
+        let existing = snapshot.docs
+          .map((item) =>
+            normalizeIssueCatalogEntry(item.data(), String(item.id ?? '').trim())
+          )
+          .filter((item) => item.id);
+
+        if (existing.length === 0 && Array.isArray(seedEntries) && seedEntries.length > 0) {
+          await Promise.all(
+            seedEntries.map((item) => {
+              const normalized = normalizeIssueCatalogEntry(item, item?.id);
+              return setDoc(doc(db, collectionName, normalized.id), {
+                ...normalized,
+                createdAt: new Date(),
+              });
+            })
+          );
+
+          existing = seedEntries
+            .map((item) => normalizeIssueCatalogEntry(item, item?.id))
+            .filter((item) => item.id);
+        }
+
+        const dedupedById = new Map();
+        existing.forEach((item) => {
+          if (!dedupedById.has(item.id)) {
+            dedupedById.set(item.id, item);
+          }
+        });
+
+        const sorted = Array.from(dedupedById.values()).sort((a, b) =>
+          String(a.name || '').localeCompare(String(b.name || ''), 'pl')
+        );
+
+        setCatalog(sorted);
+      } catch (error) {
+        const fallbackSeed = Array.isArray(seedEntries)
+          ? seedEntries
+              .map((item) => normalizeIssueCatalogEntry(item, item?.id))
+              .filter((item) => item.id)
+              .sort((a, b) =>
+                String(a.name || '').localeCompare(String(b.name || ''), 'pl')
+              )
+          : [];
+        setCatalog(fallbackSeed);
+        alert(
+          `${errorLabel}: ` + (error instanceof Error ? error.message : '')
+        );
+      } finally {
+        setLoading(false);
+      }
+    },
+    [normalizeIssueCatalogEntry]
+  );
+
+  const fetchAlgaeCatalog = useCallback(async () => {
+    await fetchIssueCatalogWithSeed(
+      'algaeCatalog',
+      ALGAE_CATALOG,
+      setAlgaeCatalog,
+      setAlgaeCatalogLoading,
+      'Blad pobierania katalogu glonow'
+    );
+  }, [fetchIssueCatalogWithSeed]);
+
+  const fetchDiseaseCatalog = useCallback(async () => {
+    await fetchIssueCatalogWithSeed(
+      'fishDiseaseCatalog',
+      DISEASE_CATALOG,
+      setDiseaseCatalog,
+      setDiseaseCatalogLoading,
+      'Blad pobierania katalogu chorob ryb'
+    );
+  }, [fetchIssueCatalogWithSeed]);
+
+  const fetchPlantDiseaseCatalog = useCallback(async () => {
+    await fetchIssueCatalogWithSeed(
+      'plantDiseaseCatalog',
+      PLANT_DISEASE_CATALOG,
+      setPlantDiseaseCatalog,
+      setPlantDiseaseCatalogLoading,
+      'Blad pobierania katalogu chorob roslin'
+    );
+  }, [fetchIssueCatalogWithSeed]);
+
   useEffect(() => {
     if (loading) {
       return;
@@ -6949,6 +7100,63 @@ export default function HomeScreen() {
     plantCatalogLoading,
     plantCatalog.length,
     fetchPlantCatalog,
+  ]);
+
+  useEffect(() => {
+    if (
+      !user?.uid ||
+      activeSection !== 'algae' ||
+      algaeCatalogLoading ||
+      algaeCatalog.length > 0
+    ) {
+      return;
+    }
+
+    fetchAlgaeCatalog().catch(() => null);
+  }, [
+    user?.uid,
+    activeSection,
+    algaeCatalogLoading,
+    algaeCatalog.length,
+    fetchAlgaeCatalog,
+  ]);
+
+  useEffect(() => {
+    if (
+      !user?.uid ||
+      activeSection !== 'disease' ||
+      diseaseCatalogLoading ||
+      diseaseCatalog.length > 0
+    ) {
+      return;
+    }
+
+    fetchDiseaseCatalog().catch(() => null);
+  }, [
+    user?.uid,
+    activeSection,
+    diseaseCatalogLoading,
+    diseaseCatalog.length,
+    fetchDiseaseCatalog,
+  ]);
+
+  useEffect(() => {
+    if (
+      !user?.uid ||
+      activeSection !== 'plantDisease' ||
+      plantDiseaseCatalogLoading ||
+      plantDiseaseCatalog.length > 0
+    ) {
+      return;
+    }
+
+    fetchPlantDiseaseCatalog().catch(() => null);
+  }, [
+    user?.uid,
+    activeSection,
+    plantDiseaseCatalogLoading,
+    plantDiseaseCatalog.length,
+    fetchPlantDiseaseCatalog,
   ]);
 
   useEffect(() => {
@@ -10044,8 +10252,8 @@ export default function HomeScreen() {
     [selectedDiseaseSymptoms]
   );
   const diseaseSuggestions = useMemo(
-    () => buildDiseaseSuggestions(selectedDiseaseSymptomIds),
-    [selectedDiseaseSymptomIds]
+    () => buildDiseaseSuggestions(selectedDiseaseSymptomIds, diseaseCatalog),
+    [selectedDiseaseSymptomIds, diseaseCatalog]
   );
   const selectedPlantDiseaseSymptomIds = useMemo(
     () =>
@@ -10062,8 +10270,12 @@ export default function HomeScreen() {
     [selectedPlantDiseaseSymptoms]
   );
   const plantDiseaseSuggestions = useMemo(
-    () => buildPlantDiseaseSuggestions(selectedPlantDiseaseSymptomIds),
-    [selectedPlantDiseaseSymptomIds]
+    () =>
+      buildPlantDiseaseSuggestions(
+        selectedPlantDiseaseSymptomIds,
+        plantDiseaseCatalog
+      ),
+    [selectedPlantDiseaseSymptomIds, plantDiseaseCatalog]
   );
   const selectedAlgaeSymptomIds = useMemo(
     () =>
@@ -10080,8 +10292,8 @@ export default function HomeScreen() {
     [selectedAlgaeSymptoms]
   );
   const algaeSuggestions = useMemo(
-    () => buildAlgaeSuggestions(selectedAlgaeSymptomIds),
-    [selectedAlgaeSymptomIds]
+    () => buildAlgaeSuggestions(selectedAlgaeSymptomIds, algaeCatalog),
+    [selectedAlgaeSymptomIds, algaeCatalog]
   );
   const hasDiseaseEmergencySignal =
     selectedDiseaseSymptoms.rapid_breathing ||
@@ -16169,7 +16381,7 @@ export default function HomeScreen() {
                     marginBottom: 18,
                     backgroundColor: themeCardBgAlt,
                   }}>
-                  {DISEASE_CATALOG.map((disease) => {
+                  {diseaseCatalog.map((disease) => {
                     const isExpanded = expandedDiseaseCatalogId === disease.id;
                     const diseasePreviewImagePrimaryUri = String(
                       disease.imagePreviewUrl ?? disease.imageUrl ?? ''
@@ -16778,7 +16990,7 @@ export default function HomeScreen() {
                     marginBottom: 18,
                     backgroundColor: themeCardBgAlt,
                   }}>
-                  {PLANT_DISEASE_CATALOG.map((disease) => {
+                  {plantDiseaseCatalog.map((disease) => {
                     const isExpanded = expandedPlantDiseaseCatalogId === disease.id;
                     const diseasePreviewImagePrimaryUri = String(
                       disease.imagePreviewUrl ?? disease.imageUrl ?? ''
@@ -17361,7 +17573,7 @@ export default function HomeScreen() {
                     marginBottom: 18,
                     backgroundColor: themeCardBgAlt,
                   }}>
-                  {ALGAE_CATALOG.map((algae) => {
+                  {algaeCatalog.map((algae) => {
                     const isExpanded = expandedAlgaeCatalogId === algae.id;
                     const algaePreviewImagePrimaryUri = String(
                       algae.imagePreviewUrl ?? algae.imageUrl ?? ''
