@@ -19,7 +19,6 @@ import {
   doc,
   getDocs,
   query,
-  setDoc,
   updateDoc,
   where,
 } from 'firebase/firestore';
@@ -56,13 +55,12 @@ import {
   listSubscriptionCapabilityRows,
   listSubscriptionPlans,
 } from '@/features/aquarium/subscription/subscriptionModel';
-import { ALGAE_CATALOG, ALGAE_SYMPTOMS } from '@/data/algaeCatalog';
+import { ALGAE_SYMPTOMS } from '@/data/algaeCatalog';
 import { FISH_CATALOG_EXPANDED } from '@/data/fishCatalogExpanded';
 import { FISH_CATALOG_STARTER } from '@/data/fishCatalogStarter';
 import { EQUIPMENT_CATALOG } from '@/data/equipmentCatalog';
-import { DISEASE_CATALOG, DISEASE_SYMPTOMS } from '@/data/diseaseCatalog';
+import { DISEASE_SYMPTOMS } from '@/data/diseaseCatalog';
 import {
-  PLANT_DISEASE_CATALOG,
   PLANT_DISEASE_SYMPTOMS,
 } from '@/data/plantDiseaseCatalog';
 import { PLANT_CATALOG_EXPANDED } from '@/data/plantCatalogExpanded';
@@ -91,7 +89,7 @@ const IS_EXPO_GO =
   Constants.executionEnvironment === 'storeClient';
 const IS_IOS_EXPO_GO = Platform.OS === 'ios' && IS_EXPO_GO;
 const ENABLE_FISH_IMAGES = true;
-const ENABLE_PLANT_IMAGES = false;
+const ENABLE_PLANT_IMAGES = true;
 const CATALOG_EAGER_RENDER_LIMIT = 24;
 const DISEASE_IMAGE_PLACEHOLDER_SOURCE = require('../assets/images/icon.png');
 const REMOTE_JSON_REQUEST_HEADERS = Object.freeze({
@@ -524,6 +522,89 @@ function buildMeasurementDetailRows(measurement, enabledTests = {}) {
   ];
 
   return rows.filter((item) => item && hasMeasurementDisplayValue(item.value));
+}
+
+const MEASUREMENT_VALUE_KEYS = [
+  'ph',
+  'gh',
+  'kh',
+  'ca',
+  'mg',
+  'no2',
+  'no3',
+  'nh3nh4',
+  'po4',
+  'fe',
+  'temperature',
+];
+
+function buildLatestMeasurementSnapshot(measurements = []) {
+  if (!Array.isArray(measurements) || measurements.length === 0) {
+    return null;
+  }
+
+  const latestMeasurement = measurements[0] ?? null;
+  if (!latestMeasurement) {
+    return null;
+  }
+
+  const snapshot = { ...latestMeasurement };
+
+  MEASUREMENT_VALUE_KEYS.forEach((key) => {
+    const hasCurrentValue = getMeasurementNumericValue(snapshot, key) !== null;
+    if (hasCurrentValue) {
+      return;
+    }
+
+    for (const measurement of measurements) {
+      const fallbackValue = getMeasurementNumericValue(measurement, key);
+      if (fallbackValue !== null) {
+        snapshot[key] = fallbackValue;
+        break;
+      }
+    }
+  });
+
+  return snapshot;
+}
+
+function buildLatestMeasurementValueSourceMsByKey(measurements = []) {
+  const sourceMsByKey = new Map();
+
+  if (!Array.isArray(measurements) || measurements.length === 0) {
+    return sourceMsByKey;
+  }
+
+  MEASUREMENT_VALUE_KEYS.forEach((key) => {
+    for (const measurement of measurements) {
+      const value = getMeasurementNumericValue(measurement, key);
+      if (value !== null) {
+        sourceMsByKey.set(key, getCreatedAtMs(measurement?.createdAt));
+        break;
+      }
+    }
+  });
+
+  for (const measurement of measurements) {
+    const directCo2 = Number(measurement?.co2);
+    if (Number.isFinite(directCo2)) {
+      sourceMsByKey.set('co2', getCreatedAtMs(measurement?.createdAt));
+      break;
+    }
+  }
+
+  if (!sourceMsByKey.has('co2')) {
+    const phMs = Number(sourceMsByKey.get('ph') ?? 0);
+    const khMs = Number(sourceMsByKey.get('kh') ?? 0);
+
+    if (phMs && khMs) {
+      sourceMsByKey.set('co2', Math.min(phMs, khMs));
+    } else if (phMs || khMs) {
+      sourceMsByKey.set('co2', phMs || khMs);
+    }
+  }
+
+  return sourceMsByKey;
 }
 
 function getMeasurementKeysFromRecommendationParameter(parameter) {
@@ -3538,13 +3619,27 @@ function localizeStockItemsForLanguage(entries = [], locale = 'pl') {
   return hasChanges ? localizedEntries : entries;
 }
 
+function resolveCatalogImageUrls(item) {
+  const imageLink = String(item?.imageLink ?? '').trim();
+  const imagePreviewUrl = String(
+    item?.imagePreviewUrl ?? item?.imageUrl ?? imageLink
+  ).trim();
+  const imageUrl = String(
+    item?.imageUrl ?? item?.imagePreviewUrl ?? imageLink
+  ).trim();
+
+  return {
+    imagePreviewUrl,
+    imageUrl,
+  };
+}
+
 function getPlantCatalogNormalizationPayload(item) {
   const commonName = getPolishPlantCommonName(item?.commonName, item?.latinName);
   const latinName = String(item?.latinName ?? '').trim();
   const latinKey = normalizeLatinCatalogKey(latinName);
   const manualFileName = getPlantCommonsFileOverride(latinKey);
-  const imagePreviewUrl = String(item?.imagePreviewUrl ?? '').trim();
-  const imageUrl = String(item?.imageUrl ?? '').trim();
+  const { imagePreviewUrl, imageUrl } = resolveCatalogImageUrls(item);
   const fallbackPreviewUrl = manualFileName
     ? buildCommonsFileThumbnailUrl(manualFileName, 420)
     : buildPlantCommonsFallbackImageUrl(latinName, 420);
@@ -4899,7 +4994,7 @@ function buildRecommendedRange(minValues, maxValues) {
   };
 }
 
-function buildDiseaseSuggestions(selectedSymptomIds, catalogEntries = DISEASE_CATALOG) {
+function buildDiseaseSuggestions(selectedSymptomIds, catalogEntries = []) {
   const selected = [...new Set(selectedSymptomIds)];
 
   if (selected.length === 0) {
@@ -4962,7 +5057,7 @@ function buildDiseaseTreatmentSchedule(disease) {
 
 function buildPlantDiseaseSuggestions(
   selectedSymptomIds,
-  catalogEntries = PLANT_DISEASE_CATALOG
+  catalogEntries = []
 ) {
   const selected = [...new Set(selectedSymptomIds)];
 
@@ -5024,7 +5119,7 @@ function buildPlantDiseaseTreatmentSchedule(disease) {
   });
 }
 
-function buildAlgaeSuggestions(selectedSymptomIds, catalogEntries = ALGAE_CATALOG) {
+function buildAlgaeSuggestions(selectedSymptomIds, catalogEntries = []) {
   const selected = [...new Set(selectedSymptomIds)];
 
   if (selected.length === 0) {
@@ -5828,6 +5923,10 @@ export default function HomeScreen() {
     useState(false);
   const [stockFishSearch, setStockFishSearch] = useState('');
   const [stockPlantSearch, setStockPlantSearch] = useState('');
+  const [fishCatalogMenuSearch, setFishCatalogMenuSearch] = useState('');
+  const [plantCatalogMenuSearch, setPlantCatalogMenuSearch] = useState('');
+  const [expandedFishCatalogId, setExpandedFishCatalogId] = useState(null);
+  const [expandedPlantCatalogId, setExpandedPlantCatalogId] = useState(null);
   const [fishQuantity, setFishQuantity] = useState('1');
   const [fishQuantityDrafts, setFishQuantityDrafts] = useState({});
   const [selectedCatalogFishId, setSelectedCatalogFishId] = useState(null);
@@ -6409,10 +6508,14 @@ export default function HomeScreen() {
       const catalogCollection = collection(db, 'fishCatalog');
       const snapshot = await getDocs(catalogCollection);
       const existingRaw = snapshot.docs
-        .map((item) => ({
-          id: item.id,
-          ...item.data(),
-        }));
+        .map((item) => {
+          const raw = item.data();
+          return {
+            id: item.id,
+            ...raw,
+            ...resolveCatalogImageUrls(raw),
+          };
+        });
 
       const {
         uniqueEntries: existing,
@@ -6533,24 +6636,33 @@ export default function HomeScreen() {
           patch,
         };
       }).filter(Boolean);
-      const existingImageUrlBackfills = allowedExisting.map((item) => {
-        const currentImageUrl = String(item?.imageUrl ?? '').trim();
-        if (currentImageUrl) {
-          return null;
-        }
+      const existingImageUrlBackfills = allowedExisting
+        .map((item) => {
+          const patch = {};
+          const imagePreviewUrl = String(item?.imagePreviewUrl ?? '').trim();
+          const imageUrl = String(item?.imageUrl ?? '').trim();
+          const fallbackImageUrl = buildFishCatalogImageUrl(item?.latinName);
 
-        const fallbackImageUrl = buildFishCatalogImageUrl(item?.latinName);
-        if (!fallbackImageUrl) {
-          return null;
-        }
+          if (!imageUrl && imagePreviewUrl) {
+            patch.imageUrl = imagePreviewUrl;
+          } else if (!imageUrl && fallbackImageUrl) {
+            patch.imageUrl = fallbackImageUrl;
+          }
 
-        return {
-          id: item.id,
-          patch: {
-            imageUrl: fallbackImageUrl,
-          },
-        };
-      }).filter(Boolean);
+          if (!imagePreviewUrl && imageUrl) {
+            patch.imagePreviewUrl = imageUrl;
+          } else if (!imagePreviewUrl && fallbackImageUrl) {
+            patch.imagePreviewUrl = fallbackImageUrl;
+          }
+
+          return Object.keys(patch).length > 0
+            ? {
+                id: item.id,
+                patch,
+              }
+            : null;
+        })
+        .filter(Boolean);
       const catalogUpdatesById = new Map();
       [...existingSeedUpdates, ...existingImageUrlBackfills].forEach((item) => {
         const currentPatch = catalogUpdatesById.get(item.id) ?? {};
@@ -6649,10 +6761,14 @@ export default function HomeScreen() {
       const catalogCollection = collection(db, 'plantCatalog');
       const snapshot = await getDocs(catalogCollection);
       const existingRaw = snapshot.docs
-        .map((item) => ({
-          id: item.id,
-          ...item.data(),
-        }));
+        .map((item) => {
+          const raw = item.data();
+          return {
+            id: item.id,
+            ...raw,
+            ...resolveCatalogImageUrls(raw),
+          };
+        });
 
       const {
         uniqueEntries: existing,
@@ -6761,20 +6877,6 @@ export default function HomeScreen() {
           patch.notes = plant.notes ?? '';
         }
 
-        if (
-          String(existingItem.imagePreviewUrl ?? '').trim() !==
-          String(normalizedPayload.imagePreviewUrl ?? '').trim()
-        ) {
-          patch.imagePreviewUrl = normalizedPayload.imagePreviewUrl;
-        }
-
-        if (
-          String(existingItem.imageUrl ?? '').trim() !==
-          String(normalizedPayload.imageUrl ?? '').trim()
-        ) {
-          patch.imageUrl = normalizedPayload.imageUrl;
-        }
-
         if (existingItem.source !== plant.source) {
           patch.source = plant.source;
         }
@@ -6875,6 +6977,11 @@ export default function HomeScreen() {
     const entryId = String(raw?.id ?? fallbackId ?? '')
       .trim()
       .toLowerCase();
+    const imageLink = String(raw?.imageLink ?? '').trim();
+    const imageUrl = String(raw?.imageUrl ?? imageLink).trim();
+    const imagePreviewUrl = String(
+      raw?.imagePreviewUrl ?? raw?.imageUrl ?? imageLink
+    ).trim();
 
     return {
       ...raw,
@@ -6910,41 +7017,25 @@ export default function HomeScreen() {
             .filter(Boolean)
         : [],
       caution: String(raw?.caution ?? '').trim(),
-      imageUrl: String(raw?.imageUrl ?? '').trim(),
-      imagePreviewUrl: String(raw?.imagePreviewUrl ?? '').trim(),
+      imageUrl,
+      imagePreviewUrl,
       imageFallbackUrl: String(raw?.imageFallbackUrl ?? '').trim(),
       imageFallbackPreviewUrl: String(raw?.imageFallbackPreviewUrl ?? '').trim(),
     };
   }, []);
 
-  const fetchIssueCatalogWithSeed = useCallback(
-    async (collectionName, seedEntries, setCatalog, setLoading, errorLabel) => {
+  const fetchIssueCatalog = useCallback(
+    async (collectionName, setCatalog, setLoading, errorLabel) => {
       setLoading(true);
 
       try {
         const catalogCollection = collection(db, collectionName);
         const snapshot = await getDocs(catalogCollection);
-        let existing = snapshot.docs
+        const existing = snapshot.docs
           .map((item) =>
             normalizeIssueCatalogEntry(item.data(), String(item.id ?? '').trim())
           )
           .filter((item) => item.id);
-
-        if (existing.length === 0 && Array.isArray(seedEntries) && seedEntries.length > 0) {
-          await Promise.all(
-            seedEntries.map((item) => {
-              const normalized = normalizeIssueCatalogEntry(item, item?.id);
-              return setDoc(doc(db, collectionName, normalized.id), {
-                ...normalized,
-                createdAt: new Date(),
-              });
-            })
-          );
-
-          existing = seedEntries
-            .map((item) => normalizeIssueCatalogEntry(item, item?.id))
-            .filter((item) => item.id);
-        }
 
         const dedupedById = new Map();
         existing.forEach((item) => {
@@ -6959,15 +7050,7 @@ export default function HomeScreen() {
 
         setCatalog(sorted);
       } catch (error) {
-        const fallbackSeed = Array.isArray(seedEntries)
-          ? seedEntries
-              .map((item) => normalizeIssueCatalogEntry(item, item?.id))
-              .filter((item) => item.id)
-              .sort((a, b) =>
-                String(a.name || '').localeCompare(String(b.name || ''), 'pl')
-              )
-          : [];
-        setCatalog(fallbackSeed);
+        setCatalog([]);
         alert(
           `${errorLabel}: ` + (error instanceof Error ? error.message : '')
         );
@@ -6979,34 +7062,31 @@ export default function HomeScreen() {
   );
 
   const fetchAlgaeCatalog = useCallback(async () => {
-    await fetchIssueCatalogWithSeed(
+    await fetchIssueCatalog(
       'algaeCatalog',
-      ALGAE_CATALOG,
       setAlgaeCatalog,
       setAlgaeCatalogLoading,
       'Blad pobierania katalogu glonow'
     );
-  }, [fetchIssueCatalogWithSeed]);
+  }, [fetchIssueCatalog]);
 
   const fetchDiseaseCatalog = useCallback(async () => {
-    await fetchIssueCatalogWithSeed(
+    await fetchIssueCatalog(
       'fishDiseaseCatalog',
-      DISEASE_CATALOG,
       setDiseaseCatalog,
       setDiseaseCatalogLoading,
       'Blad pobierania katalogu chorob ryb'
     );
-  }, [fetchIssueCatalogWithSeed]);
+  }, [fetchIssueCatalog]);
 
   const fetchPlantDiseaseCatalog = useCallback(async () => {
-    await fetchIssueCatalogWithSeed(
+    await fetchIssueCatalog(
       'plantDiseaseCatalog',
-      PLANT_DISEASE_CATALOG,
       setPlantDiseaseCatalog,
       setPlantDiseaseCatalogLoading,
       'Blad pobierania katalogu chorob roslin'
     );
-  }, [fetchIssueCatalogWithSeed]);
+  }, [fetchIssueCatalog]);
 
   useEffect(() => {
     if (loading) {
@@ -7274,7 +7354,7 @@ export default function HomeScreen() {
 
   useEffect(() => {
     if (activeSection === 'tank') {
-      setActiveSection('review');
+      setActiveSection('tankInfo');
     }
   }, [activeSection, setActiveSection]);
 
@@ -7293,11 +7373,15 @@ export default function HomeScreen() {
     if (activeSection !== 'fish') {
       setIsEditingFish(false);
       setEditingFishItemId(null);
+      setFishCatalogMenuSearch('');
+      setExpandedFishCatalogId(null);
     }
 
     if (activeSection !== 'plant') {
       setIsEditingPlant(false);
       setEditingPlantItemId(null);
+      setPlantCatalogMenuSearch('');
+      setExpandedPlantCatalogId(null);
     }
   }, [activeSection]);
 
@@ -7774,7 +7858,7 @@ export default function HomeScreen() {
     }
 
     setSelectedTank(tank);
-    setActiveSection('review');
+    setActiveSection('tankInfo');
 
     try {
       const storageKey = getSelectedTankStorageKey(user.uid);
@@ -9063,6 +9147,145 @@ export default function HomeScreen() {
     setIssueTankPickerPayload(null);
   }, []);
 
+  const handleAssignCatalogFishToTank = async (fish, tank) => {
+    if (!user?.uid || !tank?.id || stockBusy) {
+      return;
+    }
+
+    setStockBusy(true);
+
+    try {
+      const selectedFish = fishCatalog.find((item) => item.id === fish?.id) ?? fish;
+      if (!selectedFish?.id) {
+        throw new Error('Wybrana ryba nie istnieje w katalogu.');
+      }
+
+      const schoolingProfile = resolveFishSchoolingProfile(selectedFish);
+      const aggressionLevel = resolveFishAggressionLevel(selectedFish);
+      const quantity = 1;
+      const minLiters = Number(selectedFish.minLiters);
+
+      await addDoc(collection(db, 'stockItems'), {
+        userId: user.uid,
+        tankId: tank.id,
+        tankName: tank.name,
+        type: 'fish',
+        name: selectedFish.commonName,
+        commonName: selectedFish.commonName,
+        latinName: selectedFish.latinName,
+        catalogFishId: selectedFish.id,
+        phMin: Number(selectedFish.phMin),
+        phMax: Number(selectedFish.phMax),
+        ghMin: Number(selectedFish.ghMin),
+        ghMax: Number(selectedFish.ghMax),
+        tempMin: Number(selectedFish.tempMin),
+        tempMax: Number(selectedFish.tempMax),
+        quantity,
+        minLiters,
+        isSchooling: schoolingProfile.isSchooling,
+        minGroupSize: schoolingProfile.minGroupSize,
+        aggressionLevel,
+        notes: selectedFish.notes ?? '',
+        createdAt: new Date(),
+      });
+
+      if (selectedTank?.id === tank.id) {
+        await fetchStockItems(user.uid, tank.id);
+      }
+      await fetchHomeData(user.uid);
+
+      const addWarnings = [];
+      if (schoolingProfile.isSchooling && quantity < Number(schoolingProfile.minGroupSize)) {
+        addWarnings.push(
+          t('schoolingFishWarning', {
+            value: schoolingProfile.minGroupSize,
+          })
+        );
+      }
+
+      if (Number(tank?.liters) < minLiters) {
+        addWarnings.push(
+          'Uwaga: minimalny litraz tej ryby jest wiekszy niz litraz wybranego akwarium.'
+        );
+      }
+
+      if (addWarnings.length === 0) {
+        alert(`Dodano do akwarium "${tank.name}".`);
+      } else {
+        alert(`Dodano do akwarium "${tank.name}".\n\n${addWarnings.join('\n')}`);
+      }
+    } catch (error) {
+      alert(
+        'Blad dodawania ryby do akwarium: ' +
+          (error instanceof Error ? error.message : '')
+      );
+    } finally {
+      setStockBusy(false);
+    }
+  };
+
+  const handleAssignCatalogPlantToTank = async (plant, tank) => {
+    if (!user?.uid || !tank?.id || stockBusy) {
+      return;
+    }
+
+    setStockBusy(true);
+
+    try {
+      const selectedPlant = plantCatalog.find((item) => item.id === plant?.id) ?? plant;
+      if (!selectedPlant?.id) {
+        throw new Error('Wybrana roslina nie istnieje w katalogu.');
+      }
+
+      const minLiters = Number(selectedPlant.minLiters);
+
+      await addDoc(collection(db, 'stockItems'), {
+        userId: user.uid,
+        tankId: tank.id,
+        tankName: tank.name,
+        type: 'plant',
+        name: selectedPlant.commonName,
+        commonName: selectedPlant.commonName,
+        latinName: selectedPlant.latinName,
+        catalogPlantId: selectedPlant.id,
+        phMin: Number(selectedPlant.phMin),
+        phMax: Number(selectedPlant.phMax),
+        ghMin: Number(selectedPlant.ghMin),
+        ghMax: Number(selectedPlant.ghMax),
+        tempMin: Number(selectedPlant.tempMin),
+        tempMax: Number(selectedPlant.tempMax),
+        minLiters,
+        notes: selectedPlant.notes ?? '',
+        createdAt: new Date(),
+      });
+
+      if (selectedTank?.id === tank.id) {
+        await fetchStockItems(user.uid, tank.id);
+      }
+      await fetchHomeData(user.uid);
+
+      const addWarnings = [];
+      if (Number(tank?.liters) < minLiters) {
+        addWarnings.push(
+          'Uwaga: minimalny litraz tej rosliny jest wiekszy niz litraz wybranego akwarium.'
+        );
+      }
+
+      if (addWarnings.length === 0) {
+        alert(`Dodano do akwarium "${tank.name}".`);
+      } else {
+        alert(`Dodano do akwarium "${tank.name}".\n\n${addWarnings.join('\n')}`);
+      }
+    } catch (error) {
+      alert(
+        'Blad dodawania rosliny do akwarium: ' +
+          (error instanceof Error ? error.message : '')
+      );
+    } finally {
+      setStockBusy(false);
+    }
+  };
+
   const handleSelectIssueTank = async (tank) => {
     if (!tank?.id || !issueTankPickerPayload) {
       return;
@@ -9084,6 +9307,16 @@ export default function HomeScreen() {
 
     if (kind === 'algae') {
       await handleAssignAlgaeToTank(item, tank);
+      return;
+    }
+
+    if (kind === 'fish_catalog') {
+      await handleAssignCatalogFishToTank(item, tank);
+      return;
+    }
+
+    if (kind === 'plant_catalog') {
+      await handleAssignCatalogPlantToTank(item, tank);
     }
   };
 
@@ -9109,6 +9342,14 @@ export default function HomeScreen() {
       }
       if (kind === 'algae') {
         handleAssignAlgaeToTank(item, onlyTank);
+        return;
+      }
+      if (kind === 'fish_catalog') {
+        handleAssignCatalogFishToTank(item, onlyTank);
+        return;
+      }
+      if (kind === 'plant_catalog') {
+        handleAssignCatalogPlantToTank(item, onlyTank);
       }
       return;
     }
@@ -9291,6 +9532,13 @@ export default function HomeScreen() {
 
   const handleAddAlgaeToAquarium = (algae) => {
     handleOpenIssueTankPicker('algae', algae);
+  };
+
+  const handleAddCatalogFishToAquarium = (fish) => {
+    handleOpenIssueTankPicker('fish_catalog', fish);
+  };
+  const handleAddCatalogPlantToAquarium = (plant) => {
+    handleOpenIssueTankPicker('plant_catalog', plant);
   };
 
   const handleOpenDiseaseImageModal = useCallback((disease) => {
@@ -9727,6 +9975,7 @@ export default function HomeScreen() {
   const isHistorySection = activeSection === 'history';
   const isTankSection = activeSection === 'tank';
   const isTankInfoSection = activeSection === 'tankInfo';
+  const isEquipmentSection = activeSection === 'equipment';
   const isFishSection = activeSection === 'fish';
   const isPlantSection = activeSection === 'plant';
   const isIssuesSection = activeSection === 'issues';
@@ -9794,9 +10043,15 @@ export default function HomeScreen() {
     return map;
   }, [subscriptionPlans]);
   const isAquariumSection =
-    isReviewSection || isTankInfoSection || isFishSection || isPlantSection;
+    isReviewSection ||
+    isTankInfoSection ||
+    isEquipmentSection ||
+    isFishSection ||
+    isPlantSection;
   const isHealthSection =
     isIssuesSection || isDiseaseSection || isPlantDiseaseSection || isAlgaeSection;
+  const isFishCatalogMenuMode = isFishSection && sectionEntrySource === 'menu';
+  const isPlantCatalogMenuMode = isPlantSection && sectionEntrySource === 'menu';
   const isHealthCatalogMode = isHealthSection && sectionEntrySource === 'menu';
   const isHealthTankMode = isHealthSection && !isHealthCatalogMode;
   const isFishDiseaseCatalogMode =
@@ -9808,12 +10063,17 @@ export default function HomeScreen() {
     (isIssuesSection || isAlgaeSection);
   const showHeaderTankSwitcher =
     !isHealthCatalogMode &&
+    !isFishCatalogMenuMode &&
+    !isPlantCatalogMenuMode &&
     !isHomeSection &&
     !isSettingsSection &&
     Boolean(selectedTank) &&
     tanks.length > 1;
   const selectedTankLiters = Number(selectedTank?.liters);
-  const currentMeasurement = useMemo(() => measurements[0] ?? null, [measurements]);
+  const currentMeasurement = useMemo(
+    () => buildLatestMeasurementSnapshot(measurements),
+    [measurements]
+  );
   const selectedTankEnvironmentProfile = useMemo(
     () => buildTankEnvironmentProfile(selectedTank),
     [selectedTank]
@@ -9859,6 +10119,10 @@ export default function HomeScreen() {
   const currentMeasurementDetailRows = useMemo(
     () => buildMeasurementDetailRows(currentMeasurement, availableMeasurementTests),
     [availableMeasurementTests, currentMeasurement]
+  );
+  const currentMeasurementValueSourceMsByKey = useMemo(
+    () => buildLatestMeasurementValueSourceMsByKey(measurements),
+    [measurements]
   );
   const currentMeasurementIssueSeverityByKey = useMemo(() => {
     const map = new Map();
@@ -10351,6 +10615,54 @@ export default function HomeScreen() {
       minGroupSize: selectedCatalogFishSchoolingProfile.minGroupSize,
     };
   }, [fishQuantity, selectedCatalogFishSchoolingProfile]);
+  const menuFilteredFishCatalog = useMemo(() => {
+    const search = normalizeText(fishCatalogMenuSearch);
+    const filtered = fishCatalog.filter((item) => {
+      if (!search) {
+        return true;
+      }
+
+      return (
+        normalizeText(item.commonName).includes(search) ||
+        normalizeText(item.latinName).includes(search)
+      );
+    });
+
+    return filtered.sort((a, b) =>
+      compareCatalogEntryCommonNames(a, b, catalogSortLocale)
+    );
+  }, [catalogSortLocale, fishCatalog, fishCatalogMenuSearch]);
+  const menuVisibleFishCatalog = useMemo(() => {
+    if (String(fishCatalogMenuSearch ?? '').trim().length > 0) {
+      return menuFilteredFishCatalog;
+    }
+
+    return menuFilteredFishCatalog.slice(0, CATALOG_EAGER_RENDER_LIMIT);
+  }, [fishCatalogMenuSearch, menuFilteredFishCatalog]);
+  const menuFilteredPlantCatalog = useMemo(() => {
+    const search = normalizeText(plantCatalogMenuSearch);
+    const filtered = plantCatalog.filter((item) => {
+      if (!search) {
+        return true;
+      }
+
+      return (
+        normalizeText(item.commonName).includes(search) ||
+        normalizeText(item.latinName).includes(search)
+      );
+    });
+
+    return filtered.sort((a, b) =>
+      compareCatalogEntryCommonNames(a, b, catalogSortLocale)
+    );
+  }, [catalogSortLocale, plantCatalog, plantCatalogMenuSearch]);
+  const menuVisiblePlantCatalog = useMemo(() => {
+    if (String(plantCatalogMenuSearch ?? '').trim().length > 0) {
+      return menuFilteredPlantCatalog;
+    }
+
+    return menuFilteredPlantCatalog.slice(0, CATALOG_EAGER_RENDER_LIMIT);
+  }, [menuFilteredPlantCatalog, plantCatalogMenuSearch]);
   const filteredFishCatalog = useMemo(() => {
     if (!isFishSection || !isEditingFish) {
       return [];
@@ -10741,7 +11053,7 @@ export default function HomeScreen() {
       const cacheKey = getFishImageCacheKey(fish);
 
       const directPreview = String(
-        fish.imageUrl ?? fish.imagePreviewUrl ?? ''
+        fish.imageUrl ?? fish.imagePreviewUrl ?? fish.imageLink ?? ''
       ).trim();
       if (directPreview) {
         return directPreview;
@@ -10755,7 +11067,10 @@ export default function HomeScreen() {
         (fish.catalogFishId && fishCatalogById.get(fish.catalogFishId)) ||
         fishCatalogByLatinName.get(normalizeLatinCatalogKey(fish.latinName));
       const catalogPreview = String(
-        catalogEntry?.imageUrl ?? catalogEntry?.imagePreviewUrl ?? ''
+        catalogEntry?.imageUrl ??
+          catalogEntry?.imagePreviewUrl ??
+          catalogEntry?.imageLink ??
+          ''
       ).trim();
       if (catalogPreview) {
         return catalogPreview;
@@ -10934,10 +11249,23 @@ export default function HomeScreen() {
         return '';
       }
 
-      const cacheKey = getPlantImageCacheKey(plant);
       const catalogEntry =
         (plant.catalogPlantId && plantCatalogById.get(plant.catalogPlantId)) ||
         plantCatalogByLatinName.get(normalizeLatinCatalogKey(plant.latinName));
+      const directPreview = String(
+        plant.imagePreviewUrl ??
+          plant.imageUrl ??
+          plant.imageLink ??
+          catalogEntry?.imagePreviewUrl ??
+          catalogEntry?.imageUrl ??
+          catalogEntry?.imageLink ??
+          ''
+      ).trim();
+      if (directPreview) {
+        return directPreview;
+      }
+
+      const cacheKey = getPlantImageCacheKey(plant);
       const latinName = String(
         plant.latinName ?? catalogEntry?.latinName ?? ''
       ).trim();
@@ -10952,17 +11280,6 @@ export default function HomeScreen() {
 
       if (cacheKey && Object.prototype.hasOwnProperty.call(plantImageUriByKey, cacheKey)) {
         return String(plantImageUriByKey[cacheKey] ?? '').trim() || GENERIC_PLANT_IMAGE_URL;
-      }
-
-      const directPreview = String(
-        plant.imagePreviewUrl ??
-          plant.imageUrl ??
-          catalogEntry?.imagePreviewUrl ??
-          catalogEntry?.imageUrl ??
-          ''
-      ).trim();
-      if (directPreview) {
-        return directPreview;
       }
 
       return buildPlantCommonsFallbackImageUrl(latinName, 420) || GENERIC_PLANT_IMAGE_URL;
@@ -11582,6 +11899,8 @@ export default function HomeScreen() {
         ? t('sectionFish')
         : activeSection === 'tankInfo'
           ? t('sectionInfo')
+        : activeSection === 'equipment'
+          ? t('sectionEquipment')
         : activeSection === 'plant'
           ? t('sectionPlants')
           : activeSection === 'issues'
@@ -11595,8 +11914,11 @@ export default function HomeScreen() {
             : activeSection === 'settings'
               ? t('sectionSettings')
               : '';
-  const headerTitle = isHealthSection || isSettingsSection
-    || isHomeSection
+  const headerTitle = isHealthSection ||
+    isSettingsSection ||
+    isHomeSection ||
+    isFishCatalogMenuMode ||
+    isPlantCatalogMenuMode
     ? sectionTitle
     : selectedTank?.name ?? t('noTank');
   const fishInTank = useMemo(
@@ -11778,16 +12100,27 @@ export default function HomeScreen() {
   const selectedTankPlantFertilizationEntries = selectedTankPlantFertilizationSummary.entries;
   const issueTankPickerKind = String(issueTankPickerPayload?.kind ?? '');
   const issueTankPickerItemName = String(
-    issueTankPickerPayload?.item?.name ?? issueTankPickerPayload?.item?.issueName ?? ''
+    issueTankPickerPayload?.item?.commonName ??
+      issueTankPickerPayload?.item?.name ??
+      issueTankPickerPayload?.item?.issueName ??
+      ''
   ).trim();
   const issueTankPickerTitle =
-    issueTankPickerKind === 'plant_disease'
+    issueTankPickerKind === 'fish_catalog'
+      ? 'Dodaj rybe do akwarium'
+      : issueTankPickerKind === 'plant_catalog'
+      ? 'Dodaj rosline do akwarium'
+      : issueTankPickerKind === 'plant_disease'
       ? t('issueTankPickerTitlePlantDisease')
       : issueTankPickerKind === 'algae'
         ? t('issueTankPickerTitleAlgae')
         : t('issueTankPickerTitleDisease');
   const issueTankPickerHint =
-    issueTankPickerKind === 'plant_disease'
+    issueTankPickerKind === 'fish_catalog'
+      ? `W ktorym akwarium chcesz dodac "${issueTankPickerItemName}"?`
+      : issueTankPickerKind === 'plant_catalog'
+      ? `W ktorym akwarium chcesz dodac "${issueTankPickerItemName}"?`
+      : issueTankPickerKind === 'plant_disease'
       ? t('issueTankPickerHintPlantDisease', { name: issueTankPickerItemName })
       : issueTankPickerKind === 'algae'
         ? t('issueTankPickerHintAlgae', { name: issueTankPickerItemName })
@@ -12689,7 +13022,7 @@ export default function HomeScreen() {
       waterTestingSectionSeverity,
     ]
   );
-  const tankInfoTabSeverity = useMemo(() => {
+  const equipmentTabSeverity = useMemo(() => {
     if (!selectedTank || !hasEquipmentSaveAccess) {
       return 'none';
     }
@@ -13602,7 +13935,9 @@ export default function HomeScreen() {
             </View>
           </View>
 
-          {(isAquariumSection || isHealthTankMode) && (
+          {(isAquariumSection || isHealthTankMode) &&
+            !isFishCatalogMenuMode &&
+            !isPlantCatalogMenuMode && (
             <View
               style={{
                 flexDirection: 'row',
@@ -13610,6 +13945,26 @@ export default function HomeScreen() {
                 gap: 8,
                 marginBottom: 14,
               }}>
+              <Pressable
+                onPress={() => setActiveSection('tankInfo')}
+                style={{
+                  borderWidth: 1,
+                  borderColor:
+                    activeSection === 'tankInfo' ? themeAccent : themeBorderStrong,
+                  backgroundColor:
+                    activeSection === 'tankInfo'
+                      ? themeAccentStrongBg
+                      : themeChipBg,
+                  borderRadius: 999,
+                  paddingVertical: 8,
+                  paddingHorizontal: 12,
+                }}>
+                {renderNavigationChipLabel(
+                  t('sectionInfo'),
+                  'none',
+                  activeSection === 'tankInfo'
+                )}
+              </Pressable>
               <Pressable
                 onPress={() => setActiveSection('review')}
                 style={{
@@ -13631,13 +13986,13 @@ export default function HomeScreen() {
                 )}
               </Pressable>
               <Pressable
-                onPress={() => setActiveSection('tankInfo')}
+                onPress={() => setActiveSection('equipment')}
                 style={{
                   borderWidth: 1,
                   borderColor:
-                    activeSection === 'tankInfo' ? themeAccent : themeBorderStrong,
+                    activeSection === 'equipment' ? themeAccent : themeBorderStrong,
                   backgroundColor:
-                    activeSection === 'tankInfo'
+                    activeSection === 'equipment'
                       ? themeAccentStrongBg
                       : themeChipBg,
                   borderRadius: 999,
@@ -13645,9 +14000,9 @@ export default function HomeScreen() {
                   paddingHorizontal: 12,
                 }}>
                 {renderNavigationChipLabel(
-                  t('sectionInfo'),
-                  tankInfoTabSeverity,
-                  activeSection === 'tankInfo'
+                  t('sectionEquipment'),
+                  equipmentTabSeverity,
+                  activeSection === 'equipment'
                 )}
               </Pressable>
               <Pressable
@@ -13937,6 +14292,7 @@ export default function HomeScreen() {
                   {t('subscriptionTankLimitUpgradeHint')}
                 </Text>
               ) : null}
+
             </>
           )}
 
@@ -13970,9 +14326,9 @@ export default function HomeScreen() {
             </View>
           )}
 
-          {isTankInfoSection && (
+          {(isTankInfoSection || isEquipmentSection) && (
             <>
-              {!selectedTank ? (
+              {isTankInfoSection && (!selectedTank ? (
                 <View
                   style={{
                     borderWidth: 1,
@@ -14023,8 +14379,8 @@ export default function HomeScreen() {
                       fontSize: 14,
                       lineHeight: 21,
                     }}>
-                    Wybierz aktywne akwarium, a tutaj pokazemy jego profil,
-                    oswietlenie i sprzet w bardziej czytelnym widoku.
+                    Wybierz aktywne akwarium, a tutaj pokazemy jego profil
+                    oraz ustawienia w bardziej czytelnym widoku.
                   </Text>
                 </View>
               ) : (
@@ -14206,9 +14562,9 @@ export default function HomeScreen() {
                     </Text>
                   </Pressable>
                 </View>
-              )}
+              ))}
 
-              {selectedTank && (
+              {isEquipmentSection && (selectedTank ? (
                 <View
                   style={{
                     borderWidth: 1,
@@ -14508,11 +14864,383 @@ export default function HomeScreen() {
                     );
                   })}
                 </View>
-              )}
+              ) : (
+                <View
+                  style={{
+                    borderWidth: 1,
+                    borderColor: themeBorder,
+                    borderRadius: 18,
+                    padding: 18,
+                    marginBottom: 18,
+                    backgroundColor: themeCardBg,
+                    shadowColor: '#000',
+                    shadowOpacity: isLightTheme ? 0.06 : 0,
+                    shadowRadius: 14,
+                    shadowOffset: { width: 0, height: 8 },
+                    elevation: isLightTheme ? 2 : 0,
+                  }}>
+                  <View
+                    style={{
+                      alignSelf: 'flex-start',
+                      borderWidth: 1,
+                      borderColor: themeAccent,
+                      borderRadius: 999,
+                      paddingVertical: 6,
+                      paddingHorizontal: 10,
+                      backgroundColor: themeAccentSoftBg,
+                      marginBottom: 12,
+                    }}>
+                    <Text
+                      style={{
+                        color: themeAccentText,
+                        fontSize: 12,
+                        fontWeight: '700',
+                      }}>
+                      {t('sectionEquipment')}
+                    </Text>
+                  </View>
+                  <Text
+                    style={{
+                      color: themeTextPrimary,
+                      fontWeight: '800',
+                      fontSize: 24,
+                      lineHeight: 30,
+                    }}>
+                    {t('noActiveTank')}
+                  </Text>
+                  <Text
+                    style={{
+                      color: themeTextSecondary,
+                      marginTop: 8,
+                      fontSize: 14,
+                      lineHeight: 21,
+                    }}>
+                    Wybierz aktywne akwarium, aby zobaczyc przypisany sprzet.
+                  </Text>
+                </View>
+              ))}
             </>
           )}
 
-          {(isFishSection || isPlantSection) && (
+          {isFishCatalogMenuMode && (
+            <View
+              style={{
+                marginBottom: 18,
+              }}>
+              <View
+                style={{
+                  borderWidth: 1,
+                  borderColor: themeBorder,
+                  borderRadius: 10,
+                  padding: 12,
+                  marginBottom: 10,
+                  backgroundColor: themeCardBgAlt,
+                }}>
+                <TextInput
+                  placeholder={t('searchFishPlaceholder')}
+                  placeholderTextColor={themePlaceholder}
+                  value={fishCatalogMenuSearch}
+                  onChangeText={setFishCatalogMenuSearch}
+                  style={{
+                    borderWidth: 1,
+                    borderColor: themeInputBorder,
+                    color: themeInputText,
+                    padding: 10,
+                    borderRadius: 8,
+                    marginBottom: 8,
+                    backgroundColor: themeInputBg,
+                  }}
+                />
+
+                {fishCatalogLoading ? (
+                  <Text style={{ color: themeTextSecondary }}>{t('loadingFishCatalog')}</Text>
+                ) : menuVisibleFishCatalog.length === 0 ? (
+                  <Text style={{ color: themeTextSecondary }}>{t('noFishResults')}</Text>
+                ) : (
+                  menuVisibleFishCatalog.map((fish) => {
+                    const isExpanded = expandedFishCatalogId === fish.id;
+
+                    return (
+                      <View
+                        key={`fish-catalog-menu-${fish.id}`}
+                        style={{
+                          borderWidth: 1,
+                          borderColor: themeBorder,
+                          borderRadius: 8,
+                          padding: 10,
+                          marginTop: 8,
+                          backgroundColor: themeCardBg,
+                        }}>
+                        <Pressable
+                          onPress={() =>
+                            setExpandedFishCatalogId((prev) =>
+                              prev === fish.id ? null : fish.id
+                            )
+                          }
+                          style={{
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            gap: 10,
+                          }}>
+                          <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                            <Pressable
+                              onPress={() => handleOpenFishImageModal(fish)}
+                              hitSlop={6}>
+                              <Image
+                                source={getFishPreviewImageSource(fish, {
+                                  allowRemote: true,
+                                })}
+                                onError={() => handleFishPreviewImageError(fish)}
+                                resizeMode="cover"
+                                style={{
+                                  width: 46,
+                                  height: 46,
+                                  borderRadius: 12,
+                                  borderWidth: 1,
+                                  borderColor: themeBorder,
+                                  backgroundColor: themeCardBg,
+                                }}
+                              />
+                            </Pressable>
+                            <View style={{ flex: 1 }}>
+                              <Text style={{ color: themeTextPrimary, fontWeight: '700' }}>
+                                {fish.commonName}
+                              </Text>
+                              <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 2 }}>
+                                {fish.latinName}
+                              </Text>
+                            </View>
+                          </View>
+                          <Text style={{ color: themeTextSecondary, fontSize: 12, fontWeight: '700' }}>
+                            {isExpanded ? '^' : 'v'}
+                          </Text>
+                        </Pressable>
+
+                        {!isExpanded ? null : (
+                          <View
+                            style={{
+                              marginTop: 10,
+                              borderTopWidth: 1,
+                              borderTopColor: themeBorder,
+                              paddingTop: 10,
+                            }}>
+                            <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
+                              pH {formatRange(fish.phMin, fish.phMax)} | GH{' '}
+                              {formatRange(fish.ghMin, fish.ghMax)} | T{' '}
+                              {formatRange(fish.tempMin, fish.tempMax, 'C')}
+                            </Text>
+                            <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
+                              {t('tempAndMinLiters', {
+                                temp: formatRange(fish.tempMin, fish.tempMax, 'C'),
+                                liters: Math.max(0, Math.round(Number(fish.minLiters) || 0)),
+                              })}
+                            </Text>
+                            {!fish.notes ? null : (
+                              <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 6 }}>
+                                {fish.notes}
+                              </Text>
+                            )}
+                            <Pressable
+                              onPress={() => handleAddCatalogFishToAquarium(fish)}
+                              disabled={stockBusy}
+                              style={{
+                                borderWidth: 1,
+                                borderColor: themeAccent,
+                                borderRadius: 8,
+                                paddingVertical: 8,
+                                paddingHorizontal: 10,
+                                marginTop: 10,
+                                backgroundColor: themeAccent,
+                                opacity: stockBusy ? 0.7 : 1,
+                              }}>
+                              <Text
+                                style={{
+                                  color: themeAccentOnStrong,
+                                  textAlign: 'center',
+                                  fontWeight: '700',
+                                  fontSize: 12,
+                                }}>
+                                {stockBusy ? 'Dodawanie...' : 'Dodaj do akwarium'}
+                              </Text>
+                            </Pressable>
+                          </View>
+                        )}
+                      </View>
+                    );
+                  })
+                )}
+              </View>
+            </View>
+          )}
+
+          {isPlantCatalogMenuMode && (
+            <View
+              style={{
+                marginBottom: 18,
+              }}>
+              <View
+                style={{
+                  borderWidth: 1,
+                  borderColor: themeBorder,
+                  borderRadius: 10,
+                  padding: 12,
+                  marginBottom: 10,
+                  backgroundColor: themeCardBgAlt,
+                }}>
+                <TextInput
+                  placeholder={t('searchPlantPlaceholder')}
+                  placeholderTextColor={themePlaceholder}
+                  value={plantCatalogMenuSearch}
+                  onChangeText={setPlantCatalogMenuSearch}
+                  style={{
+                    borderWidth: 1,
+                    borderColor: themeInputBorder,
+                    color: themeInputText,
+                    padding: 10,
+                    borderRadius: 8,
+                    marginBottom: 8,
+                    backgroundColor: themeInputBg,
+                  }}
+                />
+
+                {plantCatalogLoading ? (
+                  <Text style={{ color: themeTextSecondary }}>{t('loadingPlantCatalog')}</Text>
+                ) : menuVisiblePlantCatalog.length === 0 ? (
+                  <Text style={{ color: themeTextSecondary }}>{t('noPlantResults')}</Text>
+                ) : (
+                  menuVisiblePlantCatalog.map((plant) => {
+                    const isExpanded = expandedPlantCatalogId === plant.id;
+
+                    return (
+                      <View
+                        key={`plant-catalog-menu-${plant.id}`}
+                        style={{
+                          borderWidth: 1,
+                          borderColor: themeBorder,
+                          borderRadius: 8,
+                          padding: 10,
+                          marginTop: 8,
+                          backgroundColor: themeCardBg,
+                        }}>
+                        <Pressable
+                          onPress={() =>
+                            setExpandedPlantCatalogId((prev) =>
+                              prev === plant.id ? null : plant.id
+                            )
+                          }
+                          style={{
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            gap: 10,
+                          }}>
+                          <View
+                            style={{
+                              flex: 1,
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              gap: 10,
+                            }}>
+                            <Pressable
+                              onPress={() => handleOpenPlantImageModal(plant)}
+                              hitSlop={6}>
+                              <Image
+                                source={getPlantPreviewImageSource(plant, {
+                                  allowRemote: true,
+                                })}
+                                onError={() => handlePlantPreviewImageError(plant)}
+                                resizeMode="cover"
+                                style={{
+                                  width: 46,
+                                  height: 46,
+                                  borderRadius: 12,
+                                  borderWidth: 1,
+                                  borderColor: themeBorder,
+                                  backgroundColor: themeCardBg,
+                                }}
+                              />
+                            </Pressable>
+                            <View style={{ flex: 1 }}>
+                              <Text style={{ color: themeTextPrimary, fontWeight: '700' }}>
+                                {plant.commonName}
+                              </Text>
+                              <Text
+                                style={{
+                                  color: themeTextSecondary,
+                                  fontSize: 12,
+                                  marginTop: 2,
+                                }}>
+                                {plant.latinName}
+                              </Text>
+                            </View>
+                          </View>
+                          <Text
+                            style={{
+                              color: themeTextSecondary,
+                              fontSize: 12,
+                              fontWeight: '700',
+                            }}>
+                            {isExpanded ? '^' : 'v'}
+                          </Text>
+                        </Pressable>
+
+                        {!isExpanded ? null : (
+                          <View
+                            style={{
+                              marginTop: 10,
+                              borderTopWidth: 1,
+                              borderTopColor: themeBorder,
+                              paddingTop: 10,
+                            }}>
+                            <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
+                              pH {formatRange(plant.phMin, plant.phMax)} | GH{' '}
+                              {formatRange(plant.ghMin, plant.ghMax)} | T{' '}
+                              {formatRange(plant.tempMin, plant.tempMax, 'C')}
+                            </Text>
+                            <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
+                              Minimalny litraz: {Math.max(0, Math.round(Number(plant.minLiters) || 0))} l
+                            </Text>
+                            {!plant.notes ? null : (
+                              <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 6 }}>
+                                {plant.notes}
+                              </Text>
+                            )}
+                            <Pressable
+                              onPress={() => handleAddCatalogPlantToAquarium(plant)}
+                              disabled={stockBusy}
+                              style={{
+                                borderWidth: 1,
+                                borderColor: themeAccent,
+                                borderRadius: 8,
+                                paddingVertical: 8,
+                                paddingHorizontal: 10,
+                                marginTop: 10,
+                                backgroundColor: themeAccent,
+                                opacity: stockBusy ? 0.7 : 1,
+                              }}>
+                              <Text
+                                style={{
+                                  color: themeAccentOnStrong,
+                                  textAlign: 'center',
+                                  fontWeight: '700',
+                                  fontSize: 12,
+                                }}>
+                                {stockBusy ? 'Dodawanie...' : 'Dodaj do akwarium'}
+                              </Text>
+                            </Pressable>
+                          </View>
+                        )}
+                      </View>
+                    );
+                  })
+                )}
+              </View>
+            </View>
+          )}
+
+          {((isFishSection && !isFishCatalogMenuMode) ||
+            (isPlantSection && !isPlantCatalogMenuMode)) && (
             <View
               style={{
                 marginBottom: 18,
@@ -16176,18 +16904,48 @@ export default function HomeScreen() {
                                       prev === plant.id ? null : plant.id
                                     );
                                   }}
-                                  style={{ flex: 1 }}>
-                                  <Text style={{ color: themeTextPrimary, fontWeight: '700' }}>
-                                    {plant.commonName}
-                                  </Text>
-                                  <Text
-                                    style={{
-                                      color: themeTextSecondary,
-                                      fontSize: 12,
-                                      marginTop: 2,
-                                    }}>
-                                    {plant.latinName}
-                                  </Text>
+                                  style={{
+                                    flex: 1,
+                                    flexDirection: 'row',
+                                    alignItems: 'center',
+                                    gap: 10,
+                                  }}>
+                                  <Pressable
+                                    onPress={() => handleOpenPlantImageModal(plant)}
+                                    hitSlop={6}>
+                                    <Image
+                                      source={getPlantPreviewImageSource(plant, {
+                                        allowRemote: true,
+                                      })}
+                                      onError={() => handlePlantPreviewImageError(plant)}
+                                      resizeMode="cover"
+                                      style={{
+                                        width: 46,
+                                        height: 46,
+                                        borderRadius: 12,
+                                        borderWidth: 1,
+                                        borderColor: themeBorder,
+                                        backgroundColor: themeCardBg,
+                                      }}
+                                    />
+                                  </Pressable>
+                                  <View style={{ flex: 1 }}>
+                                    <Text
+                                      style={{
+                                        color: themeTextPrimary,
+                                        fontWeight: '700',
+                                      }}>
+                                      {plant.commonName}
+                                    </Text>
+                                    <Text
+                                      style={{
+                                        color: themeTextSecondary,
+                                        fontSize: 12,
+                                        marginTop: 2,
+                                      }}>
+                                      {plant.latinName}
+                                    </Text>
+                                  </View>
                                 </Pressable>
                               </View>
 
@@ -21548,22 +22306,6 @@ export default function HomeScreen() {
                   </Text>
                 ) : (
                   <View>
-                <Text
-                  style={{
-                    color: isLightTheme ? '#49617b' : '#9da3af',
-                    marginBottom: 10,
-                    alignSelf: 'flex-start',
-                    borderWidth: 1,
-                    borderColor: isLightTheme ? '#d7e3f1' : '#2a3342',
-                    borderRadius: 999,
-                    paddingVertical: 4,
-                    paddingHorizontal: 10,
-                    backgroundColor: isLightTheme ? '#f0f6fd' : '#121a26',
-                    fontSize: 12,
-                  }}>
-                  {formatCreatedAt(currentMeasurement.createdAt)}
-                </Text>
-
                 {currentMeasurementDetailRows.length > 0 ? (
                   <View
                     style={{
@@ -21579,22 +22321,10 @@ export default function HomeScreen() {
                         ) ?? 'ok';
                       const isCritical = itemSeverity === 'critical';
                       const isWarning = itemSeverity === 'warning';
-                      const tileBorderColor = isCritical
-                        ? '#dc2626'
-                        : isWarning
-                          ? '#d97706'
-                          : themeBorder;
-                      const tileBackgroundColor = isCritical
-                        ? isLightTheme
-                          ? '#ffe2e2'
-                          : '#2f1717'
-                        : isWarning
-                          ? isLightTheme
-                            ? '#ffe8bf'
-                            : '#33230f'
-                          : isLightTheme
-                            ? '#f7fafc'
-                            : themeCardBgAlt;
+                      const tileBorderColor = themeBorder;
+                      const tileBackgroundColor = isLightTheme
+                        ? '#f7fafc'
+                        : themeCardBgAlt;
                       const valueColor = isCritical
                         ? isLightTheme
                           ? '#991b1b'
@@ -21604,10 +22334,37 @@ export default function HomeScreen() {
                             ? '#92400e'
                             : '#fde68a'
                           : themeTextPrimary;
-                      const labelColor =
-                        isCritical || isWarning
-                          ? valueColor
-                          : themeTextSecondary;
+                      const labelColor = themeTextSecondary;
+                      const statusMarkerBorderColor = isCritical
+                        ? '#dc2626'
+                        : isWarning
+                          ? '#d97706'
+                          : isLightTheme
+                            ? '#1f7a3a'
+                            : '#9be7a3';
+                      const statusMarkerBgColor = isCritical
+                        ? isLightTheme
+                          ? '#ffe2e2'
+                          : '#2f1717'
+                        : isWarning
+                          ? isLightTheme
+                            ? '#ffe8bf'
+                            : '#33230f'
+                          : isLightTheme
+                            ? '#e8f8eb'
+                            : '#143220';
+                      const statusMarkerTextColor = isCritical
+                        ? isLightTheme
+                          ? '#991b1b'
+                          : '#fecaca'
+                        : isWarning
+                          ? isLightTheme
+                            ? '#92400e'
+                            : '#fde68a'
+                          : isLightTheme
+                            ? '#1f7a3a'
+                            : '#9be7a3';
+                      const statusMarkerText = isCritical || isWarning ? '!' : 'OK';
 
                       return (
                         <View
@@ -21630,12 +22387,37 @@ export default function HomeScreen() {
                               justifyContent: 'space-between',
                               opacity: 1,
                             }}>
+                            <View
+                              style={{
+                                position: 'absolute',
+                                top: 8,
+                                right: 8,
+                                minWidth: 24,
+                                height: 24,
+                                borderRadius: 999,
+                                borderWidth: 1,
+                                borderColor: statusMarkerBorderColor,
+                                backgroundColor: statusMarkerBgColor,
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                paddingHorizontal: 6,
+                              }}>
+                              <Text
+                                style={{
+                                  color: statusMarkerTextColor,
+                                  fontSize: 10,
+                                  fontWeight: '800',
+                                }}>
+                                {statusMarkerText}
+                              </Text>
+                            </View>
                             <Text
                               style={{
                                 color: labelColor,
                                 fontSize: 11,
                                 fontWeight: '700',
                                 letterSpacing: 0.3,
+                                marginTop: 6,
                               }}>
                               {item.label}
                             </Text>
@@ -21647,6 +22429,18 @@ export default function HomeScreen() {
                                 marginTop: 4,
                               }}>
                               {formatLatestTrendValue(item.value)}
+                            </Text>
+                            <Text
+                              style={{
+                                color: isCritical || isWarning ? valueColor : themeTextMuted,
+                                fontSize: 10,
+                                marginTop: 4,
+                              }}>
+                              {`Pomiar: ${formatDateOnly(
+                                currentMeasurementValueSourceMsByKey.get(
+                                  String(item?.key ?? '')
+                                ) ?? null
+                              )}`}
                             </Text>
                           </Pressable>
                         </View>

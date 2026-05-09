@@ -66,6 +66,7 @@ type AquariumSection =
   | 'history'
   | 'tank'
   | 'tankInfo'
+  | 'equipment'
   | 'fish'
   | 'plant'
   | 'issues'

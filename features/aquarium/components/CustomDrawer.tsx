@@ -18,6 +18,8 @@ type CustomDrawerProps = {
 const SECTION_ITEMS = [
   { id: 'home', labelKey: 'sectionHome' },
   { id: 'review', labelKey: 'sectionAquarium' },
+  { id: 'fish', labelKey: 'sectionFish' },
+  { id: 'plant', labelKey: 'sectionPlants' },
   { id: 'history', labelKey: 'sectionHistory' },
   { id: 'disease', labelKey: 'sectionDiseasesCatalog' },
   { id: 'plantDisease', labelKey: 'sectionPlantDiseasesCatalog' },

@@ -172,6 +172,7 @@ const ui = {
   fSource: byId('fSource'),
   fImagePreviewUrl: byId('fImagePreviewUrl'),
   fImageUrl: byId('fImageUrl'),
+  fImageLink: byId('fImageLink'),
   fNotes: byId('fNotes'),
   fAggressionLevel: byId('fAggressionLevel'),
   fMinGroupSize: byId('fMinGroupSize'),
@@ -185,6 +186,7 @@ const ui = {
   aSymptoms: byId('aSymptoms'),
   aImageUrl: byId('aImageUrl'),
   aImagePreviewUrl: byId('aImagePreviewUrl'),
+  aImageLink: byId('aImageLink'),
   aImageFallbackUrl: byId('aImageFallbackUrl'),
   aImageFallbackPreviewUrl: byId('aImageFallbackPreviewUrl'),
   aSummary: byId('aSummary'),
@@ -642,10 +644,12 @@ function renderFishTable() {
           <td class="wrap-cell">${esc(item.notes || '')}</td>
           <td class="mono">${esc(item.imagePreviewUrl || '')}</td>
           <td class="mono">${esc(item.imageUrl || '')}</td>
+          <td class="mono">${esc(item.imageLink || '')}</td>
           <td class="mono">${esc(item.commonNameNormalized || '')}</td>
           <td class="mono">${esc(item.latinNameNormalized || '')}</td>
           <td>
             <div class="table-actions">
+              <button class="btn-mini" data-action="open-image" data-url="${esc(resolveBestImageUrl(item))}">Podglad</button>
               <button class="btn-mini" data-action="edit" data-id="${item.id}">Edytuj</button>
               <button class="btn-mini danger" data-action="delete" data-id="${item.id}">Usun</button>
             </div>
@@ -655,7 +659,7 @@ function renderFishTable() {
     })
     .join('');
 
-  ui.fishTableBody.innerHTML = rows || '<tr><td colspan="16">Brak wynikow.</td></tr>';
+  ui.fishTableBody.innerHTML = rows || '<tr><td colspan="17">Brak wynikow.</td></tr>';
   updatePaginationUi('fish', page, pageCount);
 }
 
@@ -682,10 +686,12 @@ function renderPlantTable() {
           <td class="wrap-cell">${esc(item.notes || '')}</td>
           <td class="mono">${esc(item.imagePreviewUrl || '')}</td>
           <td class="mono">${esc(item.imageUrl || '')}</td>
+          <td class="mono">${esc(item.imageLink || '')}</td>
           <td class="mono">${esc(item.commonNameNormalized || '')}</td>
           <td class="mono">${esc(item.latinNameNormalized || '')}</td>
           <td>
             <div class="table-actions">
+              <button class="btn-mini" data-action="open-image" data-url="${esc(resolveBestImageUrl(item))}">Podglad</button>
               <button class="btn-mini" data-action="edit" data-id="${item.id}">Edytuj</button>
               <button class="btn-mini danger" data-action="delete" data-id="${item.id}">Usun</button>
             </div>
@@ -695,7 +701,7 @@ function renderPlantTable() {
     })
     .join('');
 
-  ui.plantTableBody.innerHTML = rows || '<tr><td colspan="13">Brak wynikow.</td></tr>';
+  ui.plantTableBody.innerHTML = rows || '<tr><td colspan="14">Brak wynikow.</td></tr>';
   updatePaginationUi('plant', page, pageCount);
 }
 
@@ -716,8 +722,12 @@ function renderAlgaeTable() {
           <td class="wrap-cell">${esc(symptomSummary)}</td>
           <td>${esc(item.suggestedRemedy || '')}</td>
           <td>${esc(item.imageSourceLabel || '')}</td>
+          <td class="mono">${esc(item.imagePreviewUrl || '')}</td>
+          <td class="mono">${esc(item.imageUrl || '')}</td>
+          <td class="mono">${esc(item.imageLink || '')}</td>
           <td>
             <div class="table-actions">
+              <button class="btn-mini" data-action="open-image" data-url="${esc(resolveBestImageUrl(item))}">Podglad</button>
               <button class="btn-mini" data-action="edit" data-id="${item.id}">Edytuj</button>
               <button class="btn-mini danger" data-action="delete" data-id="${item.id}">Usun</button>
             </div>
@@ -727,7 +737,7 @@ function renderAlgaeTable() {
     })
     .join('');
 
-  ui.algaeTableBody.innerHTML = rows || '<tr><td colspan="7">Brak wynikow.</td></tr>';
+  ui.algaeTableBody.innerHTML = rows || '<tr><td colspan="10">Brak wynikow.</td></tr>';
   updatePaginationUi('algae', page, pageCount);
 }
 
@@ -950,7 +960,13 @@ function handleTableAction(event, section) {
   }
 
   const action = button.dataset.action;
+  const url = String(button.dataset.url || '').trim();
   const id = button.dataset.id;
+
+  if (action === 'open-image') {
+    openImageLink(url);
+    return;
+  }
 
   if (
     section === 'fish' ||
@@ -1042,9 +1058,10 @@ function openEditor(section, item = null) {
     ui.fTempMin.value = toInputNumber(item?.tempMin);
     ui.fTempMax.value = toInputNumber(item?.tempMax);
     ui.fMinLiters.value = toInputNumber(item?.minLiters);
-    ui.fSource.value = item?.source || 'manual';
+    ui.fSource.value = normalizeCatalogSource(item?.source);
     ui.fImagePreviewUrl.value = item?.imagePreviewUrl || '';
     ui.fImageUrl.value = item?.imageUrl || '';
+    ui.fImageLink.value = item?.imageLink || '';
     ui.fNotes.value = item?.notes || '';
 
     ui.fAggressionLevel.value = item?.aggressionLevel || 'peaceful';
@@ -1058,12 +1075,13 @@ function openEditor(section, item = null) {
 
     ui.aId.value = item?.id || '';
     ui.aName.value = item?.name || '';
-    ui.aSeverity.value = item?.severity || 'medium';
+    ui.aSeverity.value = normalizeSeverity(item?.severity);
     ui.aSuggestedRemedy.value = item?.suggestedRemedy || '';
     ui.aImageSourceLabel.value = item?.imageSourceLabel || '';
     ui.aSymptoms.value = Array.isArray(item?.symptoms) ? item.symptoms.join(',') : '';
     ui.aImageUrl.value = item?.imageUrl || '';
     ui.aImagePreviewUrl.value = item?.imagePreviewUrl || '';
+    ui.aImageLink.value = item?.imageLink || '';
     ui.aImageFallbackUrl.value = item?.imageFallbackUrl || '';
     ui.aImageFallbackPreviewUrl.value = item?.imageFallbackPreviewUrl || '';
     ui.aSummary.value = item?.summary || '';
@@ -1085,7 +1103,7 @@ function openEditor(section, item = null) {
 
     ui.dId.value = item?.id || '';
     ui.dName.value = item?.name || '';
-    ui.dSeverity.value = item?.severity || 'medium';
+    ui.dSeverity.value = normalizeSeverity(item?.severity);
     ui.dSuggestedRemedy.value = item?.suggestedRemedy || '';
     ui.dImageSourceLabel.value = item?.imageSourceLabel || '';
     ui.dSymptoms.value = Array.isArray(item?.symptoms) ? item.symptoms.join(',') : '';
@@ -1105,8 +1123,8 @@ function openEditor(section, item = null) {
     ui.uUid.value = item?.uid || '';
     ui.uEmail.value = item?.email || '';
     ui.uTier.value = normalizeTier(item?.tier || 'free');
-    ui.uStatus.value = item?.status || 'active';
-    ui.uSource.value = item?.source || 'admin';
+    ui.uStatus.value = normalizeSubscriptionStatus(item?.status || 'active');
+    ui.uSource.value = normalizeSubscriptionSource(item?.source || 'admin');
     ui.uStartedAt.value = item?.startedAt || '';
     ui.uExpiresAt.value = item?.expiresAt || '';
     ui.uRenewsAt.value = item?.renewsAt || '';
@@ -1328,9 +1346,10 @@ function buildStockPayload(section) {
     tempMin,
     tempMax,
     minLiters,
-    source: ui.fSource.value.trim() || 'manual',
+    source: normalizeCatalogSource(ui.fSource.value),
     imagePreviewUrl: ui.fImagePreviewUrl.value.trim(),
     imageUrl: ui.fImageUrl.value.trim(),
+    imageLink: ui.fImageLink.value.trim(),
     notes: ui.fNotes.value.trim(),
   };
 
@@ -1354,7 +1373,7 @@ function buildStockPayload(section) {
 function buildAlgaePayload() {
   const id = ui.aId.value.trim();
   const name = ui.aName.value.trim();
-  const severity = ui.aSeverity.value.trim().toLowerCase() || 'medium';
+  const severity = normalizeSeverity(ui.aSeverity.value);
   const summary = ui.aSummary.value.trim();
 
   if (!id || !name || !summary) {
@@ -1375,6 +1394,7 @@ function buildAlgaePayload() {
     caution: ui.aCaution.value.trim(),
     imageUrl: ui.aImageUrl.value.trim(),
     imagePreviewUrl: ui.aImagePreviewUrl.value.trim(),
+    imageLink: ui.aImageLink.value.trim(),
     imageFallbackUrl: ui.aImageFallbackUrl.value.trim(),
     imageFallbackPreviewUrl: ui.aImageFallbackPreviewUrl.value.trim(),
   };
@@ -1383,7 +1403,7 @@ function buildAlgaePayload() {
 function buildDiseasePayload() {
   const id = ui.dId.value.trim();
   const name = ui.dName.value.trim();
-  const severity = ui.dSeverity.value.trim().toLowerCase() || 'medium';
+  const severity = normalizeSeverity(ui.dSeverity.value);
   const summary = ui.dSummary.value.trim();
 
   if (!id || !name || !summary) {
@@ -1562,6 +1582,30 @@ function byId(id) {
   return element;
 }
 
+function resolveBestImageUrl(item) {
+  return String(
+    item?.imageUrl ?? item?.imagePreviewUrl ?? item?.imageLink ?? ''
+  ).trim();
+}
+
+function openImageLink(url) {
+  const normalized = String(url ?? '').trim();
+  if (!normalized) {
+    setStatus('Brak linku do podgladu.', 'info');
+    return;
+  }
+
+  try {
+    const parsed = new URL(normalized);
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      throw new Error('Nieprawidlowy protokol URL.');
+    }
+    window.open(parsed.toString(), '_blank', 'noopener,noreferrer');
+  } catch {
+    setStatus('Niepoprawny link obrazu.', 'error');
+  }
+}
+
 function splitByLines(value) {
   return String(value ?? '')
     .split(/\r?\n/)
@@ -1618,6 +1662,18 @@ function normalizeAggressionLevel(value) {
   if (normalized === 'aggressive') return 'aggressive';
   if (normalized === 'semi-aggressive' || normalized === 'semi aggressive') return 'semi-aggressive';
   return 'peaceful';
+}
+
+function normalizeCatalogSource(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  const allowed = new Set(['manual', 'starter', 'expanded', 'community', 'imported']);
+  return allowed.has(normalized) ? normalized : 'manual';
+}
+
+function normalizeSeverity(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  const allowed = new Set(['low', 'medium', 'high', 'critical']);
+  return allowed.has(normalized) ? normalized : 'medium';
 }
 
 function normalizeTier(value) {

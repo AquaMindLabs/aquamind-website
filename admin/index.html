@@ -108,7 +108,7 @@
                     <tr>
                       <th>Nazwa</th><th>Lacinska</th><th>pH</th><th>GH</th><th>Temp</th><th>Min L</th>
                       <th>Lawicowa</th><th>Min grupa</th><th>Agresja</th><th>Source</th><th>Notatki</th>
-                      <th>Img preview</th><th>Img</th><th>Norm common</th><th>Norm latin</th><th>Akcje</th>
+                      <th>Img preview</th><th>Img</th><th>Image link</th><th>Norm common</th><th>Norm latin</th><th>Akcje</th>
                     </tr>
                   </thead>
                   <tbody id="fishTableBody"></tbody>
@@ -131,7 +131,7 @@
                   <thead>
                     <tr>
                       <th>Nazwa</th><th>Lacinska</th><th>pH</th><th>GH</th><th>Temp</th><th>Min L</th>
-                      <th>Source</th><th>Notatki</th><th>Img preview</th><th>Img</th><th>Norm common</th><th>Norm latin</th><th>Akcje</th>
+                      <th>Source</th><th>Notatki</th><th>Img preview</th><th>Img</th><th>Image link</th><th>Norm common</th><th>Norm latin</th><th>Akcje</th>
                     </tr>
                   </thead>
                   <tbody id="plantTableBody"></tbody>
@@ -153,7 +153,7 @@
                 <table>
                   <thead>
                     <tr>
-                      <th>Id</th><th>Nazwa</th><th>Severity</th><th>Objawy</th><th>Srodek</th><th>Zrodlo zdjecia</th><th>Akcje</th>
+                      <th>Id</th><th>Nazwa</th><th>Severity</th><th>Objawy</th><th>Srodek</th><th>Zrodlo zdjecia</th><th>Img preview</th><th>Img</th><th>Image link</th><th>Akcje</th>
                     </tr>
                   </thead>
                   <tbody id="algaeTableBody"></tbody>
@@ -282,13 +282,30 @@
               <label><span>Temp min (C)</span><input id="fTempMin" name="tempMin" type="number" min="-5" max="50" step="0.1" /></label>
               <label><span>Temp max (C)</span><input id="fTempMax" name="tempMax" type="number" min="-5" max="50" step="0.1" /></label>
               <label><span>Min litraz</span><input id="fMinLiters" name="minLiters" type="number" min="1" max="20000" step="1" /></label>
-              <label><span>Zrodlo</span><input id="fSource" name="source" type="text" placeholder="manual" /></label>
+              <label>
+                <span>Zrodlo</span>
+                <select id="fSource" name="source">
+                  <option value="manual">manual</option>
+                  <option value="starter">starter</option>
+                  <option value="expanded">expanded</option>
+                  <option value="community">community</option>
+                  <option value="imported">imported</option>
+                </select>
+              </label>
               <label><span>URL miniatury</span><input id="fImagePreviewUrl" name="imagePreviewUrl" type="url" /></label>
               <label><span>URL obrazka</span><input id="fImageUrl" name="imageUrl" type="url" /></label>
+              <label><span>Image link</span><input id="fImageLink" name="imageLink" type="url" /></label>
             </div>
             <label><span>Notatki</span><textarea id="fNotes" name="notes" rows="3"></textarea></label>
             <div class="grid two" id="fishExtraFields">
-              <label><span>Poziom agresji</span><input id="fAggressionLevel" name="aggressionLevel" type="text" placeholder="peaceful" /></label>
+              <label>
+                <span>Poziom agresji</span>
+                <select id="fAggressionLevel" name="aggressionLevel">
+                  <option value="peaceful">peaceful</option>
+                  <option value="semi-aggressive">semi-aggressive</option>
+                  <option value="aggressive">aggressive</option>
+                </select>
+              </label>
               <label><span>Minimalna grupa</span><input id="fMinGroupSize" name="minGroupSize" type="number" min="0" max="1000" step="1" /></label>
               <label class="checkbox"><input id="fIsSchooling" name="isSchooling" type="checkbox" /><span>Ryba lawicowa</span></label>
             </div>
@@ -298,12 +315,21 @@
             <div class="grid two">
               <label><span>Id (slug)</span><input id="aId" name="aId" type="text" placeholder="green-dust-algae" /></label>
               <label><span>Nazwa</span><input id="aName" name="aName" type="text" /></label>
-              <label><span>Severity</span><input id="aSeverity" name="aSeverity" type="text" placeholder="low / medium / high" /></label>
+              <label>
+                <span>Severity</span>
+                <select id="aSeverity" name="aSeverity">
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                  <option value="critical">critical</option>
+                </select>
+              </label>
               <label><span>Sugerowany srodek</span><input id="aSuggestedRemedy" name="aSuggestedRemedy" type="text" /></label>
               <label><span>Source label</span><input id="aImageSourceLabel" name="aImageSourceLabel" type="text" /></label>
               <label><span>Objawy (CSV ids)</span><input id="aSymptoms" name="aSymptoms" type="text" placeholder="green_dust_glass,after_light_change" /></label>
               <label><span>Image URL</span><input id="aImageUrl" name="aImageUrl" type="url" /></label>
               <label><span>Image Preview URL</span><input id="aImagePreviewUrl" name="aImagePreviewUrl" type="url" /></label>
+              <label><span>Image link</span><input id="aImageLink" name="aImageLink" type="url" /></label>
               <label><span>Image Fallback URL</span><input id="aImageFallbackUrl" name="aImageFallbackUrl" type="url" /></label>
               <label><span>Image Fallback Preview URL</span><input id="aImageFallbackPreviewUrl" name="aImageFallbackPreviewUrl" type="url" /></label>
             </div>
@@ -318,7 +344,15 @@
             <div class="grid two">
               <label><span>Id (slug)</span><input id="dId" name="dId" type="text" placeholder="ich" /></label>
               <label><span>Nazwa</span><input id="dName" name="dName" type="text" /></label>
-              <label><span>Severity</span><input id="dSeverity" name="dSeverity" type="text" placeholder="low / medium / high" /></label>
+              <label>
+                <span>Severity</span>
+                <select id="dSeverity" name="dSeverity">
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                  <option value="critical">critical</option>
+                </select>
+              </label>
               <label><span>Sugerowany srodek</span><input id="dSuggestedRemedy" name="dSuggestedRemedy" type="text" /></label>
               <label><span>Source label</span><input id="dImageSourceLabel" name="dImageSourceLabel" type="text" /></label>
               <label><span>Objawy (CSV ids)</span><input id="dSymptoms" name="dSymptoms" type="text" placeholder="white_spots,flashing" /></label>
@@ -344,8 +378,28 @@
                   <option value="pro">pro</option>
                 </select>
               </label>
-              <label><span>Status</span><input id="uStatus" name="uStatus" type="text" placeholder="active / inactive / grace_period / paused / cancelled" /></label>
-              <label><span>Source</span><input id="uSource" name="uSource" type="text" placeholder="system / app_store / play_store / stripe / promo / admin" /></label>
+              <label>
+                <span>Status</span>
+                <select id="uStatus" name="uStatus">
+                  <option value="active">active</option>
+                  <option value="inactive">inactive</option>
+                  <option value="grace_period">grace_period</option>
+                  <option value="paused">paused</option>
+                  <option value="cancelled">cancelled</option>
+                </select>
+              </label>
+              <label>
+                <span>Source</span>
+                <select id="uSource" name="uSource">
+                  <option value="admin">admin</option>
+                  <option value="system">system</option>
+                  <option value="app_store">app_store</option>
+                  <option value="play_store">play_store</option>
+                  <option value="stripe">stripe</option>
+                  <option value="promo">promo</option>
+                  <option value="local">local</option>
+                </select>
+              </label>
               <label><span>Started at (ISO)</span><input id="uStartedAt" name="uStartedAt" type="text" placeholder="2026-05-08T10:00:00.000Z" /></label>
               <label><span>Expires at (ISO)</span><input id="uExpiresAt" name="uExpiresAt" type="text" placeholder="2026-06-08T10:00:00.000Z" /></label>
               <label><span>Renews at (ISO)</span><input id="uRenewsAt" name="uRenewsAt" type="text" /></label>
