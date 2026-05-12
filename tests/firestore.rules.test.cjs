@@ -94,6 +94,31 @@ test('cannot create tank with foreign userId', async () => {
   );
 });
 
+test('owner can update tank lighting fields used by lamp catalog', async () => {
+  const db = asUser('user_a');
+  const tankRef = doc(db, 'tanks', 'tank_light_a');
+
+  await assertSucceeds(
+    setDoc(tankRef, {
+      userId: 'user_a',
+      name: 'Akwarium Light',
+      liters: 180,
+      createdAt: new Date('2026-05-07T09:00:00.000Z'),
+    })
+  );
+
+  await assertSucceeds(
+    updateDoc(tankRef, {
+      lightModelId: 'chihiros-a2-601',
+      lightModelName: 'Chihiros A2 601',
+      lightLumens: 5800,
+      lightIntensity: 'medium',
+      lightHours: 8,
+      updatedAt: new Date('2026-05-07T10:00:00.000Z'),
+    })
+  );
+});
+
 test('cannot read or mutate another user tank', async () => {
   await seedDoc('tanks', 'tank_owned_by_a', {
     userId: 'user_a',
@@ -177,7 +202,39 @@ test('stock item field validation blocks invalid plant payload', async () => {
       tempMax: 28,
       minLiters: 20,
       notes: '',
-      quantity: 5,
+      aggressionLevel: 'peaceful',
+      createdAt: new Date('2026-05-07T09:00:00.000Z'),
+    })
+  );
+});
+
+test('stock item plant payload accepts lighting requirement fields', async () => {
+  const dbA = asUser('user_a');
+  const stockCollection = collection(dbA, 'stockItems');
+
+  await assertSucceeds(
+    addDoc(stockCollection, {
+      userId: 'user_a',
+      tankId: 'tank_a',
+      tankName: 'Akwarium A',
+      type: 'plant',
+      name: 'Anubias',
+      commonName: 'Anubias',
+      latinName: 'Anubias barteri',
+      catalogPlantId: 'plant_1',
+      lightLumenMinPerLiter: 10,
+      lightLumenMaxPerLiter: 25,
+      lightHoursMin: 6,
+      lightHoursMax: 9,
+      phMin: 6,
+      phMax: 7.8,
+      ghMin: 3,
+      ghMax: 14,
+      tempMin: 22,
+      tempMax: 28,
+      quantity: 1,
+      minLiters: 20,
+      notes: '',
       createdAt: new Date('2026-05-07T09:00:00.000Z'),
     })
   );

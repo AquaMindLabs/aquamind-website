@@ -90,6 +90,9 @@ service cloud.firestore {
           'substrateTypes',
           'lightIntensity',
           'lightHours',
+          'lightModelId',
+          'lightModelName',
+          'lightLumens',
           'waterProfile',
           'singleSpeciesFishId',
           'targetRanges',
@@ -113,6 +116,8 @@ service cloud.firestore {
         optionalString(data, 'substrateType', 40) &&
         optionalList(data, 'substrateTypes', 12) &&
         optionalString(data, 'lightIntensity', 20) &&
+        optionalString(data, 'lightModelId', 120) &&
+        optionalString(data, 'lightModelName', 160) &&
         optionalString(data, 'waterProfile', 30) &&
         optionalString(data, 'singleSpeciesFishId', 128) &&
         optionalMap(data, 'targetRanges', 40) &&
@@ -127,6 +132,7 @@ service cloud.firestore {
         (!('aquariumType' in data) || validAquariumType(data.aquariumType)) &&
         (!('lightIntensity' in data) || validLightIntensity(data.lightIntensity)) &&
         (!('lightHours' in data) || inRangeNumber(data.lightHours, 1, 24)) &&
+        (!('lightLumens' in data) || inRangeNumber(data.lightLumens, 1, 200000)) &&
         (!('onboardingMode' in data) || validOnboardingMode(data.onboardingMode));
     }
 
@@ -211,6 +217,10 @@ service cloud.firestore {
           'latinName',
           'catalogFishId',
           'catalogPlantId',
+          'lightLumenMinPerLiter',
+          'lightLumenMaxPerLiter',
+          'lightHoursMin',
+          'lightHoursMax',
           'phMin',
           'phMax',
           'ghMin',
@@ -255,6 +265,10 @@ service cloud.firestore {
         inRangeNumber(data.tempMax, -5, 50) &&
         inRangeNumber(data.minLiters, 1, 20000) &&
         (!('source' in data) || validStockSource(data.source)) &&
+        (!('lightLumenMinPerLiter' in data) || inRangeNumber(data.lightLumenMinPerLiter, 1, 200)) &&
+        (!('lightLumenMaxPerLiter' in data) || inRangeNumber(data.lightLumenMaxPerLiter, 1, 250)) &&
+        (!('lightHoursMin' in data) || inRangeNumber(data.lightHoursMin, 1, 24)) &&
+        (!('lightHoursMax' in data) || inRangeNumber(data.lightHoursMax, 1, 24)) &&
         (
           (data.type == 'fish' &&
             ('catalogFishId' in data) &&
@@ -280,7 +294,8 @@ service cloud.firestore {
             data.catalogPlantId is string &&
             data.catalogPlantId.size() >= 1 &&
             data.catalogPlantId.size() <= 128 &&
-            !('quantity' in data) &&
+            (!('quantity' in data) ||
+              (data.quantity is int && data.quantity >= 1 && data.quantity <= 10000)) &&
             !('isSchooling' in data) &&
             !('minGroupSize' in data) &&
             !('aggressionLevel' in data)

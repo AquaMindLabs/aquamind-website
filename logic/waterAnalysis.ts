@@ -958,12 +958,36 @@ export function buildCurrentRiskNotes(
 export function buildWaterTestingSchedule(
   measurements: GenericRecord[],
   enabledTests: EnabledTests = {},
+  options: WaterAnalysisOptions = {},
   now = new Date()
 ): WaterTestingScheduleResult {
   const todayBucketMs = getDayBucketMs(now);
   const defaultBaseMs = getMeasurementRecordedAtMs(measurements[0]) || now.getTime();
   const baseDate = new Date(defaultBaseMs);
   const isTestEnabled = (key: string) => Boolean(enabledTests?.[key]);
+  const no2Range = resolveTargetRange('no2', options);
+  const no3Range = resolveTargetRange('no3', options);
+  const nh3nh4Range = resolveTargetRange('nh3nh4', options);
+  const po4Range = resolveTargetRange('po4', options);
+  const feRange = resolveTargetRange('fe', options);
+  const ghRange = resolveTargetRange('gh', options);
+  const khRange = resolveTargetRange('kh', options);
+  const caRange = resolveTargetRange('ca', options);
+  const mgRange = resolveTargetRange('mg', options);
+  const kRange = resolveTargetRange('k', options);
+  const tdsRange = resolveTargetRange('tds', options);
+
+  const buildCriticalRange = (
+    range: WaterTargetRange,
+    spanFactor = 0.4,
+    minPadding = 0.1
+  ) => {
+    const span = Math.max((range.max - range.min) * spanFactor, minPadding);
+    return {
+      min: range.min - span,
+      max: range.max + span,
+    };
+  };
 
   const formatCadence = (days: number) => {
     if (days <= 0) {
@@ -1103,20 +1127,30 @@ export function buildWaterTestingSchedule(
 
   const parameters: WaterTestingParameterPlan[] = [];
 
+  const no2WarningMax = Math.max(no2Range.max, 0);
+  const no2CriticalMax = Math.max(no2WarningMax * 4, no2WarningMax + 0.1);
   if (isTestEnabled('no2') && no2Value === null) {
     parameters.push(
       buildPlan('no2', 'NO2', 'problem', 0, 'Brak odczytu - wykonaj test NO2.')
     );
-  } else if (isTestEnabled('no2') && no2 > 0.1) {
+  } else if (isTestEnabled('no2') && no2 > no2CriticalMax) {
     parameters.push(
       buildPlan(
         'no2',
         'NO2',
         'problem',
         1,
-        no2 > 0.2
-          ? 'NO2 > 0.2 mg/l (alarm). Test codziennie, przy zatruciu nawet 2x dziennie.'
-          : 'NO2 > 0.1 mg/l. Test codziennie do powrotu do 0.'
+        `NO2 ${no2} mg/l mocno powyzej zakresu docelowego (<= ${no2WarningMax} mg/l). Test codziennie do powrotu do normy.`
+      )
+    );
+  } else if (isTestEnabled('no2') && no2 > no2WarningMax) {
+    parameters.push(
+      buildPlan(
+        'no2',
+        'NO2',
+        'warning',
+        1,
+        `NO2 ${no2} mg/l powyzej zakresu docelowego (<= ${no2WarningMax} mg/l). Test co 1-2 dni.`
       )
     );
   } else if (isTestEnabled('no2') && no2 > 0) {
@@ -1125,8 +1159,8 @@ export function buildWaterTestingSchedule(
         'no2',
         'NO2',
         'warning',
-        no2 >= 0.05 ? 1 : 2,
-        `NO2 ${no2} mg/l (lekkie odchylenie). Test co 1-2 dni do wyniku 0.`
+        2,
+        `NO2 ${no2} mg/l (sladowe). Test co 2 dni do wyniku 0.`
       )
     );
   } else if (isTestEnabled('no2')) {
@@ -1135,31 +1169,34 @@ export function buildWaterTestingSchedule(
     );
   }
 
+  const no3WarningMax = no3Range.max;
+  const no3CriticalMax = Math.max(no3WarningMax * 2, no3WarningMax + 20);
+  const no3TrendWarningMax = Math.max(no3WarningMax * 1.2, no3WarningMax + 5);
   if (isTestEnabled('no3') && no3Value === null) {
     parameters.push(
       buildPlan('no3', 'NO3', 'problem', 0, 'Brak odczytu - wykonaj test NO3.')
     );
-  } else if (isTestEnabled('no3') && no3 > 50) {
+  } else if (isTestEnabled('no3') && no3 > no3CriticalMax) {
     parameters.push(
       buildPlan(
         'no3',
         'NO3',
         'problem',
         1,
-        `NO3 ${no3} mg/l (>50). Test codziennie do zejscia ponizej 30.`
+        `NO3 ${no3} mg/l mocno powyzej zakresu docelowego (${no3Range.min}-${no3WarningMax} mg/l). Test codziennie.`
       )
     );
   } else if (
     isTestEnabled('no3') &&
-    (no3 >= 30 || (no3Trend.direction === 'up' && no3 > 25))
+    (no3 > no3WarningMax || (no3Trend.direction === 'up' && no3 > no3TrendWarningMax))
   ) {
     parameters.push(
       buildPlan(
         'no3',
         'NO3',
         'warning',
-        no3 >= 40 ? 2 : 3,
-        `NO3 ${no3} mg/l lub trend wzrostowy. Test co 2-3 dni do stabilizacji.`
+        no3 > no3CriticalMax * 0.7 ? 2 : 3,
+        `NO3 ${no3} mg/l lub trend wzrostowy ponad zakres docelowy. Test co 2-3 dni.`
       )
     );
   } else if (isTestEnabled('no3')) {
@@ -1168,28 +1205,30 @@ export function buildWaterTestingSchedule(
     );
   }
 
+  const nh3WarningMax = Math.max(nh3nh4Range.max, 0);
+  const nh3CriticalMax = Math.max(nh3WarningMax * 4, nh3WarningMax + 0.15);
   if (isTestEnabled('nh3nh4') && nh3nh4Value === null) {
     parameters.push(
       buildPlan('nh3nh4', 'NH3/NH4', 'problem', 0, 'Brak odczytu - wykonaj test NH3/NH4.')
     );
-  } else if (isTestEnabled('nh3nh4') && nh3nh4 > 0.2) {
+  } else if (isTestEnabled('nh3nh4') && nh3nh4 > nh3CriticalMax) {
     parameters.push(
       buildPlan(
         'nh3nh4',
         'NH3/NH4',
         'problem',
         1,
-        `NH3/NH4 ${nh3nh4} mg/l (wysokie). Test codziennie do zejscia <= 0.05.`
+        `NH3/NH4 ${nh3nh4} mg/l mocno powyzej zakresu docelowego (<= ${nh3WarningMax} mg/l). Test codziennie.`
       )
     );
-  } else if (isTestEnabled('nh3nh4') && nh3nh4 > 0.05) {
+  } else if (isTestEnabled('nh3nh4') && nh3nh4 > nh3WarningMax) {
     parameters.push(
       buildPlan(
         'nh3nh4',
         'NH3/NH4',
         'warning',
         2,
-        `NH3/NH4 ${nh3nh4} mg/l (podwyzszone). Test co 1-2 dni do stabilizacji.`
+        `NH3/NH4 ${nh3nh4} mg/l powyzej zakresu docelowego. Test co 1-2 dni.`
       )
     );
   } else if (isTestEnabled('nh3nh4')) {
@@ -1198,28 +1237,30 @@ export function buildWaterTestingSchedule(
     );
   }
 
+  const po4WarningMax = po4Range.max;
+  const po4CriticalMax = Math.max(po4WarningMax * 2, po4WarningMax + 1);
   if (isTestEnabled('po4') && po4Value === null) {
     parameters.push(
       buildPlan('po4', 'PO4', 'problem', 0, 'Brak odczytu - wykonaj test PO4.')
     );
-  } else if (isTestEnabled('po4') && po4 > 2) {
+  } else if (isTestEnabled('po4') && po4 > po4CriticalMax) {
     parameters.push(
       buildPlan(
         'po4',
         'PO4',
         'problem',
         1,
-        `PO4 ${po4} mg/l (wysokie). Test codziennie do zejscia <= 1.0.`
+        `PO4 ${po4} mg/l mocno powyzej zakresu docelowego (${po4Range.min}-${po4WarningMax} mg/l). Test codziennie.`
       )
     );
-  } else if (isTestEnabled('po4') && po4 > 1) {
+  } else if (isTestEnabled('po4') && po4 > po4WarningMax) {
     parameters.push(
       buildPlan(
         'po4',
         'PO4',
         'warning',
         3,
-        `PO4 ${po4} mg/l (podwyzszone). Test co 2-3 dni.`
+        `PO4 ${po4} mg/l powyzej zakresu docelowego. Test co 2-3 dni.`
       )
     );
   } else if (isTestEnabled('po4')) {
@@ -1228,28 +1269,30 @@ export function buildWaterTestingSchedule(
     );
   }
 
+  const feWarningMax = feRange.max;
+  const feCriticalMax = Math.max(feWarningMax * 2.5, feWarningMax + 0.2);
   if (isTestEnabled('fe') && feValue === null) {
     parameters.push(
       buildPlan('fe', 'Fe', 'problem', 0, 'Brak odczytu - wykonaj test Fe.')
     );
-  } else if (isTestEnabled('fe') && fe > 0.5) {
+  } else if (isTestEnabled('fe') && fe > feCriticalMax) {
     parameters.push(
       buildPlan(
         'fe',
         'Fe',
         'problem',
         1,
-        `Fe ${fe} mg/l (wysokie). Test codziennie do zejscia <= 0.2.`
+        `Fe ${fe} mg/l mocno powyzej zakresu docelowego (${feRange.min}-${feWarningMax} mg/l). Test codziennie.`
       )
     );
-  } else if (isTestEnabled('fe') && fe > 0.2) {
+  } else if (isTestEnabled('fe') && fe > feWarningMax) {
     parameters.push(
       buildPlan(
         'fe',
         'Fe',
         'warning',
         3,
-        `Fe ${fe} mg/l (podwyzszone). Test co 2-3 dni.`
+        `Fe ${fe} mg/l powyzej zakresu docelowego. Test co 2-3 dni.`
       )
     );
   } else if (isTestEnabled('fe')) {
@@ -1288,31 +1331,32 @@ export function buildWaterTestingSchedule(
     );
   }
 
+  const ghCriticalRange = buildCriticalRange(ghRange, 0.5, 1);
   if (isTestEnabled('gh') && ghValue === null) {
     parameters.push(
       buildPlan('gh', 'GH', 'problem', 0, 'Brak odczytu - wykonaj test GH.')
     );
-  } else if (isTestEnabled('gh') && (gh < 3 || gh > 18)) {
+  } else if (isTestEnabled('gh') && (gh < ghCriticalRange.min || gh > ghCriticalRange.max)) {
     parameters.push(
       buildPlan(
         'gh',
         'GH',
         'problem',
-        gh < 2 || gh > 20 ? 1 : 2,
-        `GH ${gh} dGH mocno poza zakresem. Test co 1-3 dni do stabilizacji.`
+        gh < ghRange.min || gh > ghRange.max ? 1 : 2,
+        `GH ${gh} dGH mocno poza zakresem docelowym (${ghRange.min}-${ghRange.max}). Test co 1-3 dni.`
       )
     );
   } else if (
     isTestEnabled('gh') &&
-    (gh < 5 || gh > 14 || ghSpread > 2.5)
+    (gh < ghRange.min || gh > ghRange.max || ghSpread > Math.max((ghRange.max - ghRange.min) * 0.3, 1.5))
   ) {
     parameters.push(
       buildPlan(
         'gh',
         'GH',
         'warning',
-        ghSpread > 2.5 ? 3 : 5,
-        `GH ${gh} dGH lekko poza zakresem lub niestabilne. Test co 3-7 dni.`
+        ghSpread > Math.max((ghRange.max - ghRange.min) * 0.3, 1.5) ? 3 : 5,
+        `GH ${gh} dGH lekko poza zakresem docelowym lub niestabilne. Test co 3-7 dni.`
       )
     );
   } else if (isTestEnabled('gh')) {
@@ -1321,31 +1365,32 @@ export function buildWaterTestingSchedule(
     );
   }
 
+  const khCriticalRange = buildCriticalRange(khRange, 0.5, 0.7);
   if (isTestEnabled('kh') && khValue === null) {
     parameters.push(
       buildPlan('kh', 'KH', 'problem', 0, 'Brak odczytu - wykonaj test KH.')
     );
-  } else if (isTestEnabled('kh') && (kh < 2 || kh > 12)) {
+  } else if (isTestEnabled('kh') && (kh < khCriticalRange.min || kh > khCriticalRange.max)) {
     parameters.push(
       buildPlan(
         'kh',
         'KH',
         'problem',
-        kh < 1.5 || kh > 14 ? 1 : 2,
-        `KH ${kh} dKH mocno poza zakresem. Test co 1-3 dni do stabilizacji.`
+        kh < khRange.min || kh > khRange.max ? 1 : 2,
+        `KH ${kh} dKH mocno poza zakresem docelowym (${khRange.min}-${khRange.max}). Test co 1-3 dni.`
       )
     );
   } else if (
     isTestEnabled('kh') &&
-    (kh < 3 || kh > 8 || khSpread > 1.5)
+    (kh < khRange.min || kh > khRange.max || khSpread > Math.max((khRange.max - khRange.min) * 0.3, 1))
   ) {
     parameters.push(
       buildPlan(
         'kh',
         'KH',
         'warning',
-        khSpread > 1.5 ? 3 : 5,
-        `KH ${kh} dKH lekko poza zakresem lub niestabilne. Test co 3-7 dni.`
+        khSpread > Math.max((khRange.max - khRange.min) * 0.3, 1) ? 3 : 5,
+        `KH ${kh} dKH lekko poza zakresem docelowym lub niestabilne. Test co 3-7 dni.`
       )
     );
   } else if (isTestEnabled('kh')) {
@@ -1354,28 +1399,29 @@ export function buildWaterTestingSchedule(
     );
   }
 
+  const caCriticalRange = buildCriticalRange(caRange, 0.45, 8);
   if (isTestEnabled('ca') && caValue === null) {
     parameters.push(
       buildPlan('ca', 'Ca', 'problem', 0, 'Brak odczytu - wykonaj test Ca.')
     );
-  } else if (isTestEnabled('ca') && (ca < 10 || ca > 100)) {
+  } else if (isTestEnabled('ca') && (ca < caCriticalRange.min || ca > caCriticalRange.max)) {
     parameters.push(
       buildPlan(
         'ca',
         'Ca',
         'problem',
         1,
-        `Ca ${ca} mg/l mocno poza zakresem. Test codziennie do stabilizacji.`
+        `Ca ${ca} mg/l mocno poza zakresem docelowym (${caRange.min}-${caRange.max}). Test codziennie.`
       )
     );
-  } else if (isTestEnabled('ca') && (ca < 20 || ca > 60)) {
+  } else if (isTestEnabled('ca') && (ca < caRange.min || ca > caRange.max)) {
     parameters.push(
       buildPlan(
         'ca',
         'Ca',
         'warning',
         3,
-        `Ca ${ca} mg/l lekko poza zakresem. Test co 3-7 dni.`
+        `Ca ${ca} mg/l lekko poza zakresem docelowym. Test co 3-7 dni.`
       )
     );
   } else if (isTestEnabled('ca')) {
@@ -1384,28 +1430,29 @@ export function buildWaterTestingSchedule(
     );
   }
 
+  const mgCriticalRange = buildCriticalRange(mgRange, 0.45, 3);
   if (isTestEnabled('mg') && mgValue === null) {
     parameters.push(
       buildPlan('mg', 'Mg', 'problem', 0, 'Brak odczytu - wykonaj test Mg.')
     );
-  } else if (isTestEnabled('mg') && (mg < 2 || mg > 35)) {
+  } else if (isTestEnabled('mg') && (mg < mgCriticalRange.min || mg > mgCriticalRange.max)) {
     parameters.push(
       buildPlan(
         'mg',
         'Mg',
         'problem',
         1,
-        `Mg ${mg} mg/l mocno poza zakresem. Test codziennie do stabilizacji.`
+        `Mg ${mg} mg/l mocno poza zakresem docelowym (${mgRange.min}-${mgRange.max}). Test codziennie.`
       )
     );
-  } else if (isTestEnabled('mg') && (mg < 5 || mg > 20)) {
+  } else if (isTestEnabled('mg') && (mg < mgRange.min || mg > mgRange.max)) {
     parameters.push(
       buildPlan(
         'mg',
         'Mg',
         'warning',
         3,
-        `Mg ${mg} mg/l lekko poza zakresem. Test co 3-7 dni.`
+        `Mg ${mg} mg/l lekko poza zakresem docelowym. Test co 3-7 dni.`
       )
     );
   } else if (isTestEnabled('mg')) {
@@ -1414,28 +1461,29 @@ export function buildWaterTestingSchedule(
     );
   }
 
+  const kCriticalRange = buildCriticalRange(kRange, 0.45, 4);
   if (isTestEnabled('k') && kValue === null) {
     parameters.push(
       buildPlan('k', 'K', 'problem', 0, 'Brak odczytu - wykonaj test K.')
     );
-  } else if (isTestEnabled('k') && (k < 2 || k > 40)) {
+  } else if (isTestEnabled('k') && (k < kCriticalRange.min || k > kCriticalRange.max)) {
     parameters.push(
       buildPlan(
         'k',
         'K',
         'problem',
         1,
-        `K ${k} mg/l mocno poza zakresem. Test codziennie do stabilizacji.`
+        `K ${k} mg/l mocno poza zakresem docelowym (${kRange.min}-${kRange.max}). Test codziennie.`
       )
     );
-  } else if (isTestEnabled('k') && (k < 5 || k > 30)) {
+  } else if (isTestEnabled('k') && (k < kRange.min || k > kRange.max)) {
     parameters.push(
       buildPlan(
         'k',
         'K',
         'warning',
         3,
-        `K ${k} mg/l lekko poza zakresem. Test co 3-7 dni.`
+        `K ${k} mg/l lekko poza zakresem docelowym. Test co 3-7 dni.`
       )
     );
   } else if (isTestEnabled('k')) {
@@ -1444,28 +1492,29 @@ export function buildWaterTestingSchedule(
     );
   }
 
+  const tdsCriticalRange = buildCriticalRange(tdsRange, 0.45, 30);
   if (isTestEnabled('tds') && tdsValue === null) {
     parameters.push(
       buildPlan('tds', 'TDS', 'problem', 0, 'Brak odczytu - wykonaj test TDS.')
     );
-  } else if (isTestEnabled('tds') && (tds < 50 || tds > 600)) {
+  } else if (isTestEnabled('tds') && (tds < tdsCriticalRange.min || tds > tdsCriticalRange.max)) {
     parameters.push(
       buildPlan(
         'tds',
         'TDS',
         'problem',
         1,
-        `TDS ${tds} ppm mocno poza zakresem. Test codziennie do stabilizacji.`
+        `TDS ${tds} ppm mocno poza zakresem docelowym (${tdsRange.min}-${tdsRange.max}). Test codziennie.`
       )
     );
-  } else if (isTestEnabled('tds') && (tds < 80 || tds > 450)) {
+  } else if (isTestEnabled('tds') && (tds < tdsRange.min || tds > tdsRange.max)) {
     parameters.push(
       buildPlan(
         'tds',
         'TDS',
         'warning',
         3,
-        `TDS ${tds} ppm lekko poza zakresem. Test co 3-7 dni.`
+        `TDS ${tds} ppm lekko poza zakresem docelowym. Test co 3-7 dni.`
       )
     );
   } else if (isTestEnabled('tds')) {

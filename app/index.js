@@ -447,11 +447,16 @@ function formatEquipmentTankRange(item) {
 }
 
 function getEquipmentCatalogDescription(item) {
-  const normalizedType = normalizeEquipmentType(item?.type);
+  const normalizedType = String(item?.type ?? '').trim().toLowerCase();
+  if (normalizedType === 'light') {
+    return 'Oswietlenie wspiera wzrost roslin. Moc i skutecznosc zalezy od litrazu i czasu swiecenia.';
+  }
+
+  const normalizedEquipmentType = normalizeEquipmentType(item?.type);
   const maxLiters = toFiniteNumber(item?.tankMaxLiters) ?? 0;
   const flowLh = toFiniteNumber(item?.flowLh) ?? 0;
 
-  if (normalizedType === 'heater') {
+  if (normalizedEquipmentType === 'heater') {
     if (maxLiters <= 60) {
       return 'Kompaktowa grzalka do stabilnego dogrzewania mniejszych zbiornikow.';
     }
@@ -468,6 +473,13 @@ function getEquipmentCatalogDescription(item) {
     return 'Uniwersalny filtr do codziennej filtracji biologiczno-mechanicznej.';
   }
   return 'Wydajniejszy filtr do wiekszych zbiornikow albo mocniej obciazonej obsady.';
+}
+
+function normalizeEquipmentCatalogType(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return normalized === 'heater' || normalized === 'filter' || normalized === 'light'
+    ? normalized
+    : '';
 }
 
 function getTankEquipmentListField(type) {
@@ -535,6 +547,9 @@ function buildTankRuleSanitizationPatch(tank) {
     'substrateType',
     'substrateTypes',
     'lightIntensity',
+    'lightModelId',
+    'lightModelName',
+    'lightLumens',
     'waterProfile',
     'singleSpeciesFishId',
     'targetRanges',
@@ -553,6 +568,9 @@ function buildTankRuleSanitizationPatch(tank) {
     'substrateType',
     'substrateTypes',
     'lightIntensity',
+    'lightModelId',
+    'lightModelName',
+    'lightLumens',
     'lightHours',
     'waterProfile',
     'singleSpeciesFishId',
@@ -588,6 +606,8 @@ function buildTankRuleSanitizationPatch(tank) {
     ['aquariumType', 20],
     ['substrateType', 40],
     ['lightIntensity', 20],
+    ['lightModelId', 80],
+    ['lightModelName', 120],
     ['waterProfile', 30],
     ['singleSpeciesFishId', 128],
     ['onboardingMode', 30],
@@ -623,6 +643,13 @@ function buildTankRuleSanitizationPatch(tank) {
     }
   }
 
+  if (hasField('lightLumens')) {
+    const lightLumens = Number(tank.lightLumens);
+    if (!Number.isFinite(lightLumens) || lightLumens <= 0) {
+      patch.lightLumens = deleteField();
+    }
+  }
+
   if (hasField('aquariumType')) {
     const allowedAquariumTypes = new Set(['plant', 'shrimp', 'mixed', '']);
     const value = String(tank.aquariumType ?? '').trim().toLowerCase();
@@ -636,6 +663,13 @@ function buildTankRuleSanitizationPatch(tank) {
     const value = String(tank.lightIntensity ?? '').trim().toLowerCase();
     if (!allowedLightIntensities.has(value)) {
       patch.lightIntensity = deleteField();
+    }
+  }
+
+  if (hasField('lightModelId')) {
+    const value = String(tank.lightModelId ?? '').trim().toLowerCase();
+    if (value && !LIGHT_LAMP_CATALOG.some((item) => item.id === value)) {
+      patch.lightModelId = deleteField();
     }
   }
 
@@ -1021,6 +1055,46 @@ function getMeasurementSeverityFromValue(key, rawValue) {
   return 'ok';
 }
 
+function getMeasurementSeverityFromValueWithTargetRanges(
+  key,
+  rawValue,
+  targetRanges = null
+) {
+  const normalizedRawValue =
+    typeof rawValue === 'string' ? rawValue.trim().replace(',', '.') : rawValue;
+  const value = Number(normalizedRawValue);
+
+  if (!Number.isFinite(value)) {
+    return 'ok';
+  }
+
+  if (!targetRanges || typeof targetRanges !== 'object') {
+    return getMeasurementSeverityFromValue(key, value);
+  }
+
+  const range = targetRanges?.[key];
+  const min = Number(range?.min);
+  const max = Number(range?.max);
+
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min > max) {
+    return getMeasurementSeverityFromValue(key, value);
+  }
+
+  const span = Math.max((max - min) * 0.35, 0.1);
+  const criticalMin = min - span;
+  const criticalMax = max + span;
+
+  if (value < criticalMin || value > criticalMax) {
+    return 'critical';
+  }
+
+  if (value < min || value > max) {
+    return 'warning';
+  }
+
+  return 'ok';
+}
+
 function getMeasurementTargetRangeLabel(key) {
   if (key === 'ph') return '6.5-7.8';
   if (key === 'gh') return '5-14 dGH';
@@ -1037,6 +1111,73 @@ function getMeasurementTargetRangeLabel(key) {
   if (key === 'co2') return '10-30 mg/l';
   if (key === 'temperature') return '24-27 C';
   return '-';
+}
+
+function getMeasurementCustomTargetRangeLabel(key, targetRanges = null) {
+  if (!targetRanges || typeof targetRanges !== 'object') {
+    return getMeasurementTargetRangeLabel(key);
+  }
+
+  const range = targetRanges?.[key];
+  const min = Number(range?.min);
+  const max = Number(range?.max);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min > max) {
+    return getMeasurementTargetRangeLabel(key);
+  }
+
+  const unitByKey = {
+    gh: 'dGH',
+    kh: 'dKH',
+    ca: 'mg/l',
+    mg: 'mg/l',
+    k: 'mg/l',
+    tds: 'ppm',
+    no2: 'mg/l',
+    no3: 'mg/l',
+    nh3nh4: 'mg/l',
+    po4: 'mg/l',
+    fe: 'mg/l',
+    co2: 'mg/l',
+    temperature: 'C',
+  };
+  const unit = unitByKey[key] ?? '';
+  return unit ? `${min}-${max} ${unit}` : `${min}-${max}`;
+}
+
+function buildMeasurementIssueSeverityMapFromAnalysis(analysis, rows = []) {
+  const map = new Map();
+  const setSeverity = (key, severity) => {
+    if (!key || !severity || severity === 'ok') {
+      return;
+    }
+
+    const existingSeverity = map.get(key);
+    if (
+      !existingSeverity ||
+      getAnalysisSeverityRank(severity) > getAnalysisSeverityRank(existingSeverity)
+    ) {
+      map.set(key, severity);
+    }
+  };
+
+  (analysis?.recommendations ?? []).forEach((recommendation) => {
+    const severity = recommendation?.severity;
+    const keys = getMeasurementKeysFromRecommendationParameter(
+      recommendation?.parameter
+    );
+
+    keys.forEach((key) => setSeverity(key, severity));
+  });
+
+  rows.forEach((row) => {
+    const rowKey = String(row?.key ?? '');
+    if (!rowKey || map.has(rowKey)) {
+      return;
+    }
+    map.set(rowKey, 'ok');
+  });
+
+  return map;
 }
 
 function getMeasurementDefaultAction(key, severity) {
@@ -1131,7 +1272,7 @@ function buildTrendSuggestedEnvironmentForTank({
         );
 
   const plantLightRanges = plantItems
-    .map((item) => inferPlantLightRange(item))
+    .map((item) => getPlantLightRequirements(item))
     .filter(Boolean)
     .map((range) => ({
       min: Number(range.minHours),
@@ -1319,6 +1460,7 @@ function buildHomeSectionCounts({
     stockItems,
     tank,
     equipmentAssessment,
+    targetRanges: getWaterAnalysisOptionsForTank(tank)?.targetRanges,
   });
   const baseAnalysis = measurement
     ? analyzeMeasurementLogic(
@@ -1805,6 +1947,23 @@ const LIGHT_INTENSITY_OPTIONS = [
   { value: 'medium', label: 'Srednia', labelKey: 'lightMedium' },
   { value: 'high', label: 'Wysoka', labelKey: 'lightHigh' },
 ];
+const LIGHT_LAMP_CATALOG = [
+  { id: 'chihiros-a2-451', name: 'Chihiros A2 451', lumens: 3900 },
+  { id: 'chihiros-a2-601', name: 'Chihiros A2 601', lumens: 5800 },
+  { id: 'chihiros-a2-801', name: 'Chihiros A2 801', lumens: 8000 },
+  { id: 'chihiros-wrgb2-60', name: 'Chihiros WRGB II 60', lumens: 4500 },
+  { id: 'chihiros-wrgb2-90', name: 'Chihiros WRGB II 90', lumens: 6000 },
+  { id: 'twinstar-b-line-600s', name: 'Twinstar B-Line 600S', lumens: 3000 },
+  { id: 'twinstar-e-line-600e', name: 'Twinstar E-Line 600E', lumens: 3600 },
+  { id: 'twinstar-s-line-600sa', name: 'Twinstar S-Line 600SA', lumens: 4200 },
+  { id: 'weekaqua-l-series-600', name: 'WeekAqua L-Series 600', lumens: 5400 },
+  { id: 'weekaqua-a-series-900', name: 'WeekAqua A-Series 900', lumens: 7600 },
+  { id: 'hygger-957-48w', name: 'Hygger 957 (48W)', lumens: 4200 },
+  { id: 'hygger-hg978-36w', name: 'Hygger HG978 (36W)', lumens: 3000 },
+  { id: 'aquael-leddy-slim-32w', name: 'Aquael Leddy Slim 32W', lumens: 3300 },
+  { id: 'aquael-leddy-slim-36w', name: 'Aquael Leddy Slim 36W', lumens: 4300 },
+  { id: 'sinkor-wrgb-ii-90', name: 'Sinkor WRGB II 90', lumens: 6200 },
+];
 
 const AQUARIUM_TYPE_OPTIONS = [
   { value: 'plant', label: 'Roslinne', labelKey: 'aquariumTypePlant' },
@@ -2036,6 +2195,78 @@ function normalizeSubstrateTypes(value) {
 
 function normalizeLightIntensity(value) {
   return String(value ?? '').trim().toLowerCase();
+}
+
+function normalizeLightModelId(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return LIGHT_LAMP_CATALOG.some((item) => item.id === normalized)
+    ? normalized
+    : '';
+}
+
+function getLightLampById(lightModelId) {
+  const normalized = normalizeLightModelId(lightModelId);
+  if (!normalized) {
+    return null;
+  }
+  return LIGHT_LAMP_CATALOG.find((item) => item.id === normalized) ?? null;
+}
+
+function estimateLightIntensityFromLumens(lightLumens, liters) {
+  const normalizedLumens = Number(lightLumens);
+  const normalizedLiters = Number(liters);
+  if (
+    !Number.isFinite(normalizedLumens) ||
+    normalizedLumens <= 0 ||
+    !Number.isFinite(normalizedLiters) ||
+    normalizedLiters <= 0
+  ) {
+    return '';
+  }
+
+  const lumensPerLiter = normalizedLumens / normalizedLiters;
+  if (lumensPerLiter < 20) {
+    return 'low';
+  }
+  if (lumensPerLiter <= 40) {
+    return 'medium';
+  }
+  return 'high';
+}
+
+function getTankLightingSummary(tank) {
+  const lightHours = Number(tank?.lightHours);
+  const lightModelId = normalizeLightModelId(tank?.lightModelId);
+  const catalogLamp = getLightLampById(lightModelId);
+  const customLampName = String(tank?.lightModelName ?? '').trim();
+  const rawLightLumens = Number(tank?.lightLumens);
+  const lightLumens = Number.isFinite(rawLightLumens) && rawLightLumens > 0
+    ? rawLightLumens
+    : Number(catalogLamp?.lumens);
+  const liters = Number(tank?.liters);
+  const lumensPerLiter =
+    Number.isFinite(lightLumens) &&
+    lightLumens > 0 &&
+    Number.isFinite(liters) &&
+    liters > 0
+      ? lightLumens / liters
+      : null;
+  const derivedIntensity = estimateLightIntensityFromLumens(lightLumens, liters);
+  const hasLamp =
+    Boolean(lightModelId) ||
+    (Number.isFinite(lightLumens) && lightLumens > 0);
+
+  return {
+    lightModelId,
+    lightModelName: customLampName || catalogLamp?.name || '',
+    lightLumens: Number.isFinite(lightLumens) && lightLumens > 0 ? lightLumens : null,
+    lumensPerLiter: Number.isFinite(lumensPerLiter) ? lumensPerLiter : null,
+    lightIntensity: hasLamp
+      ? derivedIntensity || normalizeLightIntensity(tank?.lightIntensity) || 'low'
+      : 'low',
+    lightHours: Number.isFinite(lightHours) ? lightHours : null,
+    isDaylightOnly: !hasLamp,
+  };
 }
 
 function normalizeAquariumType(value) {
@@ -2376,6 +2607,30 @@ function getLightIntensityLabel(value) {
   return option ? option.label : 'Brak danych';
 }
 
+function getTankLightingLabelForIssues(tankProfile) {
+  if (Boolean(tankProfile?.isDaylightOnly)) {
+    return 'swiatlo dzienne (bez lampy)';
+  }
+
+  const lightModelName = String(tankProfile?.lightModelName ?? '').trim();
+  const lightLumens = Number(tankProfile?.lightLumens);
+  const lumensPerLiter = Number(tankProfile?.lumensPerLiter);
+
+  if (Number.isFinite(lightLumens) && lightLumens > 0) {
+    const roundedLumens = Math.round(lightLumens);
+    const lumensPerLiterPart =
+      Number.isFinite(lumensPerLiter) && lumensPerLiter > 0
+        ? `, ${Math.round(lumensPerLiter)} lm/l`
+        : '';
+    if (lightModelName) {
+      return `${lightModelName} (${roundedLumens} lm${lumensPerLiterPart})`;
+    }
+    return `${roundedLumens} lm${lumensPerLiterPart}`;
+  }
+
+  return getLightIntensityLabel(tankProfile?.lightIntensity);
+}
+
 function getStockNameFingerprint(item) {
   return normalizeText(
     `${item.commonName ?? ''} ${item.latinName ?? ''} ${item.name ?? ''}`
@@ -2536,6 +2791,255 @@ function lightLevelToRank(level) {
   return null;
 }
 
+function getLightLevelLumensRange(level) {
+  if (level === 'low') {
+    return { min: 10, max: 25 };
+  }
+
+  if (level === 'medium') {
+    return { min: 20, max: 45 };
+  }
+
+  if (level === 'high') {
+    return { min: 35, max: 65 };
+  }
+
+  return null;
+}
+
+function getPlantLumensPerLiterRange(plantLightRange) {
+  if (!plantLightRange) {
+    return null;
+  }
+
+  const minLevelRange = getLightLevelLumensRange(plantLightRange.min);
+  const maxLevelRange = getLightLevelLumensRange(plantLightRange.max);
+
+  if (!minLevelRange || !maxLevelRange) {
+    return null;
+  }
+
+  const minLumensPerLiter = Math.min(minLevelRange.min, maxLevelRange.min);
+  const maxLumensPerLiter = Math.max(minLevelRange.max, maxLevelRange.max);
+
+  if (
+    !Number.isFinite(minLumensPerLiter) ||
+    !Number.isFinite(maxLumensPerLiter) ||
+    minLumensPerLiter > maxLumensPerLiter
+  ) {
+    return null;
+  }
+
+  return {
+    min: minLumensPerLiter,
+    max: maxLumensPerLiter,
+  };
+}
+
+function parsePlantLightLumenValue(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function getPlantLightRequirements(item) {
+  const explicitMin = parsePlantLightLumenValue(
+    item?.lightLumenMinPerLiter ?? item?.lightMinLumensPerLiter
+  );
+  const explicitMax = parsePlantLightLumenValue(
+    item?.lightLumenMaxPerLiter ?? item?.lightMaxLumensPerLiter
+  );
+  const explicitHoursMin = parsePlantLightLumenValue(
+    item?.lightHoursMin ?? item?.minLightHours
+  );
+  const explicitHoursMax = parsePlantLightLumenValue(
+    item?.lightHoursMax ?? item?.maxLightHours
+  );
+
+  if (
+    Number.isFinite(explicitMin) &&
+    Number.isFinite(explicitMax) &&
+    explicitMin <= explicitMax
+  ) {
+    return {
+      minLumensPerLiter: explicitMin,
+      maxLumensPerLiter: explicitMax,
+      minHours: Number.isFinite(explicitHoursMin) ? explicitHoursMin : null,
+      maxHours: Number.isFinite(explicitHoursMax) ? explicitHoursMax : null,
+      source: 'explicit',
+    };
+  }
+
+  const inferredRange = inferPlantLightRange(item);
+  const inferredLumensRange = getPlantLumensPerLiterRange(inferredRange);
+
+  if (inferredLumensRange) {
+    return {
+      minLumensPerLiter: inferredLumensRange.min,
+      maxLumensPerLiter: inferredLumensRange.max,
+      minHours: Number(inferredRange?.minHours),
+      maxHours: Number(inferredRange?.maxHours),
+      source: 'inferred',
+    };
+  }
+
+  return {
+    minLumensPerLiter: 10,
+    maxLumensPerLiter: 65,
+    minHours: 6,
+    maxHours: 10,
+    source: 'fallback',
+  };
+}
+
+function evaluatePlantLightingForTank(item, tankProfile = null) {
+  const requirements = getPlantLightRequirements(item);
+  const tankLumensPerLiter = Number(tankProfile?.lumensPerLiter);
+  const minLumens = Number(requirements.minLumensPerLiter);
+  const maxLumens = Number(requirements.maxLumensPerLiter);
+
+  if (
+    !Number.isFinite(minLumens) ||
+    !Number.isFinite(maxLumens) ||
+    minLumens <= 0 ||
+    maxLumens < minLumens
+  ) {
+    return {
+      status: 'unknown',
+      label: 'Brak danych',
+      message: 'Brak kompletnych danych o wymaganiach swietlnych rosliny.',
+      requirements,
+    };
+  }
+
+  if (!Number.isFinite(tankLumensPerLiter) || tankLumensPerLiter <= 0) {
+    if (Boolean(tankProfile?.isDaylightOnly)) {
+      return {
+        status: 'too_low',
+        label: 'Za malo swiatla',
+        message: `Roslina potrzebuje ${Math.round(minLumens)}-${Math.round(maxLumens)} lm/l, a akwarium ma tylko swiatlo dzienne.`,
+        requirements,
+      };
+    }
+
+    return {
+      status: 'unknown',
+      label: 'Brak danych',
+      message: `Roslina potrzebuje ${Math.round(minLumens)}-${Math.round(maxLumens)} lm/l. Dodaj lampe, aby ocenic dopasowanie.`,
+      requirements,
+    };
+  }
+
+  const roundedTankLumens = Math.round(tankLumensPerLiter * 10) / 10;
+  const roundedMin = Math.round(minLumens * 10) / 10;
+  const roundedMax = Math.round(maxLumens * 10) / 10;
+
+  if (tankLumensPerLiter < minLumens) {
+    return {
+      status: 'too_low',
+      label: 'Za malo swiatla',
+      message: `Za malo swiatla: ${roundedTankLumens} lm/l przy wymaganiu ${roundedMin}-${roundedMax} lm/l.`,
+      requirements,
+    };
+  }
+
+  if (tankLumensPerLiter > maxLumens) {
+    return {
+      status: 'too_high',
+      label: 'Za mocne swiatlo',
+      message: `Za mocne swiatlo: ${roundedTankLumens} lm/l przy wymaganiu ${roundedMin}-${roundedMax} lm/l.`,
+      requirements,
+    };
+  }
+
+  return {
+    status: 'ok',
+    label: 'Swiatlo OK',
+    message: `Swiatlo OK: ${roundedTankLumens} lm/l miesci sie w wymaganiu ${roundedMin}-${roundedMax} lm/l.`,
+    requirements,
+  };
+}
+
+function evaluateLampFitForTank({
+  lumensPerLiter,
+  preferredLumensRange = null,
+  fallbackMin = 10,
+  fallbackMax = 65,
+}) {
+  const value = Number(lumensPerLiter);
+  if (!Number.isFinite(value) || value <= 0) {
+    return {
+      status: 'check',
+      label: 'Sprawdz',
+      isFit: false,
+      message: 'Brak danych lm/l - trudno ocenic dopasowanie lampy.',
+    };
+  }
+
+  const rangeMin = Number(preferredLumensRange?.min);
+  const rangeMax = Number(preferredLumensRange?.max);
+  const hasPreferredRange =
+    Number.isFinite(rangeMin) && Number.isFinite(rangeMax) && rangeMin <= rangeMax;
+  const roundedValue = Math.round(value * 10) / 10;
+
+  if (hasPreferredRange) {
+    const roundedMin = Math.round(rangeMin * 10) / 10;
+    const roundedMax = Math.round(rangeMax * 10) / 10;
+    const conflict = Boolean(preferredLumensRange?.conflict);
+
+    if (value < rangeMin) {
+      return {
+        status: 'too_low',
+        label: 'Za slaba',
+        isFit: false,
+        message: `Za slaba: ${roundedValue} lm/l przy zaleceniu ${roundedMin}-${roundedMax} lm/l.`,
+      };
+    }
+
+    if (value > rangeMax) {
+      return {
+        status: 'too_high',
+        label: 'Za mocna',
+        isFit: false,
+        message: `Za mocna: ${roundedValue} lm/l przy zaleceniu ${roundedMin}-${roundedMax} lm/l.`,
+      };
+    }
+
+    return {
+      status: 'ok',
+      label: 'OK',
+      isFit: true,
+      message: conflict
+        ? `OK dla wspolnego zakresu ${roundedMin}-${roundedMax} lm/l (rosliny maja mieszane wymagania).`
+        : `OK: ${roundedValue} lm/l miesci sie w zaleceniu ${roundedMin}-${roundedMax} lm/l.`,
+    };
+  }
+
+  if (value < fallbackMin) {
+    return {
+      status: 'too_low',
+      label: 'Za slaba',
+      isFit: false,
+      message: `Za slaba dla litrazu: ${roundedValue} lm/l (minimum ${fallbackMin} lm/l).`,
+    };
+  }
+
+  if (value > fallbackMax) {
+    return {
+      status: 'too_high',
+      label: 'Za mocna',
+      isFit: false,
+      message: `Za mocna dla litrazu: ${roundedValue} lm/l (maksimum ${fallbackMax} lm/l).`,
+    };
+  }
+
+  return {
+    status: 'ok',
+    label: 'OK',
+    isFit: true,
+    message: `OK dla litrazu: ${roundedValue} lm/l.`,
+  };
+}
+
 function isSoftBottomSubstrate(substrateTypes) {
   const selected = normalizeSubstrateTypes(substrateTypes);
   return (
@@ -2557,7 +3061,7 @@ function isNutrientSubstrate(substrateTypes) {
 }
 
 function buildTankEnvironmentProfile(tank) {
-  const lightHours = Number(tank?.lightHours);
+  const lighting = getTankLightingSummary(tank);
   const fertilizationSummary = summarizePlantFertilization(tank?.plantFertilizationEntries);
   const substrateTypes = normalizeSubstrateTypes(
     tank?.substrateTypes ?? tank?.substrateType
@@ -2566,8 +3070,12 @@ function buildTankEnvironmentProfile(tank) {
   return {
     substrateType: substrateTypes[0] ?? '',
     substrateTypes,
-    lightIntensity: normalizeLightIntensity(tank?.lightIntensity),
-    lightHours: Number.isFinite(lightHours) ? lightHours : null,
+    lightModelId: lighting.lightModelId,
+    lightModelName: lighting.lightModelName,
+    lightLumens: lighting.lightLumens,
+    lumensPerLiter: lighting.lumensPerLiter,
+    lightIntensity: lighting.lightIntensity,
+    lightHours: lighting.lightHours,
     hasActiveRootTabsSupport: fertilizationSummary.hasActiveRootTabs,
     rootTabsSupportDaysLeft: fertilizationSummary.rootTabsSupportDaysLeft,
   };
@@ -5024,6 +5532,11 @@ function getPlantCatalogNormalizationPayload(item) {
   const fallbackImageUrl = manualFileName
     ? buildCommonsFileThumbnailUrl(manualFileName, 900)
     : buildPlantCommonsFallbackImageUrl(latinName, 900);
+  const lightRequirements = getPlantLightRequirements({
+    ...item,
+    commonName,
+    latinName,
+  });
 
   return {
     commonName,
@@ -5032,6 +5545,14 @@ function getPlantCatalogNormalizationPayload(item) {
     latinNameNormalized: normalizeText(latinName),
     imagePreviewUrl: imagePreviewUrl || fallbackPreviewUrl || '',
     imageUrl: imageUrl || fallbackImageUrl || '',
+    lightLumenMinPerLiter: Number(lightRequirements.minLumensPerLiter),
+    lightLumenMaxPerLiter: Number(lightRequirements.maxLumensPerLiter),
+    lightHoursMin: Number.isFinite(Number(lightRequirements.minHours))
+      ? Number(lightRequirements.minHours)
+      : null,
+    lightHoursMax: Number.isFinite(Number(lightRequirements.maxHours))
+      ? Number(lightRequirements.maxHours)
+      : null,
   };
 }
 
@@ -5068,6 +5589,7 @@ function buildPlantSeedEntry(rawPlant, source) {
     Number.isFinite(Number(rawPlant.tempMin)) &&
     Number.isFinite(Number(rawPlant.tempMax)) &&
     Number.isFinite(Number(rawPlant.minLiters));
+  const lightRequirements = getPlantLightRequirements(rawPlant);
 
   return {
     commonName,
@@ -5080,11 +5602,23 @@ function buildPlantSeedEntry(rawPlant, source) {
     tempMax: Math.max(tempMin, tempMax),
     minLiters: Math.max(5, Math.round(minLiters)),
     notes: notes || (!hasCustomRange ? EXPANDED_PLANT_DEFAULTS.notes : ''),
+    lightLumenMinPerLiter: Number(lightRequirements.minLumensPerLiter),
+    lightLumenMaxPerLiter: Number(lightRequirements.maxLumensPerLiter),
+    lightHoursMin: Number.isFinite(Number(lightRequirements.minHours))
+      ? Number(lightRequirements.minHours)
+      : null,
+    lightHoursMax: Number.isFinite(Number(lightRequirements.maxHours))
+      ? Number(lightRequirements.maxHours)
+      : null,
     ...getPlantCatalogNormalizationPayload({
       commonName,
       latinName,
       imagePreviewUrl: rawPlant.imagePreviewUrl,
       imageUrl: rawPlant.imageUrl,
+      lightLumenMinPerLiter: lightRequirements.minLumensPerLiter,
+      lightLumenMaxPerLiter: lightRequirements.maxLumensPerLiter,
+      lightHoursMin: lightRequirements.minHours,
+      lightHoursMax: lightRequirements.maxHours,
     }),
     source,
   };
@@ -5326,8 +5860,8 @@ function checkFishCompatibility(item, measurement, tankLiters, tankProfile = nul
         tankLightRank > lightLevelToRank(fishLightRange.max))
     ) {
       issues.push(
-        `Swiatlo (${getLightIntensityLabel(
-          tankProfile.lightIntensity
+        `Swiatlo (${getTankLightingLabelForIssues(
+          tankProfile
         )}) moze nie byc optymalne dla tego gatunku.`
       );
     }
@@ -5387,30 +5921,20 @@ function checkPlantCompatibility(item, measurement, tankLiters, tankProfile = nu
       }
     }
 
-    const plantLightRange = inferPlantLightRange(item);
-    const tankLightRank = lightLevelToRank(
-      normalizeLightIntensity(tankProfile.lightIntensity)
-    );
+    const plantLightAssessment = evaluatePlantLightingForTank(item, tankProfile);
+    const plantLightRequirements = getPlantLightRequirements(item);
 
     if (
-      plantLightRange &&
-      tankLightRank !== null &&
-      lightLevelToRank(plantLightRange.min) !== null &&
-      lightLevelToRank(plantLightRange.max) !== null &&
-      (tankLightRank < lightLevelToRank(plantLightRange.min) ||
-        tankLightRank > lightLevelToRank(plantLightRange.max))
+      plantLightAssessment.status === 'too_low' ||
+      plantLightAssessment.status === 'too_high'
     ) {
-      issues.push(
-        `Swiatlo (${getLightIntensityLabel(
-          tankProfile.lightIntensity
-        )}) moze nie byc optymalne dla tej rosliny.`
-      );
+      issues.push(plantLightAssessment.message);
     }
 
-    if (plantLightRange && Number.isFinite(Number(tankProfile.lightHours))) {
+    if (Number.isFinite(Number(tankProfile.lightHours))) {
       const lightHours = Number(tankProfile.lightHours);
-      const minHours = Number(plantLightRange.minHours);
-      const maxHours = Number(plantLightRange.maxHours);
+      const minHours = Number(plantLightRequirements.minHours);
+      const maxHours = Number(plantLightRequirements.maxHours);
 
       if (
         Number.isFinite(minHours) &&
@@ -5711,6 +6235,7 @@ function buildContextualEcosystemInsights({
   stockItems = [],
   tank = null,
   equipmentAssessment = null,
+  targetRanges = null,
 }) {
   if (!measurement) {
     return {
@@ -5731,6 +6256,8 @@ function buildContextualEcosystemInsights({
   const no3Value = Number.isFinite(Number(measurement?.no3))
     ? Number(measurement.no3)
     : null;
+  const no3TargetMax = Number(targetRanges?.no3?.max);
+  const no3SafeMax = Number.isFinite(no3TargetMax) ? no3TargetMax : 25;
 
   const hasLowPlantBuffer =
     fishCount >= 8 && plantCount <= 2
@@ -5767,16 +6294,20 @@ function buildContextualEcosystemInsights({
     (hasLowPlantBuffer || hasBioloadPressure) &&
     isTestEnabled('no3') &&
     no3Value !== null &&
-    no3Value > 25
+    no3Value > no3SafeMax
   ) {
-    const no3Severity = getMeasurementSeverityFromValue('no3', no3Value);
+    const no3Severity = getMeasurementSeverityFromValueWithTargetRanges(
+      'no3',
+      no3Value,
+      targetRanges
+    );
     const severity = no3Severity === 'critical' ? 'critical' : 'warning';
 
     recommendations.push({
       severity,
       parameter: 'NO3 / rownowaga biologiczna',
       value: `${Math.round(no3Value * 10) / 10} mg/l`,
-      expectedRange: 'NO3 <= 25 mg/l i trend stabilny',
+      expectedRange: `NO3 <= ${no3SafeMax} mg/l i trend stabilny`,
       issue:
         'Duza obsada przy malej masie roslin zwieksza produkcje azotanow szybciej niz zbiornik je wykorzystuje.',
       action:
@@ -5798,7 +6329,7 @@ function buildContextualEcosystemInsights({
       severity: 'warning',
       parameter: 'NO3',
       value: 'brak aktywnego testu',
-      expectedRange: 'NO3 <= 25 mg/l',
+      expectedRange: `NO3 <= ${no3SafeMax} mg/l`,
       issue:
         'Przy tej obsadzie bez testu NO3 trudno wychwycic narastanie obciazenia biologicznego.',
       action:
@@ -6031,6 +6562,7 @@ function buildAquariumHealthAssessment({
       stockItems,
       tank,
       equipmentAssessment,
+      targetRanges: getWaterAnalysisOptionsForTank(tank)?.targetRanges,
     });
     const analysis = mergeWaterAnalysisWithContext(
       analyzeMeasurementLogic(
@@ -6833,13 +7365,17 @@ function BottomSheetModal({
   );
 }
 
-function getHistoryChartValueStatus(parameterKey, rawValue) {
+function getHistoryChartValueStatus(parameterKey, rawValue, targetRanges = null) {
   const value = Number(rawValue);
   if (!Number.isFinite(value)) {
     return 'neutral';
   }
 
-  const severity = getMeasurementSeverityFromValue(parameterKey, value);
+  const severity = getMeasurementSeverityFromValueWithTargetRanges(
+    parameterKey,
+    value,
+    targetRanges
+  );
   return severity === 'ok' ? 'ok' : severity;
 }
 
@@ -7340,7 +7876,7 @@ export default function HomeScreen() {
   const [fishQuantity, setFishQuantity] = useState('1');
   const [fishQuantityDrafts, setFishQuantityDrafts] = useState({});
   const [selectedCatalogFishId, setSelectedCatalogFishId] = useState(null);
-  const [selectedCatalogPlantId, setSelectedCatalogPlantId] = useState(null);
+  const [selectedCatalogPlantIds, setSelectedCatalogPlantIds] = useState([]);
   const [stockBusy, setStockBusy] = useState(false);
   const [stockLoading, setStockLoading] = useState(false);
   const [stockItems, setStockItems] = useState([]);
@@ -7372,8 +7908,6 @@ export default function HomeScreen() {
   const [tankAquariumType, setTankAquariumType] = useState('');
   const [tankSubstrateType, setTankSubstrateType] = useState('');
   const [tankSubstrateTypes, setTankSubstrateTypes] = useState([]);
-  const [tankLightIntensity, setTankLightIntensity] = useState('');
-  const [tankLightHours, setTankLightHours] = useState('');
   const [tankWaterProfile, setTankWaterProfile] = useState(DEFAULT_WATER_PROFILE);
   const [tankSingleSpeciesFishId, setTankSingleSpeciesFishId] = useState('');
   const [tankSingleSpeciesFishSearch, setTankSingleSpeciesFishSearch] = useState('');
@@ -7392,6 +7926,7 @@ export default function HomeScreen() {
     useState(false);
   const [equipmentCatalogType, setEquipmentCatalogType] = useState('');
   const [equipmentCatalogSearch, setEquipmentCatalogSearch] = useState('');
+  const [equipmentLightHoursDraft, setEquipmentLightHoursDraft] = useState('');
   const [equipmentSavingBusy, setEquipmentSavingBusy] = useState(false);
   const [, setTanksLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -7547,7 +8082,7 @@ export default function HomeScreen() {
         setFishCatalog([]);
         setPlantCatalog([]);
         setSelectedCatalogFishId(null);
-        setSelectedCatalogPlantId(null);
+        setSelectedCatalogPlantIds([]);
         setStockItems([]);
         setIsEditingFish(false);
         setIsEditingPlant(false);
@@ -8285,6 +8820,36 @@ export default function HomeScreen() {
           patch.notes = plant.notes ?? '';
         }
 
+        if (
+          Number(existingItem.lightLumenMinPerLiter) !==
+          Number(normalizedPayload.lightLumenMinPerLiter)
+        ) {
+          patch.lightLumenMinPerLiter = Number(normalizedPayload.lightLumenMinPerLiter);
+        }
+
+        if (
+          Number(existingItem.lightLumenMaxPerLiter) !==
+          Number(normalizedPayload.lightLumenMaxPerLiter)
+        ) {
+          patch.lightLumenMaxPerLiter = Number(normalizedPayload.lightLumenMaxPerLiter);
+        }
+
+        if (
+          Number(existingItem.lightHoursMin) !== Number(normalizedPayload.lightHoursMin)
+        ) {
+          patch.lightHoursMin = Number.isFinite(Number(normalizedPayload.lightHoursMin))
+            ? Number(normalizedPayload.lightHoursMin)
+            : null;
+        }
+
+        if (
+          Number(existingItem.lightHoursMax) !== Number(normalizedPayload.lightHoursMax)
+        ) {
+          patch.lightHoursMax = Number.isFinite(Number(normalizedPayload.lightHoursMax))
+            ? Number(normalizedPayload.lightHoursMax)
+            : null;
+        }
+
         if (existingItem.source !== plant.source) {
           patch.source = plant.source;
         }
@@ -8695,7 +9260,7 @@ export default function HomeScreen() {
     const nextDrafts = {};
 
     stockItems
-      .filter((item) => item.type === 'fish')
+      .filter((item) => item.type === 'fish' || item.type === 'plant')
       .forEach((item) => {
         nextDrafts[item.id] = String(Math.max(1, Number(item.quantity) || 1));
       });
@@ -8711,8 +9276,6 @@ export default function HomeScreen() {
       setTankAquariumType('');
       setTankSubstrateType('');
       setTankSubstrateTypes([]);
-      setTankLightIntensity('');
-      setTankLightHours('');
       const resetProfile = getDefaultWaterProfileForAquariumType('');
       setTankWaterProfile(resetProfile);
       setTankWaterProfileCustomized(false);
@@ -8727,7 +9290,7 @@ export default function HomeScreen() {
     setStockFishSearch('');
     setStockPlantSearch('');
     setSelectedCatalogFishId(null);
-    setSelectedCatalogPlantId(null);
+    setSelectedCatalogPlantIds([]);
     setIsEditingFish(false);
     setIsEditingPlant(false);
     setIsPlantFertilizationExpanded(true);
@@ -9391,10 +9954,6 @@ export default function HomeScreen() {
     );
     setTankSubstrateTypes(normalizedSubstrateTypes);
     setTankSubstrateType(normalizedSubstrateTypes[0] ?? '');
-    setTankLightIntensity(selectedTank.lightIntensity ?? '');
-    setTankLightHours(
-      selectedTank.lightHours === undefined ? '' : String(selectedTank.lightHours)
-    );
     setTankWaterProfile(profile);
     setTankSingleSpeciesFishId(initialSingleSpeciesFishId);
     setTankSingleSpeciesFishSearch('');
@@ -9425,8 +9984,6 @@ export default function HomeScreen() {
     setTankAquariumType('');
     setTankSubstrateType('');
     setTankSubstrateTypes([]);
-    setTankLightIntensity('');
-    setTankLightHours('');
     setTankWaterProfile(defaultProfile);
     setTankSingleSpeciesFishId('');
     setTankSingleSpeciesFishSearch('');
@@ -9449,8 +10006,6 @@ export default function HomeScreen() {
     setTankAquariumType('');
     setTankSubstrateType('');
     setTankSubstrateTypes([]);
-    setTankLightIntensity('');
-    setTankLightHours('');
     setTankWaterProfile(defaultProfile);
     setTankSingleSpeciesFishId('');
     setTankSingleSpeciesFishSearch('');
@@ -9472,8 +10027,6 @@ export default function HomeScreen() {
     setTankAquariumType('');
     setTankSubstrateType('');
     setTankSubstrateTypes([]);
-    setTankLightIntensity('');
-    setTankLightHours('');
     setTankWaterProfile(defaultProfile);
     setTankSingleSpeciesFishId('');
     setTankSingleSpeciesFishSearch('');
@@ -9793,7 +10346,7 @@ export default function HomeScreen() {
       return;
     }
 
-    const normalizedType = normalizeEquipmentType(type);
+    const normalizedType = normalizeEquipmentCatalogType(type);
     if (!normalizedType) {
       return;
     }
@@ -9823,7 +10376,7 @@ export default function HomeScreen() {
       return;
     }
 
-    const equipmentType = normalizeEquipmentType(equipmentItem.type);
+    const equipmentType = String(equipmentItem?.type ?? '').trim().toLowerCase();
     if (!equipmentType) {
       return;
     }
@@ -9831,12 +10384,52 @@ export default function HomeScreen() {
     setEquipmentSavingBusy(true);
 
     try {
-      const listField = getTankEquipmentListField(equipmentType);
-      const legacyField = getTankEquipmentLegacyField(equipmentType);
-      const currentList = getTankEquipmentList(selectedTank, equipmentType);
+      if (equipmentType === 'light') {
+        const lightModelId = normalizeLightModelId(equipmentItem.id);
+        const selectedLamp = getLightLampById(lightModelId);
+        if (!selectedLamp) {
+          throw new Error('Wybrana lampa nie istnieje w katalogu.');
+        }
+
+        const lightLumens = Number(selectedLamp.lumens);
+        if (!Number.isFinite(lightLumens) || lightLumens <= 0) {
+          throw new Error('Wybrana lampa ma nieprawidlowe lumeny.');
+        }
+
+        const tankLiters = Number(selectedTank?.liters);
+        const lightIntensity = estimateLightIntensityFromLumens(
+          lightLumens,
+          tankLiters
+        );
+
+        await updateDoc(doc(db, 'tanks', selectedTank.id), {
+          ...buildTankRuleSanitizationPatch(selectedTank),
+          lightModelId,
+          lightModelName: selectedLamp.name,
+          lightLumens,
+          lightIntensity:
+            lightIntensity || normalizeLightIntensity(selectedTank?.lightIntensity) || 'low',
+          updatedAt: new Date(),
+        });
+
+        await fetchTanks(user.uid, selectedTank.id);
+        setIsEquipmentCatalogModalVisible(false);
+        setEquipmentCatalogType('');
+        setEquipmentCatalogSearch('');
+        return;
+      }
+
+      const normalizedEquipmentType = normalizeEquipmentType(equipmentType);
+      if (!normalizedEquipmentType) {
+        return;
+      }
+
+      const listField = getTankEquipmentListField(normalizedEquipmentType);
+      const legacyField = getTankEquipmentLegacyField(normalizedEquipmentType);
+      const currentList = getTankEquipmentList(selectedTank, normalizedEquipmentType);
       const nextEquipment = buildTankEquipmentFromCatalogItem(
         equipmentItem,
-        equipmentType
+        normalizedEquipmentType
       );
       const nextList = [...currentList, nextEquipment];
       const nextLegacyValue = nextList[0] ?? deleteField();
@@ -9855,11 +10448,6 @@ export default function HomeScreen() {
       setIsEquipmentCatalogModalVisible(false);
       setEquipmentCatalogType('');
       setEquipmentCatalogSearch('');
-      alert(
-        equipmentType === 'heater'
-          ? 'Grzalka dodana do zestawu akwarium.'
-          : 'Filtr dodany do zestawu akwarium.'
-      );
     } catch (error) {
       alert(
         'Blad zapisu sprzetu: ' +
@@ -9921,6 +10509,79 @@ export default function HomeScreen() {
     } catch (error) {
       alert(
         'Blad aktualizacji sprzetu: ' +
+          (error instanceof Error ? error.message : '')
+      );
+    } finally {
+      setEquipmentSavingBusy(false);
+    }
+  };
+
+  const handleClearTankLightEquipment = async () => {
+    if (!selectedTank?.id || !user?.uid || equipmentSavingBusy) {
+      return;
+    }
+
+    if (!hasEquipmentSaveAccess) {
+      alert(t('subscriptionEquipmentLocked'));
+      return;
+    }
+
+    setEquipmentSavingBusy(true);
+    try {
+      await updateDoc(doc(db, 'tanks', selectedTank.id), {
+        ...buildTankRuleSanitizationPatch(selectedTank),
+        lightModelId: deleteField(),
+        lightModelName: deleteField(),
+        lightLumens: deleteField(),
+        lightIntensity: 'low',
+        updatedAt: new Date(),
+      });
+      await fetchTanks(user.uid, selectedTank.id);
+    } catch (error) {
+      alert(
+        'Blad aktualizacji oswietlenia: ' +
+          (error instanceof Error ? error.message : '')
+      );
+    } finally {
+      setEquipmentSavingBusy(false);
+    }
+  };
+
+  const handleSaveTankLightHoursFromEquipment = async () => {
+    if (!selectedTank?.id || !user?.uid || equipmentSavingBusy) {
+      return;
+    }
+
+    if (!hasEquipmentSaveAccess) {
+      alert(t('subscriptionEquipmentLocked'));
+      return;
+    }
+
+    let lightHours = 0;
+    try {
+      lightHours = parsePositiveNumberOrThrow('godziny swiecenia', equipmentLightHoursDraft);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Niepoprawna liczba godzin swiecenia.');
+      return;
+    }
+
+    if (!Number.isFinite(lightHours) || lightHours < 1 || lightHours > 24) {
+      alert('Godziny swiecenia musza byc w zakresie 1-24.');
+      return;
+    }
+
+    setEquipmentSavingBusy(true);
+    try {
+      await updateDoc(doc(db, 'tanks', selectedTank.id), {
+        ...buildTankRuleSanitizationPatch(selectedTank),
+        lightHours,
+        updatedAt: new Date(),
+      });
+      await fetchTanks(user.uid, selectedTank.id);
+      setEquipmentLightHoursDraft(String(lightHours));
+    } catch (error) {
+      alert(
+        'Blad zapisu czasu swiecenia: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -10200,11 +10861,6 @@ export default function HomeScreen() {
         tankSubstrateTypes.length > 0 ? tankSubstrateTypes : tankSubstrateType
       );
       const substrateType = substrateTypes[0] ?? '';
-      const lightIntensity = normalizeLightIntensity(tankLightIntensity);
-      const lightHours = parsePositiveNumberOrThrow(
-        'godziny swiecenia',
-        tankLightHours
-      );
       const defaultWaterProfile = getDefaultWaterProfileForAquariumType(aquariumType);
       const waterProfile = tankWaterProfileCustomized
         ? normalizeWaterProfile(tankWaterProfile || defaultWaterProfile)
@@ -10229,16 +10885,6 @@ export default function HomeScreen() {
         throw new Error('Wybierz przynajmniej 1 rodzaj podloza');
       }
 
-      if (
-        !LIGHT_INTENSITY_OPTIONS.some((item) => item.value === lightIntensity)
-      ) {
-        throw new Error('Wybierz intensywnosc swiatla');
-      }
-
-      if (lightHours > 24) {
-        throw new Error('Godziny swiecenia musza byc w zakresie 1-24');
-      }
-
       if (waterProfile === 'single_species') {
         if (!singleSpeciesFishId) {
           throw new Error('Dla akwarium jednogatunkowego wybierz gatunek ryby');
@@ -10250,14 +10896,20 @@ export default function HomeScreen() {
 
       const onboardingMode = normalizeOnboardingMode(tankOnboardingMode);
       const now = new Date();
-      const tankSanitizationPatch = buildTankRuleSanitizationPatch(selectedTank);
-      const legacySanitizationPatch = Object.entries(tankSanitizationPatch).reduce(
+      const tankSanitizationPatch = Object.entries(
+        buildTankRuleSanitizationPatch(selectedTank)
+      ).reduce(
         (acc, [key, value]) => {
           if (
             key === 'substrateTypes' ||
             key === 'waterProfile' ||
             key === 'singleSpeciesFishId' ||
-            key === 'targetRanges'
+            key === 'targetRanges' ||
+            key === 'lightIntensity' ||
+            key === 'lightHours' ||
+            key === 'lightModelId' ||
+            key === 'lightModelName' ||
+            key === 'lightLumens'
           ) {
             return acc;
           }
@@ -10277,24 +10929,12 @@ export default function HomeScreen() {
           aquariumType,
           substrateType,
           substrateTypes,
-          lightIntensity,
-          lightHours,
           waterProfile,
           targetRanges,
           singleSpeciesFishId:
             waterProfile === 'single_species'
               ? singleSpeciesFishId
               : deleteField(),
-          updatedAt: now,
-        };
-        const legacyUpdatePayload = {
-          ...legacySanitizationPatch,
-          name,
-          liters,
-          aquariumType,
-          substrateType,
-          lightIntensity,
-          lightHours,
           updatedAt: now,
         };
 
@@ -10305,7 +10945,7 @@ export default function HomeScreen() {
             throw error;
           }
 
-          await updateDoc(doc(db, 'tanks', editingTankId), legacyUpdatePayload);
+          await updateDoc(doc(db, 'tanks', editingTankId), fullUpdatePayload);
           savedInCompatibilityMode = true;
         }
       } else {
@@ -10316,8 +10956,6 @@ export default function HomeScreen() {
           aquariumType,
           substrateType,
           substrateTypes,
-          lightIntensity,
-          lightHours,
           waterProfile,
           targetRanges,
           ...(waterProfile === 'single_species' && singleSpeciesFishId
@@ -10333,8 +10971,6 @@ export default function HomeScreen() {
           liters,
           aquariumType,
           substrateType,
-          lightIntensity,
-          lightHours,
           onboardingMode,
           onboardingStartAt: onboardingMode === 'fresh_start' ? now : null,
           createdAt: now,
@@ -10360,8 +10996,6 @@ export default function HomeScreen() {
       setTankAquariumType('');
       setTankSubstrateType('');
       setTankSubstrateTypes([]);
-      setTankLightIntensity('');
-      setTankLightHours('');
       const resetProfile = getDefaultWaterProfileForAquariumType('');
       setTankWaterProfile(resetProfile);
       setTankSingleSpeciesFishId('');
@@ -10486,6 +11120,7 @@ export default function HomeScreen() {
 
     try {
       let payload = null;
+      let plantPayloads = [];
       let minLiters = 0;
       let existingTankFishItems = [];
 
@@ -10615,41 +11250,64 @@ export default function HomeScreen() {
           };
         }
       } else {
-        if (!selectedCatalogPlantId) {
+        const uniqueSelectedPlantIds = [
+          ...new Set(
+            selectedCatalogPlantIds
+              .map((value) => String(value ?? '').trim())
+              .filter(Boolean)
+          ),
+        ];
+
+        if (uniqueSelectedPlantIds.length === 0) {
           throw new Error('Wybierz rosline z katalogu.');
         }
 
-        const selectedPlant = plantCatalog.find(
-          (item) => item.id === selectedCatalogPlantId
-        );
+        const selectedPlants = uniqueSelectedPlantIds
+          .map((plantId) => plantCatalog.find((item) => item.id === plantId))
+          .filter(Boolean);
 
-        if (!selectedPlant) {
+        if (selectedPlants.length !== uniqueSelectedPlantIds.length) {
           throw new Error(
-            'Wybrana roslina nie istnieje w katalogu. Odswiez liste i sprobuj ponownie.'
+            'Jedna z wybranych roslin nie istnieje w katalogu. Odswiez liste i sprobuj ponownie.'
           );
         }
 
-        minLiters = Number(selectedPlant.minLiters);
-
-        payload = {
-          userId: user.uid,
-          tankId: selectedTank.id,
-          tankName: selectedTank.name,
-          type: 'plant',
-          name: selectedPlant.commonName,
-          commonName: selectedPlant.commonName,
-          latinName: selectedPlant.latinName,
-          catalogPlantId: selectedPlant.id,
-          phMin: Number(selectedPlant.phMin),
-          phMax: Number(selectedPlant.phMax),
-          ghMin: Number(selectedPlant.ghMin),
-          ghMax: Number(selectedPlant.ghMax),
-          tempMin: Number(selectedPlant.tempMin),
-          tempMax: Number(selectedPlant.tempMax),
-          minLiters,
-          notes: selectedPlant.notes ?? '',
-          createdAt: new Date(),
-        };
+        plantPayloads = selectedPlants.map((selectedPlant) => {
+          const requirements = getPlantLightRequirements(selectedPlant);
+          return {
+            userId: user.uid,
+            tankId: selectedTank.id,
+            tankName: selectedTank.name,
+            type: 'plant',
+            name: selectedPlant.commonName,
+            commonName: selectedPlant.commonName,
+            latinName: selectedPlant.latinName,
+            catalogPlantId: selectedPlant.id,
+            phMin: Number(selectedPlant.phMin),
+            phMax: Number(selectedPlant.phMax),
+            ghMin: Number(selectedPlant.ghMin),
+            ghMax: Number(selectedPlant.ghMax),
+            tempMin: Number(selectedPlant.tempMin),
+            tempMax: Number(selectedPlant.tempMax),
+            quantity: 1,
+            minLiters: Number(selectedPlant.minLiters),
+            lightLumenMinPerLiter: Number(requirements.minLumensPerLiter),
+            lightLumenMaxPerLiter: Number(requirements.maxLumensPerLiter),
+            lightHoursMin: Number.isFinite(Number(requirements.minHours))
+              ? Number(requirements.minHours)
+              : null,
+            lightHoursMax: Number.isFinite(Number(requirements.maxHours))
+              ? Number(requirements.maxHours)
+              : null,
+            notes: selectedPlant.notes ?? '',
+            createdAt: new Date(),
+          };
+        });
+        payload = plantPayloads[0] ?? null;
+        minLiters = plantPayloads.reduce(
+          (maxValue, item) => Math.max(maxValue, Number(item.minLiters) || 0),
+          0
+        );
       }
 
       if (payload.type === 'fish' && payload.fishProfile) {
@@ -10663,6 +11321,10 @@ export default function HomeScreen() {
           const { fishProfile, ...legacyPayload } = payload;
           await addDoc(collection(db, 'stockItems'), legacyPayload);
         }
+      } else if (payload.type === 'plant') {
+        await Promise.all(
+          plantPayloads.map((item) => addDoc(collection(db, 'stockItems'), item))
+        );
       } else {
         await addDoc(collection(db, 'stockItems'), payload);
       }
@@ -10671,7 +11333,7 @@ export default function HomeScreen() {
       setStockPlantSearch('');
       setFishQuantity('1');
       setSelectedCatalogFishId(null);
-      setSelectedCatalogPlantId(null);
+      setSelectedCatalogPlantIds([]);
 
       await fetchStockItems(user.uid, selectedTank.id);
 
@@ -10727,10 +11389,16 @@ export default function HomeScreen() {
         );
       }
 
+      const isBulkPlantAdd =
+        payload.type === 'plant' && plantPayloads.length > 1;
+      const successPrefix = isBulkPlantAdd
+        ? `Dodano ${plantPayloads.length} roslin do obsady.`
+        : 'Obsada dodana';
+
       if (addWarnings.length === 0) {
-        alert('Obsada dodana');
+        alert(successPrefix);
       } else {
-        alert(`Obsada dodana.\n\n${addWarnings.join('\n')}`);
+        alert(`${successPrefix}\n\n${addWarnings.join('\n')}`);
       }
     } catch (error) {
       alert(
@@ -10829,6 +11497,22 @@ export default function HomeScreen() {
     );
   };
 
+  const toggleCatalogPlantSelection = useCallback((plantId) => {
+    const normalizedPlantId = String(plantId ?? '').trim();
+
+    if (!normalizedPlantId) {
+      return;
+    }
+
+    setSelectedCatalogPlantIds((prev) => {
+      if (prev.includes(normalizedPlantId)) {
+        return prev.filter((item) => item !== normalizedPlantId);
+      }
+
+      return [...prev, normalizedPlantId];
+    });
+  }, []);
+
   const handleCloseFishAddModal = useCallback(() => {
     Keyboard.dismiss();
 
@@ -10846,7 +11530,7 @@ export default function HomeScreen() {
     setIsEditingPlant(false);
     setEditingPlantItemId(null);
     setStockPlantSearch('');
-    setSelectedCatalogPlantId(null);
+    setSelectedCatalogPlantIds([]);
   }, []);
 
   useEffect(() => {
@@ -10993,6 +11677,7 @@ export default function HomeScreen() {
           selectedTank,
           EQUIPMENT_CATALOG
         ),
+        targetRanges: selectedTankWaterAnalysisOptions?.targetRanges,
       });
       const analysis = mergeWaterAnalysisWithContext(baseAnalysis, contextInsights);
 
@@ -11374,6 +12059,45 @@ export default function HomeScreen() {
     }
   };
 
+  const handleUpdatePlantQuantity = async (itemId) => {
+    if (!user || !selectedTank?.id || stockBusy) {
+      return false;
+    }
+
+    setStockBusy(true);
+
+    try {
+      const draft = fishQuantityDrafts[itemId] ?? '';
+      const quantity = parseNonNegativeNumberOrThrow('ilosc', String(draft));
+
+      if (!Number.isInteger(quantity)) {
+        throw new Error('Pole ilosc musi byc liczba calkowita');
+      }
+
+      if (quantity === 0) {
+        await deleteDoc(doc(db, 'stockItems', itemId));
+      } else {
+        await updateDoc(doc(db, 'stockItems', itemId), { quantity });
+      }
+      await fetchStockItems(user.uid, selectedTank.id);
+
+      alert(
+        quantity === 0
+          ? 'Roslina usunieta z obsady (ilosc ustawiona na 0).'
+          : 'Ilosc rosliny zaktualizowana'
+      );
+      return true;
+    } catch (error) {
+      alert(
+        'Blad aktualizacji ilosci: ' +
+          (error instanceof Error ? error.message : '')
+      );
+      return false;
+    } finally {
+      setStockBusy(false);
+    }
+  };
+
   const handleAssignCatalogPlantToTank = async (plant, tank) => {
     if (!user?.uid || !tank?.id || stockBusy) {
       return;
@@ -11388,6 +12112,7 @@ export default function HomeScreen() {
       }
 
       const minLiters = Number(selectedPlant.minLiters);
+      const lightRequirements = getPlantLightRequirements(selectedPlant);
 
       await addDoc(collection(db, 'stockItems'), {
         userId: user.uid,
@@ -11404,7 +12129,16 @@ export default function HomeScreen() {
         ghMax: Number(selectedPlant.ghMax),
         tempMin: Number(selectedPlant.tempMin),
         tempMax: Number(selectedPlant.tempMax),
+        quantity: 1,
         minLiters,
+        lightLumenMinPerLiter: Number(lightRequirements.minLumensPerLiter),
+        lightLumenMaxPerLiter: Number(lightRequirements.maxLumensPerLiter),
+        lightHoursMin: Number.isFinite(Number(lightRequirements.minHours))
+          ? Number(lightRequirements.minHours)
+          : null,
+        lightHoursMax: Number.isFinite(Number(lightRequirements.maxHours))
+          ? Number(lightRequirements.maxHours)
+          : null,
         notes: selectedPlant.notes ?? '',
         createdAt: new Date(),
       });
@@ -12268,12 +13002,14 @@ export default function HomeScreen() {
         stockItems,
         tank: selectedTank,
         equipmentAssessment: currentEquipmentAssessmentForContext,
+        targetRanges: selectedTankTargetRanges,
       }),
     [
       availableMeasurementTests,
       currentEquipmentAssessmentForContext,
       currentMeasurement,
       selectedTank,
+      selectedTankTargetRanges,
       stockItems,
     ]
   );
@@ -12308,35 +13044,16 @@ export default function HomeScreen() {
     [measurements]
   );
   const currentMeasurementIssueSeverityByKey = useMemo(() => {
-    const map = new Map();
-
     if (!currentMeasurementDisplay) {
-      return map;
+      return new Map();
     }
 
-    const setSeverity = (key, severity) => {
-      if (!key || !severity || severity === 'ok') {
-        return;
-      }
-
-      const existingSeverity = map.get(key);
-      if (
-        !existingSeverity ||
-        getAnalysisSeverityRank(severity) >
-          getAnalysisSeverityRank(existingSeverity)
-      ) {
-        map.set(key, severity);
-      }
-    };
-
-    currentMeasurementDetailRows.forEach((item) => {
-      const rowKey = String(item?.key ?? '');
-      const directSeverity = getMeasurementSeverityFromValue(rowKey, item?.value);
-      setSeverity(rowKey, directSeverity);
-    });
-
-    return map;
+    return buildMeasurementIssueSeverityMapFromAnalysis(
+      currentAnalysis,
+      currentMeasurementDetailRows
+    );
   }, [
+    currentAnalysis,
     currentMeasurementDisplay,
     currentMeasurementDetailRows,
   ]);
@@ -12421,7 +13138,8 @@ export default function HomeScreen() {
         value: formatLatestTrendValue(item.value),
         severity,
         range:
-          primaryRecommendation?.expectedRange ?? getMeasurementTargetRangeLabel(key),
+          primaryRecommendation?.expectedRange ??
+          getMeasurementCustomTargetRangeLabel(key, selectedTankTargetRanges),
         action:
           primaryRecommendation?.action ??
           getMeasurementDefaultAction(key, severity),
@@ -12435,11 +13153,17 @@ export default function HomeScreen() {
       currentMeasurementIssueSeverityByKey,
       currentMeasurementRecommendationsByKey,
       currentRiskNotes,
+      selectedTankTargetRanges,
     ]
   );
   const waterTestingSchedule = useMemo(
-    () => buildWaterTestingScheduleLogic(measurements, availableMeasurementTests),
-    [availableMeasurementTests, measurements]
+    () =>
+      buildWaterTestingScheduleLogic(
+        measurements,
+        availableMeasurementTests,
+        selectedTankWaterAnalysisOptions
+      ),
+    [availableMeasurementTests, measurements, selectedTankWaterAnalysisOptions]
   );
   const tankOnboardingPlan = useMemo(
     () =>
@@ -12563,7 +13287,8 @@ export default function HomeScreen() {
         : null;
     const latestStatus = getHistoryChartValueStatus(
       selectedHistoryChartMeta.key,
-      latestValue
+      latestValue,
+      selectedTankTargetRanges
     );
     const isNonNegativeParameter =
       selectedHistoryChartMeta.key !== 'ph' &&
@@ -12595,7 +13320,11 @@ export default function HomeScreen() {
       const normalized = (item.value - displayMin) / historyChartRange;
       const clamped = Math.min(1, Math.max(0, normalized));
       const y = historyChartTopPadding + (1 - clamped) * historyChartAreaHeight;
-      const status = getHistoryChartValueStatus(selectedHistoryChartMeta.key, item.value);
+      const status = getHistoryChartValueStatus(
+        selectedHistoryChartMeta.key,
+        item.value,
+        selectedTankTargetRanges
+      );
 
       return {
         ...item,
@@ -12650,6 +13379,7 @@ export default function HomeScreen() {
     isHistorySection,
     measurements,
     selectedHistoryChartMeta,
+    selectedTankTargetRanges,
   ]);
   const historyChartSeries = historyChartData.series;
   const historyChartLatestValue = historyChartData.latestValue;
@@ -12752,12 +13482,16 @@ export default function HomeScreen() {
         : null,
     [fishCatalog, isEditingFish, isFishSection, selectedCatalogFishId]
   );
-  const selectedCatalogPlant = useMemo(
+  const selectedCatalogPlants = useMemo(
     () =>
       isPlantSection && isEditingPlant
-        ? plantCatalog.find((item) => item.id === selectedCatalogPlantId) ?? null
-        : null,
-    [isEditingPlant, isPlantSection, plantCatalog, selectedCatalogPlantId]
+        ? selectedCatalogPlantIds
+            .map((plantId) =>
+              plantCatalog.find((item) => item.id === plantId) ?? null
+            )
+            .filter(Boolean)
+        : [],
+    [isEditingPlant, isPlantSection, plantCatalog, selectedCatalogPlantIds]
   );
   const selectedCatalogFishSchoolingProfile = useMemo(
     () =>
@@ -13054,17 +13788,21 @@ export default function HomeScreen() {
       );
     }
 
-    if (selectedCatalogPlant && !map.has(selectedCatalogPlant.id)) {
+    selectedCatalogPlants.forEach((selectedPlant) => {
+      if (map.has(selectedPlant.id)) {
+        return;
+      }
+
       map.set(
-        selectedCatalogPlant.id,
+        selectedPlant.id,
         checkPlantCompatibility(
-          selectedCatalogPlant,
+          selectedPlant,
           currentMeasurement,
           selectedTankLiters,
           selectedTankEnvironmentProfile
         )
       );
-    }
+    });
 
     return map;
   }, [
@@ -13072,7 +13810,7 @@ export default function HomeScreen() {
     visibleFilteredPlantCatalog,
     isEditingPlant,
     isPlantSection,
-    selectedCatalogPlant,
+    selectedCatalogPlants,
     selectedTankEnvironmentProfile,
     selectedTankLiters,
   ]);
@@ -13662,6 +14400,20 @@ export default function HomeScreen() {
     }
   }, [filteredFishCatalog, isEditingFish, selectedCatalogFishId]);
   useEffect(() => {
+    if (!isEditingPlant || selectedCatalogPlantIds.length === 0) {
+      return;
+    }
+
+    const availableIds = new Set(plantCatalog.map((item) => item.id));
+    const nextSelectedIds = selectedCatalogPlantIds.filter((plantId) =>
+      availableIds.has(plantId)
+    );
+
+    if (nextSelectedIds.length !== selectedCatalogPlantIds.length) {
+      setSelectedCatalogPlantIds(nextSelectedIds);
+    }
+  }, [isEditingPlant, plantCatalog, selectedCatalogPlantIds]);
+  useEffect(() => {
     if (!ENABLE_FISH_IMAGES) {
       return;
     }
@@ -13935,6 +14687,19 @@ export default function HomeScreen() {
 
     return warningsMap;
   }, [plantCompatibilityResults]);
+  const plantLightingStatusByItemId = useMemo(() => {
+    const statusMap = new Map();
+    (stockItems ?? [])
+      .filter((item) => item?.type === 'plant')
+      .forEach((item) => {
+      statusMap.set(
+        item.id,
+        evaluatePlantLightingForTank(item, selectedTankEnvironmentProfile)
+      );
+      });
+
+    return statusMap;
+  }, [stockItems, selectedTankEnvironmentProfile]);
   const fishStockingSummary = useMemo(
     () => buildFishStockingSummary(stockItems, selectedTankLiters),
     [selectedTankLiters, stockItems]
@@ -13987,7 +14752,8 @@ export default function HomeScreen() {
 
       const schedule = buildWaterTestingScheduleLogic(
         tankMeasurements,
-        availableMeasurementTests
+        availableMeasurementTests,
+        getWaterAnalysisOptionsForTank(tank)
       );
       const scheduleActionsToday = (schedule.parameters ?? []).filter(
         (item) => item.dayBucketMs === todayDayBucketMs
@@ -14321,17 +15087,36 @@ export default function HomeScreen() {
           })
           .join(', ')
       : t('noDataCaps');
-  const selectedTankLightValue = normalizeLightIntensity(selectedTank?.lightIntensity);
+  const selectedTankLighting = getTankLightingSummary(selectedTank);
+  const selectedTankLightValue = normalizeLightIntensity(
+    selectedTankLighting.lightIntensity
+  );
   const selectedTankLightOption = LIGHT_INTENSITY_OPTIONS.find(
     (item) => item.value === selectedTankLightValue
   );
-  const selectedTankLightLabel = selectedTankLightOption
-    ? t(selectedTankLightOption.labelKey)
-    : t('noDataCaps');
-  const selectedTankLightHoursValue = Number(selectedTank?.lightHours);
-  const selectedTankLightHoursLabel = Number.isFinite(selectedTankLightHoursValue)
-    ? `${selectedTankLightHoursValue} h`
-    : t('noDataCaps');
+  const selectedTankLightLabel = selectedTankLighting.isDaylightOnly
+    ? t('lightDaylightOnly')
+    : selectedTankLighting.lightModelName ||
+      (selectedTankLightOption ? t(selectedTankLightOption.labelKey) : t('noDataCaps'));
+  const selectedTankLightLumensLabel =
+    Number.isFinite(Number(selectedTankLighting.lightLumens)) &&
+    Number(selectedTankLighting.lightLumens) > 0
+      ? `${Math.round(Number(selectedTankLighting.lightLumens))} lm${
+          Number.isFinite(Number(selectedTankLighting.lumensPerLiter)) &&
+          Number(selectedTankLighting.lumensPerLiter) > 0
+            ? ` (${Math.round(Number(selectedTankLighting.lumensPerLiter))} lm/l)`
+            : ''
+        }`
+      : selectedTankLighting.isDaylightOnly
+        ? t('lightDaylightOnly')
+        : t('noDataCaps');
+  useEffect(() => {
+    setEquipmentLightHoursDraft(
+      selectedTankLighting.lightHours === null
+        ? ''
+        : String(selectedTankLighting.lightHours)
+    );
+  }, [selectedTank?.id, selectedTankLighting.lightHours]);
   const selectedTankWaterProfileOption = WATER_PROFILE_OPTIONS.find(
     (item) => item.value === selectedTankWaterProfile
   );
@@ -14342,6 +15127,35 @@ export default function HomeScreen() {
     () => summarizePlantFertilization(selectedTank?.plantFertilizationEntries),
     [selectedTank]
   );
+  const selectedTankPlantLightingRange = useMemo(() => {
+    if (!Array.isArray(plantsInTank) || plantsInTank.length === 0) {
+      return null;
+    }
+
+    const ranges = plantsInTank
+      .map((item) => getPlantLightRequirements(item))
+      .filter(Boolean)
+      .map((requirements) => ({
+        min: Number(requirements.minLumensPerLiter),
+        max: Number(requirements.maxLumensPerLiter),
+      }))
+      .filter(
+        (range) =>
+          Number.isFinite(range.min) &&
+          Number.isFinite(range.max) &&
+          range.min > 0 &&
+          range.max >= range.min
+      );
+
+    if (ranges.length === 0) {
+      return null;
+    }
+
+    return buildRecommendedRange(
+      ranges.map((range) => range.min),
+      ranges.map((range) => range.max)
+    );
+  }, [plantsInTank]);
   const selectedTankPlantFertilizationEntries = selectedTankPlantFertilizationSummary.entries;
   const issueTankPickerKind = String(issueTankPickerPayload?.kind ?? '');
   const issueTankPickerItemName = String(
@@ -14384,13 +15198,62 @@ export default function HomeScreen() {
     [selectedTank]
   );
   const filteredEquipmentCatalog = useMemo(() => {
-    const normalizedType = normalizeEquipmentType(equipmentCatalogType);
+    const normalizedType = normalizeEquipmentCatalogType(equipmentCatalogType);
 
     if (!normalizedType) {
       return [];
     }
 
     const search = normalizeText(equipmentCatalogSearch);
+    if (normalizedType === 'light') {
+      return LIGHT_LAMP_CATALOG
+        .map((item) => ({
+          id: item.id,
+          type: 'light',
+          brand: 'Lampa',
+          model: item.name,
+          lumens: Number(item.lumens),
+          description: getEquipmentCatalogDescription({ type: 'light' }),
+        }))
+        .filter((item) => {
+          if (!search) {
+            return true;
+          }
+          const haystack = normalizeText(
+            `${item.model ?? ''} ${item.lumens ?? ''}`
+          );
+          return haystack.includes(search);
+        })
+        .map((item) => {
+          const lumensPerLiter =
+            Number.isFinite(selectedTankLiters) && selectedTankLiters > 0
+              ? Math.round((Number(item.lumens) / selectedTankLiters) * 10) / 10
+              : null;
+          const lampFit = evaluateLampFitForTank({
+            lumensPerLiter,
+            preferredLumensRange: selectedTankPlantLightingRange,
+          });
+          const fitsTank = lampFit.isFit;
+          return {
+            ...item,
+            fitsTank,
+            lightFitStatus: lampFit.status,
+            lightFitLabel: lampFit.label,
+            lightFitMessage: lampFit.message,
+            lumensPerLiter,
+            flowRatio: null,
+            tankMinLiters: null,
+            tankMaxLiters: null,
+          };
+        })
+        .sort((a, b) => {
+          if (a.fitsTank !== b.fitsTank) {
+            return a.fitsTank ? -1 : 1;
+          }
+          return `${a.model}`.localeCompare(`${b.model}`, 'pl');
+        });
+    }
+
     return EQUIPMENT_CATALOG.filter((item) => item.type === normalizedType)
       .filter((item) => {
         if (!search) {
@@ -14428,7 +15291,12 @@ export default function HomeScreen() {
         }
         return `${a.brand} ${a.model}`.localeCompare(`${b.brand} ${b.model}`, 'pl');
       });
-  }, [equipmentCatalogSearch, equipmentCatalogType, selectedTankLiters]);
+  }, [
+    equipmentCatalogSearch,
+    equipmentCatalogType,
+    selectedTankLiters,
+    selectedTankPlantLightingRange,
+  ]);
   const measurementDraftCo2 = useMemo(
     () => calculateCo2FromKhPhLogic(kh, ph),
     [kh, ph]
@@ -14647,7 +15515,7 @@ export default function HomeScreen() {
           );
 
     const plantLightRanges = plantsInTank
-      .map((item) => inferPlantLightRange(item))
+      .map((item) => getPlantLightRequirements(item))
       .filter(Boolean)
       .map((range) => ({
         min: Number(range.minHours),
@@ -16768,14 +17636,6 @@ export default function HomeScreen() {
                         label: t('substrate'),
                         value: selectedTankSubstrateLabel,
                       },
-                      {
-                        label: t('lightIntensity'),
-                        value: selectedTankLightLabel,
-                      },
-                      {
-                        label: t('lightHoursLabel'),
-                        value: selectedTankLightHoursLabel,
-                      },
                     ].map((item) => (
                       <View
                         key={`tank-info-metric-${item.label}`}
@@ -16872,7 +17732,7 @@ export default function HomeScreen() {
                         fontSize: 13,
                         lineHeight: 19,
                       }}>
-                      Szybko sprawdzisz, czy filtr i grzalka sa przypisane oraz
+                      Szybko sprawdzisz, czy filtr, grzalka i oswietlenie sa przypisane oraz
                       czy wymagaja poprawy.
                     </Text>
                   </View>
@@ -17136,6 +17996,214 @@ export default function HomeScreen() {
                       </View>
                     );
                   })}
+
+                  <View
+                    style={{
+                      borderWidth: 1,
+                      borderColor: themeBorder,
+                      borderRadius: 18,
+                      padding: 14,
+                      marginTop: 12,
+                      backgroundColor: themeCardBgAlt,
+                    }}>
+                    <View
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'flex-start',
+                        justifyContent: 'space-between',
+                        gap: 12,
+                      }}>
+                      <View style={{ flex: 1 }}>
+                        <View
+                          style={{
+                            alignSelf: 'flex-start',
+                            borderWidth: 1,
+                            borderColor: selectedTankLighting.isDaylightOnly
+                              ? themeBorderStrong
+                              : (isLightTheme ? '#1f7a3a' : '#9be7a3'),
+                            borderRadius: 999,
+                            paddingVertical: 5,
+                            paddingHorizontal: 10,
+                            backgroundColor: selectedTankLighting.isDaylightOnly
+                              ? themeChipBg
+                              : (isLightTheme ? '#e8f8eb' : '#143220'),
+                            marginBottom: 10,
+                          }}>
+                          <Text
+                            style={{
+                              color: selectedTankLighting.isDaylightOnly
+                                ? themeChipText
+                                : (isLightTheme ? '#1f7a3a' : '#9be7a3'),
+                              fontSize: 11,
+                              fontWeight: '700',
+                            }}>
+                            {selectedTankLighting.isDaylightOnly ? 'Dzien' : 'Gotowe'}
+                          </Text>
+                        </View>
+                        <Text
+                          style={{
+                            color: themeTextPrimary,
+                            fontWeight: '800',
+                            fontSize: 18,
+                            lineHeight: 22,
+                          }}>
+                          Oswietlenie
+                        </Text>
+                        <Text
+                          style={{
+                            color: themeTextSecondary,
+                            marginTop: 6,
+                            fontSize: 13,
+                            lineHeight: 19,
+                          }}>
+                          {selectedTankLighting.isDaylightOnly
+                            ? 'Brak lampy - przyjeto oswietlenie dzienne.'
+                            : `${selectedTankLightLabel}. ${selectedTankLightLumensLabel}.`}
+                        </Text>
+                      </View>
+                      <View
+                        style={{
+                          minWidth: 72,
+                          borderWidth: 1,
+                          borderColor: themeBorder,
+                          borderRadius: 14,
+                          paddingVertical: 10,
+                          paddingHorizontal: 10,
+                          backgroundColor: themeCardBg,
+                          alignItems: 'center',
+                        }}>
+                        <Text
+                          style={{
+                            color: themeTextPrimary,
+                            fontSize: 22,
+                            fontWeight: '800',
+                            lineHeight: 24,
+                          }}>
+                          {selectedTankLighting.isDaylightOnly ? 0 : 1}
+                        </Text>
+                        <Text
+                          style={{
+                            color: themeTextMuted,
+                            fontSize: 11,
+                            fontWeight: '700',
+                            marginTop: 3,
+                          }}>
+                          szt.
+                        </Text>
+                      </View>
+                    </View>
+
+                    <View
+                      style={{
+                        marginTop: 12,
+                        borderWidth: 1,
+                        borderColor: themeBorder,
+                        borderRadius: 14,
+                        padding: 12,
+                        backgroundColor: themeCardBg,
+                      }}>
+                      <Text
+                        style={{
+                          color: themeTextSecondary,
+                          fontSize: 12,
+                          marginBottom: 6,
+                        }}>
+                        {t('lightHoursLabel')}
+                      </Text>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                        <TextInput
+                          placeholder={t('lightHoursPlaceholder')}
+                          placeholderTextColor={themePlaceholder}
+                          value={equipmentLightHoursDraft}
+                          onChangeText={setEquipmentLightHoursDraft}
+                          keyboardType="numeric"
+                          style={{
+                            flex: 1,
+                            borderWidth: 1,
+                            borderColor: themeInputBorder,
+                            color: themeInputText,
+                            padding: 10,
+                            borderRadius: 10,
+                            backgroundColor: themeInputBg,
+                          }}
+                        />
+                        {hasEquipmentSaveAccess ? (
+                          <Pressable
+                            onPress={handleSaveTankLightHoursFromEquipment}
+                            disabled={equipmentSavingBusy}
+                            style={{
+                              borderWidth: 1,
+                              borderColor: themeAccent,
+                              borderRadius: 10,
+                              paddingVertical: 10,
+                              paddingHorizontal: 12,
+                              backgroundColor: themeAccent,
+                              opacity: equipmentSavingBusy ? 0.6 : 1,
+                            }}>
+                            <Text
+                              style={{
+                                color: themeAccentOnStrong,
+                                fontWeight: '700',
+                                fontSize: 12,
+                              }}>
+                              Zapisz
+                            </Text>
+                          </Pressable>
+                        ) : null}
+                      </View>
+                    </View>
+
+                    {hasEquipmentSaveAccess ? (
+                      <View style={{ marginTop: 12, gap: 8 }}>
+                        <Pressable
+                          onPress={() => handleOpenEquipmentCatalog('light')}
+                          style={{
+                            borderWidth: 1,
+                            borderColor: themeAccent,
+                            borderRadius: 12,
+                            paddingVertical: 10,
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            backgroundColor: themeAccent,
+                          }}>
+                          <Text
+                            style={{
+                              color: themeAccentOnStrong,
+                              fontWeight: '700',
+                              fontSize: 13,
+                            }}>
+                            {selectedTankLighting.isDaylightOnly
+                              ? 'Dodaj lampe z katalogu'
+                              : 'Zmien lampe'}
+                          </Text>
+                        </Pressable>
+                        {!selectedTankLighting.isDaylightOnly ? (
+                          <Pressable
+                            onPress={handleClearTankLightEquipment}
+                            disabled={equipmentSavingBusy}
+                            style={{
+                              borderWidth: 1,
+                              borderColor: themeBorderStrong,
+                              borderRadius: 12,
+                              paddingVertical: 10,
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              backgroundColor: themeChipBg,
+                              opacity: equipmentSavingBusy ? 0.6 : 1,
+                            }}>
+                            <Text
+                              style={{
+                                color: themeChipText,
+                                fontWeight: '700',
+                                fontSize: 13,
+                              }}>
+                              Ustaw tylko swiatlo dzienne
+                            </Text>
+                          </Pressable>
+                        ) : null}
+                      </View>
+                    ) : null}
+                  </View>
                 </View>
               ) : (
                 <View
@@ -18576,7 +19644,12 @@ export default function HomeScreen() {
                       ) : (
                         <View style={{ marginTop: 10 }}>
                           {plantsInTank.map((item) => {
+                            const itemQuantity = Math.max(1, Number(item.quantity) || 1);
+                            const itemDraft =
+                              fishQuantityDrafts[item.id] ?? String(itemQuantity);
                             const itemWarnings = plantWarningsByItemId.get(item.id) ?? [];
+                            const itemLightAssessment =
+                              plantLightingStatusByItemId.get(item.id) ?? null;
                             const hasCriticalWarning = itemWarnings.some(
                               (warningItem) => warningItem.severity === 'critical'
                             );
@@ -18635,7 +19708,31 @@ export default function HomeScreen() {
                                         prev === item.id ? null : item.id
                                       )
                                     }
-                                    style={{ flex: 1 }}>
+                                    style={{
+                                      flex: 1,
+                                      flexDirection: 'row',
+                                      alignItems: 'center',
+                                      gap: 10,
+                                    }}>
+                                    <Pressable
+                                      onPress={() => handleOpenPlantImageModal(item)}
+                                      hitSlop={6}>
+                                      <Image
+                                        source={getPlantPreviewImageSource(item, {
+                                          allowRemote: true,
+                                        })}
+                                        onError={() => handlePlantPreviewImageError(item)}
+                                        resizeMode="cover"
+                                        style={{
+                                          width: 46,
+                                          height: 46,
+                                          borderRadius: 12,
+                                          borderWidth: 1,
+                                          borderColor: themeBorder,
+                                          backgroundColor: themeCardBg,
+                                        }}
+                                      />
+                                    </Pressable>
                                     <View style={{ flex: 1, paddingRight: 10 }}>
                                       <Text
                                         style={{
@@ -18651,19 +19748,135 @@ export default function HomeScreen() {
                                           marginTop: 4,
                                           fontSize: 12,
                                         }}>
+                                        {t('quantityPieces', { value: itemQuantity })}
+                                      </Text>
+                                      <Text
+                                        style={{
+                                          color: themeTextSecondary,
+                                          marginTop: 3,
+                                          fontSize: 12,
+                                        }}>
                                         pH {formatRange(item.phMin, item.phMax)} | GH{' '}
                                         {formatRange(item.ghMin, item.ghMax)} | T{' '}
                                         {formatRange(item.tempMin, item.tempMax, 'C')}
                                       </Text>
+                                      {itemLightAssessment ? (
+                                        <Text
+                                          style={{
+                                            color:
+                                              itemLightAssessment.status === 'ok'
+                                                ? themeSuccessText
+                                                : itemLightAssessment.status === 'too_high'
+                                                  ? themeDangerText
+                                                  : itemLightAssessment.status === 'too_low'
+                                                    ? themeWarningText
+                                                    : themeTextSecondary,
+                                            marginTop: 3,
+                                            fontSize: 12,
+                                            fontWeight: itemLightAssessment.status === 'ok' ? '600' : '500',
+                                          }}>
+                                          {itemLightAssessment.message}
+                                        </Text>
+                                      ) : null}
                                     </View>
                                   </Pressable>
                                 </View>
 
                                 {!isExpanded ? null : (
                                   <View style={{ marginTop: 10 }}>
+                                    <View
+                                      style={{
+                                        flexDirection: 'row',
+                                        alignItems: 'center',
+                                        gap: 8,
+                                      }}>
+                                      <Pressable
+                                        onPress={() => {
+                                          const current = Number(
+                                            fishQuantityDrafts[item.id] ?? itemQuantity
+                                          );
+                                          const safeCurrent = Number.isFinite(current)
+                                            ? current
+                                            : itemQuantity;
+                                          const nextValue = Math.max(
+                                            0,
+                                            Math.round(safeCurrent) - 1
+                                          );
+                                          setFishQuantityDrafts((prev) => ({
+                                            ...prev,
+                                            [item.id]: String(nextValue),
+                                          }));
+                                        }}
+                                        style={{
+                                          width: 34,
+                                          height: 34,
+                                          borderWidth: 1,
+                                          borderColor: themeBorderStrong,
+                                          borderRadius: 8,
+                                          alignItems: 'center',
+                                          justifyContent: 'center',
+                                        }}>
+                                        <Text style={{ color: themeTextPrimary, fontSize: 18 }}>-</Text>
+                                      </Pressable>
+
+                                      <TextInput
+                                        placeholder={t('quantity')}
+                                        placeholderTextColor={themePlaceholder}
+                                        value={fishQuantityDrafts[item.id] ?? itemDraft}
+                                        onChangeText={(value) =>
+                                          setFishQuantityDrafts((prev) => ({
+                                            ...prev,
+                                            [item.id]: value,
+                                          }))
+                                        }
+                                        keyboardType="numeric"
+                                        style={{
+                                          flex: 1,
+                                          borderWidth: 1,
+                                          borderColor: themeInputBorder,
+                                          color: themeInputText,
+                                          padding: 10,
+                                        }}
+                                      />
+
+                                      <Pressable
+                                        onPress={() => {
+                                          const current = Number(
+                                            fishQuantityDrafts[item.id] ?? itemQuantity
+                                          );
+                                          const safeCurrent = Number.isFinite(current)
+                                            ? current
+                                            : itemQuantity;
+                                          const nextValue = Math.max(
+                                            0,
+                                            Math.round(safeCurrent) + 1
+                                          );
+                                          setFishQuantityDrafts((prev) => ({
+                                            ...prev,
+                                            [item.id]: String(nextValue),
+                                          }));
+                                        }}
+                                        style={{
+                                          width: 34,
+                                          height: 34,
+                                          borderWidth: 1,
+                                          borderColor: themeBorderStrong,
+                                          borderRadius: 8,
+                                          alignItems: 'center',
+                                          justifyContent: 'center',
+                                        }}>
+                                        <Text style={{ color: themeTextPrimary, fontSize: 18 }}>+</Text>
+                                      </Pressable>
+                                    </View>
+
+                                    <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 6 }}>
+                                      {t('setZeroToRemovePlant')}
+                                    </Text>
+
                                     {itemWarnings.length > 0 ? (
                                       <View
                                         style={{
+                                          marginTop: 8,
                                           borderWidth: 1,
                                           borderColor: hasCriticalWarning
                                             ? themeDanger
@@ -18692,9 +19905,33 @@ export default function HomeScreen() {
                                     ) : null}
 
                                     <Pressable
+                                      onPress={async () => {
+                                        const ok = await handleUpdatePlantQuantity(item.id);
+                                        if (ok) {
+                                          setEditingPlantItemId(null);
+                                        }
+                                      }}
+                                      style={{
+                                        backgroundColor: themeAccentText,
+                                        padding: 10,
+                                        borderRadius: 8,
+                                        marginTop: 8,
+                                        opacity: stockBusy ? 0.7 : 1,
+                                      }}>
+                                      <Text
+                                        style={{
+                                          color: themeAccentOnStrong,
+                                          textAlign: 'center',
+                                          fontWeight: '700',
+                                        }}>
+                                        {t('saveQuantity')}
+                                      </Text>
+                                    </Pressable>
+
+                                    <Pressable
                                       onPress={() => handleDeleteStockItem(item.id, 'plant')}
                                       style={{
-                                        marginTop: itemWarnings.length > 0 ? 8 : 0,
+                                        marginTop: 8,
                                         borderWidth: 1,
                                         borderColor: themeDangerBg,
                                         borderRadius: 8,
@@ -19129,6 +20366,16 @@ export default function HomeScreen() {
                               backgroundColor: themeInputBg,
                             }}
                           />
+                          <Text
+                            style={{
+                              color: themeTextSecondary,
+                              fontSize: 12,
+                              marginBottom: 8,
+                            }}>
+                            {t('selectedPlantsCount', {
+                              count: selectedCatalogPlantIds.length,
+                            })}
+                          </Text>
                           <Pressable
                             onPress={handleAddStockItem}
                             style={{
@@ -19143,7 +20390,13 @@ export default function HomeScreen() {
                                 textAlign: 'center',
                                 fontWeight: '700',
                               }}>
-                              {stockBusy ? t('addItemInProgress') : t('addPlantToStock')}
+                              {stockBusy
+                                ? t('addItemInProgress')
+                                : selectedCatalogPlantIds.length > 1
+                                  ? t('addSelectedPlantsToStock', {
+                                      count: selectedCatalogPlantIds.length,
+                                    })
+                                  : t('addPlantToStock')}
                             </Text>
                           </Pressable>
                         </View>
@@ -19181,7 +20434,9 @@ export default function HomeScreen() {
                           </Text>
                         ) : null}
                         {visibleFilteredPlantCatalog.map((plant) => {
-                          const isSelectedCatalogPlant = selectedCatalogPlantId === plant.id;
+                          const isSelectedCatalogPlant = selectedCatalogPlantIds.includes(
+                            plant.id
+                          );
                           const plantIssues = plantCatalogCompatibilityById.get(plant.id) ?? [];
                           const nonMeasurementIssue = plantIssues.find(
                             (issue) => !issue.startsWith('Brak pomiaru -')
@@ -19209,17 +20464,32 @@ export default function HomeScreen() {
                                   gap: 10,
                                 }}>
                                 <Pressable
-                                  onPress={() => {
-                                    setSelectedCatalogPlantId((prev) =>
-                                      prev === plant.id ? null : plant.id
-                                    );
-                                  }}
+                                  onPress={() => toggleCatalogPlantSelection(plant.id)}
                                   style={{
                                     flex: 1,
                                     flexDirection: 'row',
                                     alignItems: 'center',
                                     gap: 10,
                                   }}>
+                                  <View
+                                    style={{
+                                      width: 18,
+                                      height: 18,
+                                      borderWidth: 1,
+                                      borderColor: isSelectedCatalogPlant
+                                        ? themeSuccess
+                                        : themeBorderStrong,
+                                      borderRadius: 4,
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      backgroundColor: isSelectedCatalogPlant
+                                        ? themeSuccessBg
+                                        : 'transparent',
+                                    }}>
+                                    <Text style={{ color: themeAccentOnStrong, fontSize: 11 }}>
+                                      {isSelectedCatalogPlant ? 'X' : ''}
+                                    </Text>
+                                  </View>
                                   <Pressable
                                     onPress={() => handleOpenPlantImageModal(plant)}
                                     hitSlop={6}>
@@ -19260,11 +20530,7 @@ export default function HomeScreen() {
                               </View>
 
                               <Pressable
-                                onPress={() => {
-                                  setSelectedCatalogPlantId((prev) =>
-                                    prev === plant.id ? null : plant.id
-                                  );
-                                }}>
+                                onPress={() => toggleCatalogPlantSelection(plant.id)}>
                                 <Text
                                   style={{
                                     color: themeTextSecondary,
@@ -22704,67 +23970,6 @@ export default function HomeScreen() {
                 ))}
               </View>
 
-              <Text
-                style={{
-                  color: '#9da3af',
-                  marginBottom: 6,
-                  fontSize: 12,
-                }}>
-                {t('lightIntensity')}
-              </Text>
-              <View
-                style={{
-                  flexDirection: 'row',
-                  flexWrap: 'wrap',
-                  gap: 8,
-                  marginBottom: 10,
-                }}>
-                {LIGHT_INTENSITY_OPTIONS.map((option) => (
-                  <Pressable
-                    key={`add-light-${option.value}`}
-                    onPress={() => setTankLightIntensity(option.value)}
-                    style={{
-                      borderWidth: 1,
-                      borderColor:
-                        tankLightIntensity === option.value ? themeAccent : themeBorderStrong,
-                      backgroundColor:
-                        tankLightIntensity === option.value
-                          ? '#102235'
-                          : isLightTheme
-                            ? '#ffffff'
-                            : '#111',
-                      borderRadius: 999,
-                      paddingVertical: 6,
-                      paddingHorizontal: 10,
-                    }}>
-                    <Text
-                      style={{
-                        color:
-                          tankLightIntensity === option.value
-                            ? 'white'
-                            : themeTextPrimary,
-                        fontSize: 12,
-                      }}>
-                      {t(option.labelKey)}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-
-              <TextInput
-                placeholder={t('lightHoursPlaceholder')}
-                placeholderTextColor={themePlaceholder}
-                value={tankLightHours}
-                onChangeText={setTankLightHours}
-                keyboardType="numeric"
-                style={{
-                  borderWidth: 1,
-                  borderColor: themeInputBorder,
-                  color: themeInputText,
-                  padding: 10,
-                  marginBottom: 10,
-                }}
-              />
               {renderTankWaterTargetsSection('inline-add')}
               <Pressable
                 onPress={handleSaveTank}
@@ -22971,67 +24176,6 @@ export default function HomeScreen() {
                       ))}
                     </View>
 
-                    <Text
-                      style={{
-                        color: '#9da3af',
-                        marginBottom: 6,
-                        fontSize: 12,
-                      }}>
-                      {t('lightIntensity')}
-                    </Text>
-                    <View
-                      style={{
-                        flexDirection: 'row',
-                        flexWrap: 'wrap',
-                        gap: 8,
-                        marginBottom: 10,
-                      }}>
-                      {LIGHT_INTENSITY_OPTIONS.map((option) => (
-                        <Pressable
-                          key={`add-modal-light-${option.value}`}
-                          onPress={() => setTankLightIntensity(option.value)}
-                          style={{
-                            borderWidth: 1,
-                            borderColor:
-                              tankLightIntensity === option.value ? themeAccent : themeBorderStrong,
-                            backgroundColor:
-                              tankLightIntensity === option.value
-                                ? '#102235'
-                                : isLightTheme
-                                  ? '#ffffff'
-                                  : '#111',
-                            borderRadius: 999,
-                            paddingVertical: 6,
-                            paddingHorizontal: 10,
-                          }}>
-                          <Text
-                            style={{
-                              color:
-                                tankLightIntensity === option.value
-                                  ? 'white'
-                                  : themeTextPrimary,
-                              fontSize: 12,
-                            }}>
-                            {t(option.labelKey)}
-                          </Text>
-                        </Pressable>
-                      ))}
-                    </View>
-
-                    <TextInput
-                      placeholder={t('lightHoursPlaceholder')}
-                      placeholderTextColor={themePlaceholder}
-                      value={tankLightHours}
-                      onChangeText={setTankLightHours}
-                      keyboardType="numeric"
-                      style={{
-                        borderWidth: 1,
-                        borderColor: themeInputBorder,
-                        color: themeInputText,
-                        padding: 10,
-                        marginBottom: 10,
-                      }}
-                    />
                     {renderTankWaterTargetsSection('modal-add')}
 
                     <Pressable
@@ -23103,7 +24247,9 @@ export default function HomeScreen() {
                         }}>
                         {equipmentCatalogType === 'heater'
                           ? 'Katalog grzalek'
-                          : 'Katalog filtrow'}
+                          : equipmentCatalogType === 'filter'
+                            ? 'Katalog filtrow'
+                            : 'Katalog lamp'}
                       </Text>
                       <Text
                         style={{
@@ -23113,7 +24259,9 @@ export default function HomeScreen() {
                         }}>
                         {equipmentCatalogType === 'heater'
                           ? 'Porownaj modele po mocy i zalecanym litrazu.'
-                          : 'Porownaj modele po wydajnosci, litrazu i sile przeplywu.'}
+                          : equipmentCatalogType === 'filter'
+                            ? 'Porownaj modele po wydajnosci, litrazu i sile przeplywu.'
+                            : 'Porownaj modele po lumenach i dopasowaniu lm/l do litrazu.'}
                       </Text>
                     </View>
                     <Pressable
@@ -23201,12 +24349,32 @@ export default function HomeScreen() {
                             style={{
                               width: catalogCardWidth,
                               borderWidth: 1,
-                              borderColor: item.fitsTank ? themeSuccessBg : themeBorder,
+                              borderColor:
+                                item.type === 'light'
+                                  ? item.lightFitStatus === 'ok'
+                                    ? themeSuccessBg
+                                    : item.lightFitStatus === 'too_high'
+                                      ? themeDangerBg
+                                      : item.lightFitStatus === 'too_low'
+                                        ? themeWarningBg
+                                        : themeBorder
+                                  : item.fitsTank
+                                    ? themeSuccessBg
+                                    : themeBorder,
                               borderRadius: 18,
                               padding: 14,
-                              backgroundColor: item.fitsTank
-                                ? themeSuccessSoftBg
-                                : themeCardBg,
+                              backgroundColor:
+                                item.type === 'light'
+                                  ? item.lightFitStatus === 'ok'
+                                    ? themeSuccessSoftBg
+                                    : item.lightFitStatus === 'too_high'
+                                      ? themeDangerSoftBg
+                                      : item.lightFitStatus === 'too_low'
+                                        ? themeWarningSoftBg
+                                        : themeCardBg
+                                  : item.fitsTank
+                                    ? themeSuccessSoftBg
+                                    : themeCardBg,
                               opacity: equipmentSavingBusy ? 0.6 : 1,
                             }}>
                             <View
@@ -23220,7 +24388,18 @@ export default function HomeScreen() {
                               <View style={{ flex: 1 }}>
                                 <Text
                                   style={{
-                                    color: item.fitsTank ? themeSuccessText : themeAccentText,
+                                    color:
+                                      item.type === 'light'
+                                        ? item.lightFitStatus === 'ok'
+                                          ? themeSuccessText
+                                          : item.lightFitStatus === 'too_high'
+                                            ? themeDangerText
+                                            : item.lightFitStatus === 'too_low'
+                                              ? themeWarningText
+                                              : themeAccentText
+                                        : item.fitsTank
+                                          ? themeSuccessText
+                                          : themeAccentText,
                                     fontSize: 11,
                                     fontWeight: '700',
                                     textTransform: 'uppercase',
@@ -23241,25 +24420,54 @@ export default function HomeScreen() {
                               <View
                                 style={{
                                   borderWidth: 1,
-                                  borderColor: item.fitsTank
-                                    ? themeSuccessBg
-                                    : themeBorderStrong,
-                                  backgroundColor: item.fitsTank
-                                    ? themeSuccessBg
-                                    : themeChipBg,
+                                  borderColor:
+                                    item.type === 'light'
+                                      ? item.lightFitStatus === 'ok'
+                                        ? themeSuccessBg
+                                        : item.lightFitStatus === 'too_high'
+                                          ? themeDangerBg
+                                          : item.lightFitStatus === 'too_low'
+                                            ? themeWarningBg
+                                            : themeBorderStrong
+                                      : item.fitsTank
+                                        ? themeSuccessBg
+                                        : themeBorderStrong,
+                                  backgroundColor:
+                                    item.type === 'light'
+                                      ? item.lightFitStatus === 'ok'
+                                        ? themeSuccessBg
+                                        : item.lightFitStatus === 'too_high'
+                                          ? themeDangerBg
+                                          : item.lightFitStatus === 'too_low'
+                                            ? themeWarningBg
+                                            : themeChipBg
+                                      : item.fitsTank
+                                        ? themeSuccessBg
+                                        : themeChipBg,
                                   borderRadius: 999,
                                   paddingVertical: 5,
                                   paddingHorizontal: 10,
                                 }}>
                                 <Text
                                   style={{
-                                    color: item.fitsTank
-                                      ? themeAccentOnStrong
-                                      : themeChipText,
+                                    color:
+                                      item.type === 'light'
+                                        ? item.lightFitStatus === 'ok' ||
+                                          item.lightFitStatus === 'too_high' ||
+                                          item.lightFitStatus === 'too_low'
+                                          ? themeAccentOnStrong
+                                          : themeChipText
+                                        : item.fitsTank
+                                          ? themeAccentOnStrong
+                                          : themeChipText,
                                     fontSize: 11,
                                     fontWeight: '700',
                                   }}>
-                                  {item.fitsTank ? 'Pasuje' : 'Sprawdz'}
+                                  {item.type === 'light'
+                                    ? item.lightFitLabel || 'Sprawdz'
+                                    : item.fitsTank
+                                      ? 'Pasuje'
+                                      : 'Sprawdz'}
                                 </Text>
                               </View>
                             </View>
@@ -23298,7 +24506,7 @@ export default function HomeScreen() {
                                     {item.powerW} W
                                   </Text>
                                 </View>
-                              ) : (
+                              ) : item.type === 'filter' ? (
                                 <View
                                   style={{
                                     borderRadius: 999,
@@ -23315,25 +24523,44 @@ export default function HomeScreen() {
                                     {item.flowLh} l/h
                                   </Text>
                                 </View>
-                              )}
-                              <View
-                                style={{
-                                  borderRadius: 999,
-                                  paddingVertical: 6,
-                                  paddingHorizontal: 10,
-                                  backgroundColor: themeChipBg,
-                                  borderWidth: 1,
-                                  borderColor: themeBorder,
-                                }}>
-                                <Text
+                              ) : (
+                                <View
                                   style={{
-                                    color: themeChipText,
-                                    fontSize: 12,
-                                    fontWeight: '700',
+                                    borderRadius: 999,
+                                    paddingVertical: 6,
+                                    paddingHorizontal: 10,
+                                    backgroundColor: themeAccentSoftBg,
                                   }}>
-                                  {formatEquipmentTankRange(item)}
-                                </Text>
-                              </View>
+                                  <Text
+                                    style={{
+                                      color: themeAccentText,
+                                      fontSize: 12,
+                                      fontWeight: '700',
+                                    }}>
+                                    {Math.round(Number(item.lumens) || 0)} lm
+                                  </Text>
+                                </View>
+                              )}
+                              {item.type === 'light' ? null : (
+                                <View
+                                  style={{
+                                    borderRadius: 999,
+                                    paddingVertical: 6,
+                                    paddingHorizontal: 10,
+                                    backgroundColor: themeChipBg,
+                                    borderWidth: 1,
+                                    borderColor: themeBorder,
+                                  }}>
+                                  <Text
+                                    style={{
+                                      color: themeChipText,
+                                      fontSize: 12,
+                                      fontWeight: '700',
+                                    }}>
+                                    {formatEquipmentTankRange(item)}
+                                  </Text>
+                                </View>
+                              )}
                               {item.type === 'filter' && item.flowRatio ? (
                                 <View
                                   style={{
@@ -23354,6 +24581,27 @@ export default function HomeScreen() {
                                   </Text>
                                 </View>
                               ) : null}
+                              {item.type === 'light' &&
+                              Number.isFinite(Number(item.lumensPerLiter)) ? (
+                                <View
+                                  style={{
+                                    borderRadius: 999,
+                                    paddingVertical: 6,
+                                    paddingHorizontal: 10,
+                                    backgroundColor: themeChipBg,
+                                    borderWidth: 1,
+                                    borderColor: themeBorder,
+                                  }}>
+                                  <Text
+                                    style={{
+                                      color: themeChipText,
+                                      fontSize: 12,
+                                      fontWeight: '700',
+                                    }}>
+                                    {Math.round(Number(item.lumensPerLiter) * 10) / 10} lm/l
+                                  </Text>
+                                </View>
+                              ) : null}
                             </View>
 
                             <View
@@ -23366,13 +24614,27 @@ export default function HomeScreen() {
                               <Text
                                 style={{
                                   flex: 1,
-                                  color: item.fitsTank ? themeSuccessText : themeTextSecondary,
+                                  color:
+                                    item.type === 'light'
+                                      ? item.lightFitStatus === 'ok'
+                                        ? themeSuccessText
+                                        : item.lightFitStatus === 'too_high'
+                                          ? themeDangerText
+                                          : item.lightFitStatus === 'too_low'
+                                            ? themeWarningText
+                                            : themeTextSecondary
+                                      : item.fitsTank
+                                        ? themeSuccessText
+                                        : themeTextSecondary,
                                   fontSize: 12,
                                   lineHeight: 17,
                                 }}>
-                                {item.fitsTank
-                                  ? 'Zakres litrazu wygląda sensownie dla Twojego akwarium.'
-                                  : 'Model jest poza zalecanym zakresem litrazu dla tego zbiornika.'}
+                                {item.type === 'light'
+                                  ? item.lightFitMessage ||
+                                    'Brak wystarczajacych danych do oceny lampy.'
+                                  : item.fitsTank
+                                    ? 'Zakres litrazu wyglada sensownie dla Twojego akwarium.'
+                                    : 'Model jest poza zalecanym zakresem litrazu dla tego zbiornika.'}
                               </Text>
                               <View
                                 style={{
@@ -23543,67 +24805,6 @@ export default function HomeScreen() {
                       ))}
                     </View>
 
-                    <Text
-                      style={{
-                        color: '#9da3af',
-                        marginBottom: 6,
-                        fontSize: 12,
-                      }}>
-                      {t('lightIntensity')}
-                    </Text>
-                    <View
-                      style={{
-                        flexDirection: 'row',
-                        flexWrap: 'wrap',
-                        gap: 8,
-                        marginBottom: 10,
-                      }}>
-                      {LIGHT_INTENSITY_OPTIONS.map((option) => (
-                        <Pressable
-                          key={`edit-light-${option.value}`}
-                          onPress={() => setTankLightIntensity(option.value)}
-                          style={{
-                            borderWidth: 1,
-                            borderColor:
-                              tankLightIntensity === option.value ? themeAccent : themeBorderStrong,
-                            backgroundColor:
-                              tankLightIntensity === option.value
-                                ? '#102235'
-                                : isLightTheme
-                                  ? '#ffffff'
-                                  : '#111',
-                            borderRadius: 999,
-                            paddingVertical: 6,
-                            paddingHorizontal: 10,
-                          }}>
-                          <Text
-                            style={{
-                              color:
-                                tankLightIntensity === option.value
-                                  ? 'white'
-                                  : themeTextPrimary,
-                              fontSize: 12,
-                            }}>
-                            {t(option.labelKey)}
-                          </Text>
-                        </Pressable>
-                      ))}
-                    </View>
-
-                    <TextInput
-                      placeholder={t('lightHoursPlaceholder')}
-                      placeholderTextColor={themePlaceholder}
-                      value={tankLightHours}
-                      onChangeText={setTankLightHours}
-                      keyboardType="numeric"
-                      style={{
-                        borderWidth: 1,
-                        borderColor: themeInputBorder,
-                        color: themeInputText,
-                        padding: 10,
-                        marginBottom: 10,
-                      }}
-                    />
                     {renderTankWaterTargetsSection('modal-edit')}
 
                     <Pressable
@@ -25746,6 +26947,7 @@ export default function HomeScreen() {
                           stockItems,
                           tank: selectedTank,
                           equipmentAssessment: currentEquipmentAssessmentForContext,
+                          targetRanges: selectedTankTargetRanges,
                         });
                         const analysis = mergeWaterAnalysisWithContext(
                           baseAnalysis,
@@ -25755,18 +26957,11 @@ export default function HomeScreen() {
                           measurement,
                           availableMeasurementTests
                         );
-                        const measurementIssueSeverityByKey = new Map();
-                        measurementDetailRows.forEach((row) => {
-                          const rowKey = String(row?.key ?? '');
-                          if (!rowKey) {
-                            return;
-                          }
-                          const directSeverity = getMeasurementSeverityFromValue(
-                            rowKey,
-                            row?.value
+                        const measurementIssueSeverityByKey =
+                          buildMeasurementIssueSeverityMapFromAnalysis(
+                            analysis,
+                            measurementDetailRows
                           );
-                          measurementIssueSeverityByKey.set(rowKey, directSeverity);
-                        });
                         const measurementRiskNotes = [
                           ...buildCurrentRiskNotesLogic(
                             measurement,
