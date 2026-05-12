@@ -60,6 +60,13 @@ service cloud.firestore {
       return value == 'fish' || value == 'plant';
     }
 
+    function validStockSource(value) {
+      return value == 'catalog' ||
+        value == 'manual' ||
+        value == 'custom' ||
+        value == '';
+    }
+
     function validCaseType(value) {
       return value == 'disease' || value == 'plant_disease' || value == 'algae';
     }
@@ -80,8 +87,11 @@ service cloud.firestore {
           'liters',
           'aquariumType',
           'substrateType',
+          'substrateTypes',
           'lightIntensity',
           'lightHours',
+          'waterProfile',
+          'targetRanges',
           'onboardingMode',
           'onboardingStartAt',
           'onboardingTaskChecks',
@@ -100,7 +110,10 @@ service cloud.firestore {
         inRangeNumber(data.liters, 1, 20000) &&
         optionalString(data, 'aquariumType', 20) &&
         optionalString(data, 'substrateType', 40) &&
+        optionalList(data, 'substrateTypes', 12) &&
         optionalString(data, 'lightIntensity', 20) &&
+        optionalString(data, 'waterProfile', 30) &&
+        optionalMap(data, 'targetRanges', 40) &&
         optionalTimestamp(data, 'onboardingStartAt') &&
         optionalTimestamp(data, 'updatedAt') &&
         optionalList(data, 'plantFertilizationEntries', 200) &&
@@ -184,6 +197,7 @@ service cloud.firestore {
           'tankId',
           'tankName',
           'type',
+          'source',
           'name',
           'commonName',
           'latinName',
@@ -217,6 +231,7 @@ service cloud.firestore {
         data.commonName is string &&
         data.commonName.size() >= 1 &&
         data.commonName.size() <= 120 &&
+        optionalString(data, 'source', 20) &&
         data.latinName is string &&
         data.latinName.size() >= 1 &&
         data.latinName.size() <= 120 &&
@@ -229,6 +244,7 @@ service cloud.firestore {
         inRangeNumber(data.tempMin, -5, 50) &&
         inRangeNumber(data.tempMax, -5, 50) &&
         inRangeNumber(data.minLiters, 1, 20000) &&
+        (!('source' in data) || validStockSource(data.source)) &&
         (
           (data.type == 'fish' &&
             ('catalogFishId' in data) &&

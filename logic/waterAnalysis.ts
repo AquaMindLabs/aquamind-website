@@ -17,6 +17,13 @@ export type WaterRecommendation = RecommendationInput & {
 
 export type EnabledTests = Record<string, boolean | undefined>;
 export type GenericRecord = Record<string, unknown>;
+export type WaterTargetRange = {
+  min: number;
+  max: number;
+};
+export type WaterAnalysisOptions = {
+  targetRanges?: Partial<Record<string, Partial<WaterTargetRange> | null | undefined>>;
+};
 
 export type WaterAnalysisResult = {
   status: WaterSeverity;
@@ -68,6 +75,21 @@ const SEVERITY_PRIORITY: Record<WaterSeverity, number> = {
   ok: 0,
   warning: 1,
   critical: 2,
+};
+
+const DEFAULT_TARGET_RANGES: Record<string, WaterTargetRange> = {
+  ph: { min: 6.5, max: 7.8 },
+  gh: { min: 5, max: 14 },
+  kh: { min: 3, max: 8 },
+  no2: { min: 0, max: 0.05 },
+  no3: { min: 5, max: 25 },
+  nh3nh4: { min: 0, max: 0.05 },
+  po4: { min: 0.1, max: 1.0 },
+  fe: { min: 0.02, max: 0.2 },
+  ca: { min: 20, max: 60 },
+  mg: { min: 5, max: 20 },
+  temperature: { min: 24, max: 27 },
+  co2: { min: 10, max: 30 },
 };
 
 function toNumeric(value: unknown): number | null {
@@ -246,6 +268,61 @@ function createRecommendation({
   };
 }
 
+function resolveTargetRange(
+  key: string,
+  options: WaterAnalysisOptions = {}
+): WaterTargetRange {
+  const fallback = DEFAULT_TARGET_RANGES[key] ?? { min: 0, max: 0 };
+  const raw = options?.targetRanges?.[key];
+  const min = Number(raw?.min);
+  const max = Number(raw?.max);
+
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min > max) {
+    return fallback;
+  }
+
+  return { min, max };
+}
+
+function buildRangeLabel(range: WaterTargetRange, unit = ''): string {
+  const unitSuffix = unit ? ` ${unit}` : '';
+  return `${range.min}-${range.max}${unitSuffix}`;
+}
+
+function getRangeSeverity(value: number, range: WaterTargetRange): WaterSeverity {
+  const span = Math.max(
+    range.max - range.min,
+    Math.max(Math.abs(range.max), Math.abs(range.min), 1) * 0.2
+  );
+  const criticalMin = range.min - span;
+  const criticalMax = range.max + span;
+
+  if (value < criticalMin || value > criticalMax) {
+    return 'critical';
+  }
+
+  if (value < range.min || value > range.max) {
+    return 'warning';
+  }
+
+  return 'ok';
+}
+
+function getUpperBoundSeverity(value: number, max: number, minPadding = 0.05): WaterSeverity {
+  const padding = Math.max(minPadding, Math.abs(max) * 0.8);
+  const criticalMax = max + padding;
+
+  if (value > criticalMax) {
+    return 'critical';
+  }
+
+  if (value > max) {
+    return 'warning';
+  }
+
+  return 'ok';
+}
+
 export function calculateCo2FromKhPh(khValue: unknown, phValue: unknown): number | null {
   const kh = Number(khValue);
   const ph = Number(phValue);
@@ -297,7 +374,8 @@ export function formatRecommendationAction(
 
 export function analyzeMeasurement(
   measurement: GenericRecord,
-  enabledTests: EnabledTests = {}
+  enabledTests: EnabledTests = {},
+  options: WaterAnalysisOptions = {}
 ): WaterAnalysisResult {
   const isTestEnabled = (key: string) => Boolean(enabledTests?.[key]);
 
@@ -314,386 +392,267 @@ export function analyzeMeasurement(
   const temperatureValue = toNumeric(measurement.temperature);
   const co2Value =
     toNumeric(measurement.co2) ?? calculateCo2FromKhPh(khValue, phValue);
+  const phRange = resolveTargetRange('ph', options);
+  const ghRange = resolveTargetRange('gh', options);
+  const khRange = resolveTargetRange('kh', options);
+  const no2Range = resolveTargetRange('no2', options);
+  const no3Range = resolveTargetRange('no3', options);
+  const nh3nh4Range = resolveTargetRange('nh3nh4', options);
+  const po4Range = resolveTargetRange('po4', options);
+  const feRange = resolveTargetRange('fe', options);
+  const caRange = resolveTargetRange('ca', options);
+  const mgRange = resolveTargetRange('mg', options);
+  const temperatureRange = resolveTargetRange('temperature', options);
+  const co2Range = resolveTargetRange('co2', options);
 
   const recommendations: WaterRecommendation[] = [];
 
-  if (isTestEnabled('no2') && no2Value !== null && no2Value > 0.2) {
-    recommendations.push(
-      createRecommendation({
-        severity: 'critical',
-        parameter: 'NO2',
-        value: `${no2Value} mg/l`,
-        expectedRange: '0 mg/l',
-        issue: 'Toksyczny azotyn wykryty powyzej bezpiecznego poziomu.',
-        action:
-          'Natychmiastowa podmiana 50% wody, mocne napowietrzanie i kontrola filtra biologicznego.',
-      })
-    );
-  } else if (isTestEnabled('no2') && no2Value !== null && no2Value > 0) {
-    recommendations.push(
-      createRecommendation({
-        severity: 'critical',
-        parameter: 'NO2',
-        value: `${no2Value} mg/l`,
-        expectedRange: '0 mg/l',
-        issue: 'NO2 powinno wynosic 0.',
-        action:
-          'Natychmiastowa podmiana 30% wody i ograniczenie karmienia na 24h.',
-      })
-    );
+  if (isTestEnabled('no2') && no2Value !== null) {
+    const no2Severity = getUpperBoundSeverity(no2Value, no2Range.max, 0.05);
+    if (no2Severity !== 'ok') {
+      recommendations.push(
+        createRecommendation({
+          severity: no2Severity,
+          parameter: 'NO2',
+          value: `${no2Value} mg/l`,
+          expectedRange: `<= ${no2Range.max} mg/l`,
+          issue:
+            no2Severity === 'critical'
+              ? 'Toksyczny azotyn wykryty powyzej bezpiecznego poziomu.'
+              : 'NO2 poza docelowym zakresem ustawionym dla akwarium.',
+          action:
+            no2Severity === 'critical'
+              ? 'Natychmiastowa podmiana 50% wody, mocne napowietrzanie i kontrola filtra biologicznego.'
+              : 'Podmien 25-30% wody i powtorz test za 24h.',
+        })
+      );
+    }
   }
 
-  if (isTestEnabled('no3') && no3Value !== null && no3Value > 80) {
-    recommendations.push(
-      createRecommendation({
-        severity: 'critical',
-        parameter: 'NO3',
-        value: `${no3Value} mg/l`,
-        expectedRange: '5-25 mg/l',
-        issue: 'Bardzo wysokie azotany.',
-        action:
-          'Podmiana 40% wody i powtorzenie testu po 24h.',
-      })
-    );
-  } else if (isTestEnabled('no3') && no3Value !== null && no3Value > 50) {
-    recommendations.push(
-      createRecommendation({
-        severity: 'warning',
-        parameter: 'NO3',
-        value: `${no3Value} mg/l`,
-        expectedRange: '5-25 mg/l',
-        issue: 'Wysokie azotany.',
-        action: 'Zrob podmiane wody 30% i ogranicz karmienie.',
-      })
-    );
-  } else if (isTestEnabled('no3') && no3Value !== null && no3Value > 25) {
-    recommendations.push(
-      createRecommendation({
-        severity: 'warning',
-        parameter: 'NO3',
-        value: `${no3Value} mg/l`,
-        expectedRange: '5-25 mg/l',
-        issue: 'Azotany zaczynaja wychodzic poza norme.',
-        action: 'Zrob podmiane wody 20% w najblizszych 24h.',
-      })
-    );
+  if (isTestEnabled('no3') && no3Value !== null) {
+    const no3Severity = getRangeSeverity(no3Value, no3Range);
+    if (no3Severity !== 'ok') {
+      recommendations.push(
+        createRecommendation({
+          severity: no3Severity,
+          parameter: 'NO3',
+          value: `${no3Value} mg/l`,
+          expectedRange: buildRangeLabel(no3Range, 'mg/l'),
+          issue:
+            no3Severity === 'critical'
+              ? 'NO3 mocno poza docelowym zakresem dla tego zbiornika.'
+              : 'NO3 poza docelowym zakresem ustawionym dla akwarium.',
+          action:
+            no3Severity === 'critical'
+              ? 'Podmiana 35-45% wody i powtorzenie testu po 24h.'
+              : 'Podmien 20-30% wody i monitoruj trend przez najblizsze dni.',
+        })
+      );
+    }
   }
 
-  if (isTestEnabled('ph') && phValue !== null && (phValue < 5.8 || phValue > 8.5)) {
-    recommendations.push(
-      createRecommendation({
-        severity: 'critical',
-        parameter: 'pH',
-        value: `${phValue}`,
-        expectedRange: '6.5-7.8',
-        issue: 'pH daleko poza zalecanym zakresem.',
-        action: isTestEnabled('kh')
-          ? 'Sprawdz KH i zrodlo wody, koryguj pH powoli (max 0.2 na dobe).'
-          : 'Sprawdz zrodlo wody i koryguj pH powoli (max 0.2 na dobe).',
-      })
-    );
-  } else if (
-    isTestEnabled('ph') &&
-    phValue !== null &&
-    (phValue < 6.5 || phValue > 7.8)
-  ) {
-    recommendations.push(
-      createRecommendation({
-        severity: 'warning',
-        parameter: 'pH',
-        value: `${phValue}`,
-        expectedRange: '6.5-7.8',
-        issue: 'pH poza wygodnym zakresem dla wiekszosci ryb towarzyskich.',
-        action: isTestEnabled('kh')
-          ? 'Sprawdz obsade i parametry wody (KH), unikaj gwaltownych korekt.'
-          : 'Sprawdz obsade i parametry wody, unikaj gwaltownych korekt.',
-      })
-    );
+  if (isTestEnabled('ph') && phValue !== null) {
+    const phSeverity = getRangeSeverity(phValue, phRange);
+    if (phSeverity !== 'ok') {
+      recommendations.push(
+        createRecommendation({
+          severity: phSeverity,
+          parameter: 'pH',
+          value: `${phValue}`,
+          expectedRange: buildRangeLabel(phRange),
+          issue:
+            phSeverity === 'critical'
+              ? 'pH daleko poza docelowym zakresem ustawionym dla akwarium.'
+              : 'pH poza docelowym zakresem ustawionym dla akwarium.',
+          action: isTestEnabled('kh')
+            ? 'Sprawdz KH i zrodlo wody, koryguj pH stopniowo (max 0.2 na dobe).'
+            : 'Sprawdz zrodlo wody i koryguj pH stopniowo.',
+        })
+      );
+    }
   }
 
-  if (isTestEnabled('gh') && ghValue !== null && (ghValue < 3 || ghValue > 22)) {
-    recommendations.push(
-      createRecommendation({
-        severity: 'critical',
-        parameter: 'GH',
-        value: `${ghValue} dGH`,
-        expectedRange: '5-14 dGH',
-        issue: 'Twardosc ogolna mocno odbiega od standardu.',
-        action:
-          'Skoryguj mineralizacje przy podmianie i porownaj potrzeby obsady.',
-      })
-    );
-  } else if (
-    isTestEnabled('gh') &&
-    ghValue !== null &&
-    (ghValue < 5 || ghValue > 14)
-  ) {
-    recommendations.push(
-      createRecommendation({
-        severity: 'warning',
-        parameter: 'GH',
-        value: `${ghValue} dGH`,
-        expectedRange: '5-14 dGH',
-        issue: 'GH poza zalecanym zakresem roboczym.',
-        action:
-          'Dostosuj proporcje wody RO/kranowki lub mineralizator przy kolejnej podmianie.',
-      })
-    );
+  if (isTestEnabled('gh') && ghValue !== null) {
+    const ghSeverity = getRangeSeverity(ghValue, ghRange);
+    if (ghSeverity !== 'ok') {
+      recommendations.push(
+        createRecommendation({
+          severity: ghSeverity,
+          parameter: 'GH',
+          value: `${ghValue} dGH`,
+          expectedRange: buildRangeLabel(ghRange, 'dGH'),
+          issue:
+            ghSeverity === 'critical'
+              ? 'GH mocno poza docelowym zakresem ustawionym dla akwarium.'
+              : 'GH poza docelowym zakresem ustawionym dla akwarium.',
+          action:
+            'Dostosuj mineralizacje przy podmianie i porownaj potrzeby obsady.',
+        })
+      );
+    }
   }
 
-  if (isTestEnabled('nh3nh4') && nh3nh4Value !== null && nh3nh4Value > 0.2) {
-    recommendations.push(
-      createRecommendation({
-        severity: 'critical',
-        parameter: 'NH3/NH4',
-        value: `${nh3nh4Value} mg/l`,
-        expectedRange: '<= 0.05 mg/l',
-        issue: 'Zbyt wysokie stezenie amoniaku/jonu amonowego.',
-        action:
-          'Natychmiast podmien 40-50% wody, ogranicz karmienie na 24h i sprawdz filtr biologiczny.',
-      })
-    );
-  } else if (
-    isTestEnabled('nh3nh4') &&
-    nh3nh4Value !== null &&
-    nh3nh4Value > 0.05
-  ) {
-    recommendations.push(
-      createRecommendation({
-        severity: 'warning',
-        parameter: 'NH3/NH4',
-        value: `${nh3nh4Value} mg/l`,
-        expectedRange: '<= 0.05 mg/l',
-        issue: 'Podwyzszone stezenie amoniaku/jonu amonowego.',
-        action: 'Podmien 25-30% wody i powtorz test za 24h.',
-      })
-    );
+  if (isTestEnabled('nh3nh4') && nh3nh4Value !== null) {
+    const nh3Severity = getUpperBoundSeverity(nh3nh4Value, nh3nh4Range.max, 0.05);
+    if (nh3Severity !== 'ok') {
+      recommendations.push(
+        createRecommendation({
+          severity: nh3Severity,
+          parameter: 'NH3/NH4',
+          value: `${nh3nh4Value} mg/l`,
+          expectedRange: `<= ${nh3nh4Range.max} mg/l`,
+          issue:
+            nh3Severity === 'critical'
+              ? 'Zbyt wysokie stezenie NH3/NH4.'
+              : 'NH3/NH4 poza docelowym zakresem ustawionym dla akwarium.',
+          action:
+            nh3Severity === 'critical'
+              ? 'Natychmiast podmien 40-50% wody, ogranicz karmienie i sprawdz filtr biologiczny.'
+              : 'Podmien 25-30% wody i powtorz test za 24h.',
+        })
+      );
+    }
   }
 
-  if (isTestEnabled('po4') && po4Value !== null && po4Value > 2) {
-    recommendations.push(
-      createRecommendation({
-        severity: 'critical',
-        parameter: 'PO4',
-        value: `${po4Value} mg/l`,
-        expectedRange: '0.1-1.0 mg/l',
-        issue: 'Fosforany sa bardzo wysokie.',
-        action:
-          'Podmien 30-40% wody, ogranicz przekarmianie i skontroluj zrodla fosforanow.',
-      })
-    );
-  } else if (isTestEnabled('po4') && po4Value !== null && po4Value > 1) {
-    recommendations.push(
-      createRecommendation({
-        severity: 'warning',
-        parameter: 'PO4',
-        value: `${po4Value} mg/l`,
-        expectedRange: '0.1-1.0 mg/l',
-        issue: 'Fosforany sa podwyzszone.',
-        action: 'Podmien 20-25% wody i monitoruj wzrost glonow.',
-      })
-    );
+  if (isTestEnabled('po4') && po4Value !== null) {
+    const po4Severity = getRangeSeverity(po4Value, po4Range);
+    if (po4Severity !== 'ok') {
+      recommendations.push(
+        createRecommendation({
+          severity: po4Severity,
+          parameter: 'PO4',
+          value: `${po4Value} mg/l`,
+          expectedRange: buildRangeLabel(po4Range, 'mg/l'),
+          issue:
+            po4Severity === 'critical'
+              ? 'PO4 mocno poza docelowym zakresem ustawionym dla akwarium.'
+              : 'PO4 poza docelowym zakresem ustawionym dla akwarium.',
+          action:
+            'Podmien 20-35% wody, ogranicz przekarmianie i monitoruj trend.',
+        })
+      );
+    }
   }
 
-  if (isTestEnabled('fe') && feValue !== null && feValue > 0.5) {
-    recommendations.push(
-      createRecommendation({
-        severity: 'critical',
-        parameter: 'Fe',
-        value: `${feValue} mg/l`,
-        expectedRange: '0.02-0.2 mg/l',
-        issue: 'Stezenie zelaza jest zbyt wysokie.',
-        action:
-          'Wstrzymaj nawozenie zelazem, podmien 25-30% wody i sprawdz Fe ponownie za 24h.',
-      })
-    );
-  } else if (isTestEnabled('fe') && feValue !== null && feValue > 0.2) {
-    recommendations.push(
-      createRecommendation({
-        severity: 'warning',
-        parameter: 'Fe',
-        value: `${feValue} mg/l`,
-        expectedRange: '0.02-0.2 mg/l',
-        issue: 'Stezenie zelaza ponad zakres roboczy.',
-        action: 'Zmniejsz dawkowanie nawozu i powtorz test za 1-2 dni.',
-      })
-    );
+  if (isTestEnabled('fe') && feValue !== null) {
+    const feSeverity = getRangeSeverity(feValue, feRange);
+    if (feSeverity !== 'ok') {
+      recommendations.push(
+        createRecommendation({
+          severity: feSeverity,
+          parameter: 'Fe',
+          value: `${feValue} mg/l`,
+          expectedRange: buildRangeLabel(feRange, 'mg/l'),
+          issue:
+            feSeverity === 'critical'
+              ? 'Fe mocno poza docelowym zakresem ustawionym dla akwarium.'
+              : 'Fe poza docelowym zakresem ustawionym dla akwarium.',
+          action:
+            'Skoryguj dawkowanie nawozenia i powtorz test za 1-2 dni.',
+        })
+      );
+    }
   }
 
-  if (isTestEnabled('kh') && khValue !== null && (khValue < 1 || khValue > 14)) {
-    recommendations.push(
-      createRecommendation({
-        severity: 'critical',
-        parameter: 'KH',
-        value: `${khValue} dKH`,
-        expectedRange: '3-8 dKH',
-        issue: 'Twardosc weglanowa mocno odbiega od stabilnego zakresu.',
-        action:
-          'Skoryguj mineralizacje przy podmianie i unikaj gwaltownych zmian pH.',
-      })
-    );
-  } else if (
-    isTestEnabled('kh') &&
-    khValue !== null &&
-    (khValue < 3 || khValue > 8)
-  ) {
-    recommendations.push(
-      createRecommendation({
-        severity: 'warning',
-        parameter: 'KH',
-        value: `${khValue} dKH`,
-        expectedRange: '3-8 dKH',
-        issue: 'KH poza zalecanym zakresem roboczym.',
-        action:
-          'Dostosuj mieszanke RO/kranowki lub mineralizator i monitoruj pH.',
-      })
-    );
+  if (isTestEnabled('kh') && khValue !== null) {
+    const khSeverity = getRangeSeverity(khValue, khRange);
+    if (khSeverity !== 'ok') {
+      recommendations.push(
+        createRecommendation({
+          severity: khSeverity,
+          parameter: 'KH',
+          value: `${khValue} dKH`,
+          expectedRange: buildRangeLabel(khRange, 'dKH'),
+          issue:
+            khSeverity === 'critical'
+              ? 'KH mocno poza docelowym zakresem ustawionym dla akwarium.'
+              : 'KH poza docelowym zakresem ustawionym dla akwarium.',
+          action:
+            'Dostosuj mineralizacje przy podmianie i monitoruj stabilnosc pH.',
+        })
+      );
+    }
   }
 
-  if (
-    isTestEnabled('ph') &&
-    isTestEnabled('kh') &&
-    co2Value !== null &&
-    co2Value > 40
-  ) {
-    recommendations.push(
-      createRecommendation({
-        severity: 'critical',
-        parameter: 'CO2',
-        value: `${co2Value} mg/l`,
-        expectedRange: '10-30 mg/l',
-        issue: 'Szacowane CO2 jest zbyt wysokie.',
-        action:
-          'Natychmiast zwieksz napowietrzanie, zmniejsz dozowanie CO2 i celuj w 20-30 mg/l.',
-      })
-    );
-  } else if (
-    isTestEnabled('ph') &&
-    isTestEnabled('kh') &&
-    co2Value !== null &&
-    co2Value < 10
-  ) {
-    recommendations.push(
-      createRecommendation({
-        severity: 'warning',
-        parameter: 'CO2',
-        value: `${co2Value} mg/l`,
-        expectedRange: '10-30 mg/l',
-        issue: 'Szacowane CO2 jest niskie dla zbiornika roslinnego.',
-        action:
-          'Jesli to akwarium roslinne, rozwaz stopniowe podniesienie CO2 i obserwuj reakcje ryb.',
-      })
-    );
-  } else if (
-    isTestEnabled('ph') &&
-    isTestEnabled('kh') &&
-    co2Value !== null &&
-    co2Value > 30
-  ) {
-    recommendations.push(
-      createRecommendation({
-        severity: 'warning',
-        parameter: 'CO2',
-        value: `${co2Value} mg/l`,
-        expectedRange: '10-30 mg/l',
-        issue: 'Szacowane CO2 jest powyzej bezpiecznego zakresu roboczego.',
-        action:
-          'Zmniejsz dozowanie CO2 o 10-20% i sprawdz pH + KH po 24h.',
-      })
-    );
+  if (isTestEnabled('ph') && isTestEnabled('kh') && co2Value !== null) {
+    const co2Severity = getRangeSeverity(co2Value, co2Range);
+    if (co2Severity !== 'ok') {
+      recommendations.push(
+        createRecommendation({
+          severity: co2Severity,
+          parameter: 'CO2',
+          value: `${co2Value} mg/l`,
+          expectedRange: buildRangeLabel(co2Range, 'mg/l'),
+          issue:
+            co2Severity === 'critical'
+              ? 'Szacowane CO2 mocno poza docelowym zakresem ustawionym dla akwarium.'
+              : 'Szacowane CO2 poza docelowym zakresem ustawionym dla akwarium.',
+          action:
+            co2Severity === 'critical'
+              ? 'Natychmiast skoryguj napowietrzanie i dozowanie CO2, potem powtorz pH + KH.'
+              : 'Skoryguj dozowanie CO2 o 10-20% i sprawdz pH + KH po 24h.',
+        })
+      );
+    }
   }
 
-  if (isTestEnabled('ca') && caValue !== null && (caValue < 10 || caValue > 100)) {
-    recommendations.push(
-      createRecommendation({
-        severity: 'critical',
-        parameter: 'Ca',
-        value: `${caValue} mg/l`,
-        expectedRange: '20-60 mg/l',
-        issue: 'Wapn jest mocno poza zakresem roboczym.',
-        action:
-          'Skoryguj mineralizacje (Ca) stopniowo i powtorz test w ciagu 24h.',
-      })
-    );
-  } else if (
-    isTestEnabled('ca') &&
-    caValue !== null &&
-    (caValue < 20 || caValue > 60)
-  ) {
-    recommendations.push(
-      createRecommendation({
-        severity: 'warning',
-        parameter: 'Ca',
-        value: `${caValue} mg/l`,
-        expectedRange: '20-60 mg/l',
-        issue: 'Wapn poza zalecanym zakresem.',
-        action:
-          'Dostosuj dawke mineralizatora i kontrolnie powtorz test Ca za 2-3 dni.',
-      })
-    );
+  if (isTestEnabled('ca') && caValue !== null) {
+    const caSeverity = getRangeSeverity(caValue, caRange);
+    if (caSeverity !== 'ok') {
+      recommendations.push(
+        createRecommendation({
+          severity: caSeverity,
+          parameter: 'Ca',
+          value: `${caValue} mg/l`,
+          expectedRange: buildRangeLabel(caRange, 'mg/l'),
+          issue:
+            caSeverity === 'critical'
+              ? 'Ca mocno poza docelowym zakresem ustawionym dla akwarium.'
+              : 'Ca poza docelowym zakresem ustawionym dla akwarium.',
+          action:
+            'Skoryguj mineralizacje (Ca) i powtorz test za 1-3 dni.',
+        })
+      );
+    }
   }
 
-  if (isTestEnabled('mg') && mgValue !== null && (mgValue < 2 || mgValue > 35)) {
-    recommendations.push(
-      createRecommendation({
-        severity: 'critical',
-        parameter: 'Mg',
-        value: `${mgValue} mg/l`,
-        expectedRange: '5-20 mg/l',
-        issue: 'Magnez jest mocno poza zakresem roboczym.',
-        action:
-          'Skoryguj mineralizacje (Mg) stopniowo i powtorz test w ciagu 24h.',
-      })
-    );
-  } else if (
-    isTestEnabled('mg') &&
-    mgValue !== null &&
-    (mgValue < 5 || mgValue > 20)
-  ) {
-    recommendations.push(
-      createRecommendation({
-        severity: 'warning',
-        parameter: 'Mg',
-        value: `${mgValue} mg/l`,
-        expectedRange: '5-20 mg/l',
-        issue: 'Magnez poza zalecanym zakresem.',
-        action:
-          'Dostosuj dawke mineralizatora i kontrolnie powtorz test Mg za 2-3 dni.',
-      })
-    );
+  if (isTestEnabled('mg') && mgValue !== null) {
+    const mgSeverity = getRangeSeverity(mgValue, mgRange);
+    if (mgSeverity !== 'ok') {
+      recommendations.push(
+        createRecommendation({
+          severity: mgSeverity,
+          parameter: 'Mg',
+          value: `${mgValue} mg/l`,
+          expectedRange: buildRangeLabel(mgRange, 'mg/l'),
+          issue:
+            mgSeverity === 'critical'
+              ? 'Mg mocno poza docelowym zakresem ustawionym dla akwarium.'
+              : 'Mg poza docelowym zakresem ustawionym dla akwarium.',
+          action:
+            'Skoryguj mineralizacje (Mg) i powtorz test za 1-3 dni.',
+        })
+      );
+    }
   }
 
-  if (
-    isTestEnabled('temperature') &&
-    temperatureValue !== null &&
-    (temperatureValue < 22 || temperatureValue > 29)
-  ) {
-    recommendations.push(
-      createRecommendation({
-        severity: 'critical',
-        parameter: 'Temperatura',
-        value: `${temperatureValue} C`,
-        expectedRange: '24-27 C',
-        issue: 'Temperatura grozna dla stabilnosci akwarium.',
-        action:
-          'Skoryguj grzalke/chlodzenie i wracaj do zakresu stopniowo.',
-      })
-    );
-  } else if (
-    isTestEnabled('temperature') &&
-    temperatureValue !== null &&
-    (temperatureValue < 24 || temperatureValue > 27)
-  ) {
-    recommendations.push(
-      createRecommendation({
-        severity: 'warning',
-        parameter: 'Temperatura',
-        value: `${temperatureValue} C`,
-        expectedRange: '24-27 C',
-        issue: 'Temperatura poza zakresem docelowym.',
-        action: 'Skoryguj ustawienia grzalki i obserwuj ryby.',
-      })
-    );
+  if (isTestEnabled('temperature') && temperatureValue !== null) {
+    const tempSeverity = getRangeSeverity(temperatureValue, temperatureRange);
+    if (tempSeverity !== 'ok') {
+      recommendations.push(
+        createRecommendation({
+          severity: tempSeverity,
+          parameter: 'Temperatura',
+          value: `${temperatureValue} C`,
+          expectedRange: buildRangeLabel(temperatureRange, 'C'),
+          issue:
+            tempSeverity === 'critical'
+              ? 'Temperatura mocno poza docelowym zakresem ustawionym dla akwarium.'
+              : 'Temperatura poza docelowym zakresem ustawionym dla akwarium.',
+          action: 'Skoryguj grzalke/chlodzenie i wracaj do zakresu stopniowo.',
+        })
+      );
+    }
   }
 
   recommendations.sort(

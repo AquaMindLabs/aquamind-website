@@ -3,7 +3,6 @@ import 'react-native-reanimated';
 import { useEffect } from 'react';
 import { ThemeProvider } from '@react-navigation/native';
 import { Drawer } from 'expo-router/drawer';
-import { StatusBar } from 'expo-status-bar';
 import Constants from 'expo-constants';
 import * as WebBrowser from 'expo-web-browser';
 import { InteractionManager, useColorScheme } from 'react-native';
@@ -23,7 +22,7 @@ import {
 WebBrowser.maybeCompleteAuthSession();
 
 function RootAppShell() {
-  const { navigationTheme, isDarkTheme, colors } = useAppTheme();
+  const { navigationTheme, colors } = useAppTheme();
 
   return (
     <ThemeProvider value={navigationTheme}>
@@ -63,7 +62,6 @@ function RootAppShell() {
           }}
         />
       </Drawer>
-      <StatusBar style={isDarkTheme ? 'light' : 'dark'} />
     </ThemeProvider>
   );
 }

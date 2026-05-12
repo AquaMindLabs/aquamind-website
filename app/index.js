@@ -15,6 +15,7 @@ import {
 import {
   addDoc,
   collection,
+  deleteField,
   deleteDoc,
   doc,
   getDocs,
@@ -452,6 +453,32 @@ function getTankEquipmentList(tank, type) {
   ];
 }
 
+function buildTankRuleSanitizationPatch(tank) {
+  const patch = {};
+  const fieldsToDeleteWhenNull = [
+    'aquariumType',
+    'substrateType',
+    'substrateTypes',
+    'lightIntensity',
+    'waterProfile',
+    'targetRanges',
+    'plantFertilizationEntries',
+    'heaterEquipments',
+    'filterEquipments',
+    'heaterEquipment',
+    'filterEquipment',
+    'onboardingTaskChecks',
+  ];
+
+  fieldsToDeleteWhenNull.forEach((field) => {
+    if (tank?.[field] === null) {
+      patch[field] = deleteField();
+    }
+  });
+
+  return patch;
+}
+
 function buildTankEquipmentFromCatalogItem(equipmentItem, equipmentType) {
   return equipmentType === 'heater'
     ? {
@@ -539,6 +566,19 @@ const MEASUREMENT_VALUE_KEYS = [
 ];
 
 function buildLatestMeasurementSnapshot(measurements = []) {
+  if (!Array.isArray(measurements) || measurements.length === 0) {
+    return null;
+  }
+
+  const latestMeasurement = measurements[0] ?? null;
+  if (!latestMeasurement) {
+    return null;
+  }
+
+  return { ...latestMeasurement };
+}
+
+function buildLatestMeasurementDisplaySnapshot(measurements = []) {
   if (!Array.isArray(measurements) || measurements.length === 0) {
     return null;
   }
@@ -1014,7 +1054,11 @@ function buildHomeSectionCounts({
     equipmentAssessment,
   });
   const baseAnalysis = measurement
-    ? analyzeMeasurementLogic(measurement, enabledTests)
+    ? analyzeMeasurementLogic(
+        measurement,
+        enabledTests,
+        getWaterAnalysisOptionsForTank(tank)
+      )
     : null;
   const analysis = mergeWaterAnalysisWithContext(baseAnalysis, contextInsights);
   const trendSuggestedEnvironment = buildTrendSuggestedEnvironmentForTank({
@@ -1480,6 +1524,7 @@ const SUBSTRATE_OPTIONS = [
   { value: 'fine_gravel', label: 'Drobny zwir', labelKey: 'substrateFineGravel' },
   { value: 'gravel', label: 'Zwir', labelKey: 'substrateGravel' },
   { value: 'active_soil', label: 'Podloze aktywne', labelKey: 'substrateActiveSoil' },
+  { value: 'garden_soil', label: 'Ziemia ogrodowa' },
   { value: 'mixed', label: 'Mieszane', labelKey: 'substrateMixed' },
   { value: 'other', label: 'Inne', labelKey: 'substrateOther' },
 ];
@@ -1495,6 +1540,115 @@ const AQUARIUM_TYPE_OPTIONS = [
   { value: 'shrimp', label: 'Krewetkarskie', labelKey: 'aquariumTypeShrimp' },
   { value: 'mixed', label: 'Mieszane', labelKey: 'aquariumTypeMixed' },
 ];
+const DEFAULT_WATER_PROFILE = 'low_tech';
+const WATER_PROFILE_OPTIONS = [
+  { value: 'plant', label: 'Roslinniak' },
+  { value: 'shrimp', label: 'Krewetkarium' },
+  { value: 'tanganyika', label: 'Tanganika' },
+  { value: 'malawi', label: 'Malawi' },
+  { value: 'high_tech', label: 'High-tech' },
+  { value: 'low_tech', label: 'Low-tech' },
+];
+const WATER_TARGET_FIELDS = [
+  { key: 'ph', label: 'pH', unit: '' },
+  { key: 'gh', label: 'GH', unit: 'dGH' },
+  { key: 'kh', label: 'KH', unit: 'dKH' },
+  { key: 'no2', label: 'NO2', unit: 'mg/l' },
+  { key: 'no3', label: 'NO3', unit: 'mg/l' },
+  { key: 'nh3nh4', label: 'NH3/NH4', unit: 'mg/l' },
+  { key: 'po4', label: 'PO4', unit: 'mg/l' },
+  { key: 'fe', label: 'Fe', unit: 'mg/l' },
+  { key: 'ca', label: 'Ca', unit: 'mg/l' },
+  { key: 'mg', label: 'Mg', unit: 'mg/l' },
+  { key: 'temperature', label: 'Temp', unit: 'C' },
+  { key: 'co2', label: 'CO2', unit: 'mg/l' },
+];
+const WATER_TARGET_DEFAULTS_BY_PROFILE = {
+  plant: {
+    ph: { min: 6.2, max: 7.2 },
+    gh: { min: 4, max: 12 },
+    kh: { min: 2, max: 8 },
+    no2: { min: 0, max: 0.05 },
+    no3: { min: 5, max: 25 },
+    nh3nh4: { min: 0, max: 0.05 },
+    po4: { min: 0.2, max: 1.5 },
+    fe: { min: 0.02, max: 0.2 },
+    ca: { min: 20, max: 60 },
+    mg: { min: 5, max: 20 },
+    temperature: { min: 23, max: 27 },
+    co2: { min: 15, max: 30 },
+  },
+  shrimp: {
+    ph: { min: 6.4, max: 7.4 },
+    gh: { min: 5, max: 8 },
+    kh: { min: 2, max: 6 },
+    no2: { min: 0, max: 0.02 },
+    no3: { min: 0, max: 20 },
+    nh3nh4: { min: 0, max: 0.02 },
+    po4: { min: 0.1, max: 1.0 },
+    fe: { min: 0.01, max: 0.15 },
+    ca: { min: 20, max: 50 },
+    mg: { min: 4, max: 12 },
+    temperature: { min: 21, max: 24 },
+    co2: { min: 0, max: 20 },
+  },
+  tanganyika: {
+    ph: { min: 7.8, max: 9.0 },
+    gh: { min: 10, max: 20 },
+    kh: { min: 10, max: 18 },
+    no2: { min: 0, max: 0.02 },
+    no3: { min: 0, max: 20 },
+    nh3nh4: { min: 0, max: 0.02 },
+    po4: { min: 0, max: 0.8 },
+    fe: { min: 0, max: 0.1 },
+    ca: { min: 30, max: 80 },
+    mg: { min: 8, max: 20 },
+    temperature: { min: 24, max: 27 },
+    co2: { min: 0, max: 15 },
+  },
+  malawi: {
+    ph: { min: 7.6, max: 8.6 },
+    gh: { min: 7, max: 18 },
+    kh: { min: 7, max: 12 },
+    no2: { min: 0, max: 0.02 },
+    no3: { min: 0, max: 30 },
+    nh3nh4: { min: 0, max: 0.02 },
+    po4: { min: 0, max: 1.0 },
+    fe: { min: 0, max: 0.1 },
+    ca: { min: 25, max: 70 },
+    mg: { min: 6, max: 18 },
+    temperature: { min: 24, max: 27 },
+    co2: { min: 0, max: 15 },
+  },
+  high_tech: {
+    ph: { min: 6.0, max: 7.0 },
+    gh: { min: 3, max: 10 },
+    kh: { min: 1, max: 6 },
+    no2: { min: 0, max: 0.02 },
+    no3: { min: 10, max: 30 },
+    nh3nh4: { min: 0, max: 0.02 },
+    po4: { min: 0.5, max: 2.0 },
+    fe: { min: 0.05, max: 0.25 },
+    ca: { min: 20, max: 50 },
+    mg: { min: 5, max: 15 },
+    temperature: { min: 23, max: 26 },
+    co2: { min: 20, max: 35 },
+  },
+  low_tech: {
+    ph: { min: 6.5, max: 7.8 },
+    gh: { min: 4, max: 14 },
+    kh: { min: 3, max: 8 },
+    no2: { min: 0, max: 0.05 },
+    no3: { min: 5, max: 25 },
+    nh3nh4: { min: 0, max: 0.05 },
+    po4: { min: 0.1, max: 1.0 },
+    fe: { min: 0.02, max: 0.2 },
+    ca: { min: 20, max: 60 },
+    mg: { min: 5, max: 20 },
+    temperature: { min: 24, max: 27 },
+    co2: { min: 10, max: 20 },
+  },
+};
 const PLANT_FERTILIZATION_TYPE_ROOT_TABS = 'root_tabs';
 const ROOT_TABS_DEFAULT_DURATION_DAYS = 90;
 const ROOT_TABS_DUE_SOON_DAYS = 14;
@@ -1549,6 +1703,18 @@ function normalizeSubstrateType(value) {
   return String(value ?? '').trim().toLowerCase();
 }
 
+function normalizeSubstrateTypes(value) {
+  if (Array.isArray(value)) {
+    const normalized = value
+      .map((item) => normalizeSubstrateType(item))
+      .filter((item) => SUBSTRATE_OPTIONS.some((option) => option.value === item));
+    return [...new Set(normalized)];
+  }
+
+  const single = normalizeSubstrateType(value);
+  return SUBSTRATE_OPTIONS.some((option) => option.value === single) ? [single] : [];
+}
+
 function normalizeLightIntensity(value) {
   return String(value ?? '').trim().toLowerCase();
 }
@@ -1564,6 +1730,121 @@ function normalizeOnboardingMode(value) {
   return String(value ?? '').trim().toLowerCase() === 'fresh_start'
     ? 'fresh_start'
     : 'existing_running';
+}
+
+function normalizeWaterProfile(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return WATER_PROFILE_OPTIONS.some((item) => item.value === normalized)
+    ? normalized
+    : DEFAULT_WATER_PROFILE;
+}
+
+function getDefaultWaterProfileForAquariumType(aquariumType) {
+  const normalizedType = normalizeAquariumType(aquariumType);
+  if (normalizedType === 'plant') {
+    return 'low_tech';
+  }
+  if (normalizedType === 'shrimp') {
+    return 'shrimp';
+  }
+  return DEFAULT_WATER_PROFILE;
+}
+
+function getWaterTargetDefaults(profile) {
+  const normalizedProfile = normalizeWaterProfile(profile);
+  const source =
+    WATER_TARGET_DEFAULTS_BY_PROFILE[normalizedProfile] ??
+    WATER_TARGET_DEFAULTS_BY_PROFILE[DEFAULT_WATER_PROFILE];
+
+  const next = {};
+  WATER_TARGET_FIELDS.forEach((field) => {
+    const raw = source[field.key] ?? WATER_TARGET_DEFAULTS_BY_PROFILE[DEFAULT_WATER_PROFILE][field.key];
+    next[field.key] = {
+      min: Number(raw.min),
+      max: Number(raw.max),
+    };
+  });
+
+  return next;
+}
+
+function normalizeTankTargetRanges(value, profile = DEFAULT_WATER_PROFILE) {
+  const defaults = getWaterTargetDefaults(profile);
+  if (!value || typeof value !== 'object') {
+    return defaults;
+  }
+
+  const next = { ...defaults };
+  WATER_TARGET_FIELDS.forEach((field) => {
+    const rawRange = value[field.key];
+    if (!rawRange || typeof rawRange !== 'object') {
+      return;
+    }
+
+    const min = Number(rawRange.min);
+    const max = Number(rawRange.max);
+    if (!Number.isFinite(min) || !Number.isFinite(max) || min > max) {
+      return;
+    }
+
+    next[field.key] = { min, max };
+  });
+
+  return next;
+}
+
+function buildTargetRangeInputDraftFromRanges(ranges, profile = DEFAULT_WATER_PROFILE) {
+  const normalized = normalizeTankTargetRanges(ranges, profile);
+  const draft = {};
+
+  WATER_TARGET_FIELDS.forEach((field) => {
+    const range = normalized[field.key];
+    draft[`${field.key}Min`] = String(range?.min ?? '');
+    draft[`${field.key}Max`] = String(range?.max ?? '');
+  });
+
+  return draft;
+}
+
+function parseTankTargetRangeDraftOrThrow(draft, profile = DEFAULT_WATER_PROFILE) {
+  const fallback = getWaterTargetDefaults(profile);
+  const result = {};
+
+  WATER_TARGET_FIELDS.forEach((field) => {
+    const minKey = `${field.key}Min`;
+    const maxKey = `${field.key}Max`;
+    const rawMin = String(draft?.[minKey] ?? '').trim();
+    const rawMax = String(draft?.[maxKey] ?? '').trim();
+    const minValue =
+      rawMin.length === 0
+        ? Number(fallback[field.key]?.min)
+        : parseNumberOrThrow(`${field.label} min`, rawMin);
+    const maxValue =
+      rawMax.length === 0
+        ? Number(fallback[field.key]?.max)
+        : parseNumberOrThrow(`${field.label} max`, rawMax);
+
+    if (minValue > maxValue) {
+      throw new Error(`Zakres ${field.label}: min nie moze byc wieksze od max.`);
+    }
+
+    result[field.key] = {
+      min: minValue,
+      max: maxValue,
+    };
+  });
+
+  return result;
+}
+
+function getWaterAnalysisOptionsForTank(tank) {
+  const defaultProfile = getDefaultWaterProfileForAquariumType(tank?.aquariumType);
+  const profile = normalizeWaterProfile(tank?.waterProfile ?? defaultProfile);
+  const targetRanges = normalizeTankTargetRanges(tank?.targetRanges, profile);
+
+  return {
+    targetRanges,
+  };
 }
 
 function normalizeOnboardingTaskChecks(value) {
@@ -1709,6 +1990,15 @@ function getSubstrateLabel(value) {
   const normalized = normalizeSubstrateType(value);
   const option = SUBSTRATE_OPTIONS.find((item) => item.value === normalized);
   return option ? option.label : 'Brak danych';
+}
+
+function getSubstrateLabels(values) {
+  const normalized = normalizeSubstrateTypes(values);
+  if (normalized.length === 0) {
+    return 'Brak danych';
+  }
+
+  return normalized.map((item) => getSubstrateLabel(item)).join(', ');
 }
 
 function getLightIntensityLabel(value) {
@@ -1879,25 +2169,36 @@ function lightLevelToRank(level) {
   return null;
 }
 
-function isSoftBottomSubstrate(substrateType) {
+function isSoftBottomSubstrate(substrateTypes) {
+  const selected = normalizeSubstrateTypes(substrateTypes);
   return (
-    substrateType === 'sand' ||
-    substrateType === 'fine_gravel' ||
-    substrateType === 'active_soil' ||
-    substrateType === 'mixed'
+    selected.includes('sand') ||
+    selected.includes('fine_gravel') ||
+    selected.includes('active_soil') ||
+    selected.includes('garden_soil') ||
+    selected.includes('mixed')
   );
 }
 
-function isNutrientSubstrate(substrateType) {
-  return substrateType === 'active_soil' || substrateType === 'mixed';
+function isNutrientSubstrate(substrateTypes) {
+  const selected = normalizeSubstrateTypes(substrateTypes);
+  return (
+    selected.includes('active_soil') ||
+    selected.includes('garden_soil') ||
+    selected.includes('mixed')
+  );
 }
 
 function buildTankEnvironmentProfile(tank) {
   const lightHours = Number(tank?.lightHours);
   const fertilizationSummary = summarizePlantFertilization(tank?.plantFertilizationEntries);
+  const substrateTypes = normalizeSubstrateTypes(
+    tank?.substrateTypes ?? tank?.substrateType
+  );
 
   return {
-    substrateType: normalizeSubstrateType(tank?.substrateType),
+    substrateType: substrateTypes[0] ?? '',
+    substrateTypes,
     lightIntensity: normalizeLightIntensity(tank?.lightIntensity),
     lightHours: Number.isFinite(lightHours) ? lightHours : null,
     hasActiveRootTabsSupport: fertilizationSummary.hasActiveRootTabs,
@@ -2433,6 +2734,74 @@ function getLocalizedFishCommonName(commonName, latinName, locale = 'pl') {
 function parseFishNumber(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function coerceNumberToRange(value, fallback, minValue, maxValue) {
+  const parsed = Number(value);
+  const safeValue = Number.isFinite(parsed) ? parsed : fallback;
+  return Math.min(maxValue, Math.max(minValue, safeValue));
+}
+
+function getSanitizedFishCatalogFields(rawFish) {
+  const commonName = String(
+    rawFish?.commonName ?? rawFish?.name ?? ''
+  ).trim();
+  const latinNameRaw = String(rawFish?.latinName ?? '').trim();
+  const latinName = latinNameRaw || commonName || 'Ryba';
+  const phMinRaw = coerceNumberToRange(
+    rawFish?.phMin,
+    EXPANDED_FISH_DEFAULTS.phMin,
+    0,
+    14
+  );
+  const phMaxRaw = coerceNumberToRange(
+    rawFish?.phMax,
+    EXPANDED_FISH_DEFAULTS.phMax,
+    0,
+    14
+  );
+  const ghMinRaw = coerceNumberToRange(
+    rawFish?.ghMin,
+    EXPANDED_FISH_DEFAULTS.ghMin,
+    0,
+    60
+  );
+  const ghMaxRaw = coerceNumberToRange(
+    rawFish?.ghMax,
+    EXPANDED_FISH_DEFAULTS.ghMax,
+    0,
+    60
+  );
+  const tempMinRaw = coerceNumberToRange(
+    rawFish?.tempMin,
+    EXPANDED_FISH_DEFAULTS.tempMin,
+    -5,
+    50
+  );
+  const tempMaxRaw = coerceNumberToRange(
+    rawFish?.tempMax,
+    EXPANDED_FISH_DEFAULTS.tempMax,
+    -5,
+    50
+  );
+  const minLiters = coerceNumberToRange(
+    rawFish?.minLiters,
+    EXPANDED_FISH_DEFAULTS.minLiters,
+    1,
+    20000
+  );
+
+  return {
+    commonName: commonName || latinName,
+    latinName,
+    phMin: Math.min(phMinRaw, phMaxRaw),
+    phMax: Math.max(phMinRaw, phMaxRaw),
+    ghMin: Math.min(ghMinRaw, ghMaxRaw),
+    ghMax: Math.max(ghMinRaw, ghMaxRaw),
+    tempMin: Math.min(tempMinRaw, tempMaxRaw),
+    tempMax: Math.max(tempMinRaw, tempMaxRaw),
+    minLiters,
+  };
 }
 
 function buildFishSeedEntry(rawFish, source) {
@@ -3428,6 +3797,47 @@ function isAllowedPlantCatalogLatinName(latinName) {
   return Boolean(normalizedKey) && PLANT_CATALOG_ALLOWED_LATIN_KEYS.has(normalizedKey);
 }
 
+function isManualStockEntry(item) {
+  if (!item || typeof item !== 'object') {
+    return false;
+  }
+
+  const source = String(item.source ?? '').trim().toLowerCase();
+  if (source === 'manual' || source === 'custom') {
+    return true;
+  }
+
+  if (item.type === 'fish') {
+    const catalogFishId = String(item.catalogFishId ?? '').trim();
+    const latinName = String(item.latinName ?? '').trim();
+    return !catalogFishId && !latinName;
+  }
+
+  if (item.type === 'plant') {
+    const catalogPlantId = String(item.catalogPlantId ?? '').trim();
+    const latinName = String(item.latinName ?? '').trim();
+    return !catalogPlantId && !latinName;
+  }
+
+  return false;
+}
+
+function isAllowedStockItem(item) {
+  if (!item || typeof item !== 'object') {
+    return false;
+  }
+
+  if (item.type === 'fish') {
+    return isManualStockEntry(item) || isAllowedFishCatalogLatinName(item.latinName);
+  }
+
+  if (item.type === 'plant') {
+    return isManualStockEntry(item) || isAllowedPlantCatalogLatinName(item.latinName);
+  }
+
+  return true;
+}
+
 function isBuiltInFishCatalogSource(source) {
   const normalizedSource = String(source ?? '').trim().toLowerCase();
   return normalizedSource === '' || normalizedSource === 'starter' || normalizedSource === 'expanded';
@@ -3920,15 +4330,17 @@ function checkFishCompatibility(item, measurement, tankLiters, tankProfile = nul
 
   if (tankProfile) {
     const substrateNeed = inferFishSubstrateNeed(item);
-    const substrateType = normalizeSubstrateType(tankProfile.substrateType);
+    const substrateTypes = normalizeSubstrateTypes(
+      tankProfile.substrateTypes ?? tankProfile.substrateType
+    );
 
     if (
       substrateNeed === 'soft' &&
-      substrateType &&
-      !isSoftBottomSubstrate(substrateType)
+      substrateTypes.length > 0 &&
+      !isSoftBottomSubstrate(substrateTypes)
     ) {
       issues.push(
-        `Ten gatunek zwykle lepiej czuje sie na miekkim podlozu, a w akwarium ustawiono: ${getSubstrateLabel(substrateType)}.`
+        `Ten gatunek zwykle lepiej czuje sie na miekkim podlozu, a w akwarium ustawiono: ${getSubstrateLabels(substrateTypes)}.`
       );
     }
 
@@ -3978,26 +4390,28 @@ function checkPlantCompatibility(item, measurement, tankLiters, tankProfile = nu
 
   if (tankProfile) {
     const substrateNeed = inferPlantSubstrateNeed(item);
-    const substrateType = normalizeSubstrateType(tankProfile.substrateType);
+    const substrateTypes = normalizeSubstrateTypes(
+      tankProfile.substrateTypes ?? tankProfile.substrateType
+    );
 
     if (
       substrateNeed === 'nutrient' &&
-      substrateType &&
-      !isNutrientSubstrate(substrateType)
+      substrateTypes.length > 0 &&
+      !isNutrientSubstrate(substrateTypes)
     ) {
       const hasActiveRootTabsSupport = Boolean(tankProfile.hasActiveRootTabsSupport);
       const rootTabsSupportDaysLeft = Number(tankProfile.rootTabsSupportDaysLeft);
 
       if (!hasActiveRootTabsSupport) {
         issues.push(
-          `Ta roslina zwykle rosnie lepiej w bardziej zasobnym podlozu, a w akwarium ustawiono: ${getSubstrateLabel(substrateType)}.`
+          `Ta roslina zwykle rosnie lepiej w bardziej zasobnym podlozu, a w akwarium ustawiono: ${getSubstrateLabels(substrateTypes)}.`
         );
       } else if (
         Number.isFinite(rootTabsSupportDaysLeft) &&
         rootTabsSupportDaysLeft <= ROOT_TABS_DUE_SOON_DAYS
       ) {
         issues.push(
-          `Podloze (${getSubstrateLabel(substrateType)}) jest wspierane kulkami nawozowymi, ale ich dzialanie moze sie skonczyc za ok. ${Math.max(
+          `Podloze (${getSubstrateLabels(substrateTypes)}) jest wspierane kulkami nawozowymi, ale ich dzialanie moze sie skonczyc za ok. ${Math.max(
             0,
             Math.round(rootTabsSupportDaysLeft)
           )} dni.`
@@ -4651,7 +5065,11 @@ function buildAquariumHealthAssessment({
       equipmentAssessment,
     });
     const analysis = mergeWaterAnalysisWithContext(
-      analyzeMeasurementLogic(measurement, ALL_MEASUREMENT_TESTS),
+      analyzeMeasurementLogic(
+        measurement,
+        ALL_MEASUREMENT_TESTS,
+        getWaterAnalysisOptionsForTank(tank)
+      ),
       contextInsights
     );
     const riskNotes = [
@@ -4707,7 +5125,7 @@ function buildAquariumHealthAssessment({
     accuracy += 5;
   }
 
-  if (tankProfile.substrateType) {
+  if (normalizeSubstrateTypes(tankProfile.substrateTypes ?? tankProfile.substrateType).length > 0) {
     accuracy += 5;
   }
 
@@ -5307,7 +5725,6 @@ function BottomSheetModal({
       visible={visible}
       transparent
       animationType="none"
-      statusBarTranslucent
       onRequestClose={handleClose}>
       <SafeAreaView
         edges={['top', 'bottom', 'left', 'right']}
@@ -5515,7 +5932,11 @@ function buildTankOnboardingPlan(tank, measurements, enabledTests = {}) {
 
   const latestMeasurement = measurements[0] ?? null;
   const latestAnalysis = latestMeasurement
-    ? analyzeMeasurementLogic(latestMeasurement, enabledTests)
+    ? analyzeMeasurementLogic(
+        latestMeasurement,
+        enabledTests,
+        getWaterAnalysisOptionsForTank(tank)
+      )
     : null;
 
   const toNumeric = (value) => {
@@ -5835,6 +6256,16 @@ export default function HomeScreen() {
     getStoreProductIdForTier,
   } = useTank();
   const t = createTranslator(appSettings.language);
+  const isMediumScreen = windowWidth >= 700;
+  const isLargeScreen = windowWidth >= 900;
+  const appContentMaxWidth = isLargeScreen ? 1240 : isMediumScreen ? 980 : 720;
+  const appHorizontalPadding = isLargeScreen ? 24 : 18;
+  const formContentMaxWidth = isLargeScreen ? 860 : 720;
+  const catalogGridColumns = isLargeScreen ? 2 : 1;
+  const catalogCardWidth = catalogGridColumns === 2 ? '49.2%' : '100%';
+  const currentParameterTileColumns =
+    windowWidth >= 1100 ? 4 : windowWidth >= 760 ? 3 : 2;
+  const currentParameterTileWidth = `${(100 / currentParameterTileColumns).toFixed(4)}%`;
   const catalogSortLocale = getSupportedCatalogLocale(appSettings.language);
   const catalogLanguageRef = useRef(appSettings.language);
   const subscriptionPlans = useMemo(() => listSubscriptionPlans(), []);
@@ -5961,8 +6392,17 @@ export default function HomeScreen() {
   const [tankLiters, setTankLiters] = useState('');
   const [tankAquariumType, setTankAquariumType] = useState('');
   const [tankSubstrateType, setTankSubstrateType] = useState('');
+  const [tankSubstrateTypes, setTankSubstrateTypes] = useState([]);
   const [tankLightIntensity, setTankLightIntensity] = useState('');
   const [tankLightHours, setTankLightHours] = useState('');
+  const [tankWaterProfile, setTankWaterProfile] = useState(DEFAULT_WATER_PROFILE);
+  const [tankWaterProfileCustomized, setTankWaterProfileCustomized] = useState(false);
+  const [tankTargetRangeDraft, setTankTargetRangeDraft] = useState(() =>
+    buildTargetRangeInputDraftFromRanges(
+      getWaterTargetDefaults(DEFAULT_WATER_PROFILE),
+      DEFAULT_WATER_PROFILE
+    )
+  );
   const [tankOnboardingMode, setTankOnboardingMode] = useState('existing_running');
   const [addTankBusy, setAddTankBusy] = useState(false);
   const [isAddingTankModalVisible, setIsAddingTankModalVisible] = useState(false);
@@ -6347,13 +6787,7 @@ export default function HomeScreen() {
         }))
         .filter((item) => item.tankId === tankId);
       const disallowedStockItemIds = allStockItems
-        .filter(
-          (item) =>
-            (item.type === 'fish' &&
-              !isAllowedFishCatalogLatinName(item.latinName)) ||
-            (item.type === 'plant' &&
-              !isAllowedPlantCatalogLatinName(item.latinName))
-        )
+        .filter((item) => !isAllowedStockItem(item))
         .map((item) => item.id);
 
       if (disallowedStockItemIds.length > 0) {
@@ -6365,11 +6799,7 @@ export default function HomeScreen() {
       }
 
       const data = allStockItems
-        .filter(
-          (item) =>
-            (item.type !== 'fish' || isAllowedFishCatalogLatinName(item.latinName)) &&
-            (item.type !== 'plant' || isAllowedPlantCatalogLatinName(item.latinName))
-        )
+        .filter((item) => isAllowedStockItem(item))
         .sort(
           (a, b) =>
             getCreatedAtMs(b.createdAt) -
@@ -6419,13 +6849,7 @@ export default function HomeScreen() {
           ...item.data(),
         }));
       const disallowedStockItemIds = allStockItemsRaw
-        .filter(
-          (item) =>
-            (item.type === 'fish' &&
-              !isAllowedFishCatalogLatinName(item.latinName)) ||
-            (item.type === 'plant' &&
-              !isAllowedPlantCatalogLatinName(item.latinName))
-        )
+        .filter((item) => !isAllowedStockItem(item))
         .map((item) => item.id);
 
       if (disallowedStockItemIds.length > 0) {
@@ -6437,11 +6861,7 @@ export default function HomeScreen() {
       }
 
       const allStockItems = allStockItemsRaw
-        .filter(
-          (item) =>
-            (item.type !== 'fish' || isAllowedFishCatalogLatinName(item.latinName)) &&
-            (item.type !== 'plant' || isAllowedPlantCatalogLatinName(item.latinName))
-        )
+        .filter((item) => isAllowedStockItem(item))
         .sort((a, b) => getCreatedAtMs(b.createdAt) - getCreatedAtMs(a.createdAt));
 
       const activeIssues = issuesSnapshot.docs
@@ -7302,8 +7722,18 @@ export default function HomeScreen() {
       setTankLiters('');
       setTankAquariumType('');
       setTankSubstrateType('');
+      setTankSubstrateTypes([]);
       setTankLightIntensity('');
       setTankLightHours('');
+      const resetProfile = getDefaultWaterProfileForAquariumType('');
+      setTankWaterProfile(resetProfile);
+      setTankWaterProfileCustomized(false);
+      setTankTargetRangeDraft(
+        buildTargetRangeInputDraftFromRanges(
+          getWaterTargetDefaults(resetProfile),
+          resetProfile
+        )
+      );
     }
 
     setStockFishSearch('');
@@ -7897,16 +8327,38 @@ export default function HomeScreen() {
       return;
     }
 
+    const defaultProfile = getDefaultWaterProfileForAquariumType(
+      selectedTank.aquariumType
+    );
+    const profile = normalizeWaterProfile(
+      selectedTank.waterProfile ?? defaultProfile
+    );
+    const targetRanges = normalizeTankTargetRanges(
+      selectedTank.targetRanges,
+      profile
+    );
+
     setEditingTankId(selectedTank.id);
     setTankName(selectedTank.name ?? '');
     setTankLiters(
       selectedTank.liters === undefined ? '' : String(selectedTank.liters)
     );
     setTankAquariumType(normalizeAquariumType(selectedTank.aquariumType));
-    setTankSubstrateType(selectedTank.substrateType ?? '');
+    const normalizedSubstrateTypes = normalizeSubstrateTypes(
+      selectedTank.substrateTypes ?? selectedTank.substrateType
+    );
+    setTankSubstrateTypes(normalizedSubstrateTypes);
+    setTankSubstrateType(normalizedSubstrateTypes[0] ?? '');
     setTankLightIntensity(selectedTank.lightIntensity ?? '');
     setTankLightHours(
       selectedTank.lightHours === undefined ? '' : String(selectedTank.lightHours)
+    );
+    setTankWaterProfile(profile);
+    setTankWaterProfileCustomized(
+      Boolean(selectedTank.waterProfile || selectedTank.targetRanges)
+    );
+    setTankTargetRangeDraft(
+      buildTargetRangeInputDraftFromRanges(targetRanges, profile)
     );
     setTankOnboardingMode(normalizeOnboardingMode(selectedTank.onboardingMode));
   };
@@ -7922,38 +8374,264 @@ export default function HomeScreen() {
       return;
     }
 
+    const defaultProfile = getDefaultWaterProfileForAquariumType('');
     setEditingTankId(null);
     setTankName('');
     setTankLiters('');
     setTankAquariumType('');
     setTankSubstrateType('');
+    setTankSubstrateTypes([]);
     setTankLightIntensity('');
     setTankLightHours('');
+    setTankWaterProfile(defaultProfile);
+    setTankWaterProfileCustomized(false);
+    setTankTargetRangeDraft(
+      buildTargetRangeInputDraftFromRanges(
+        getWaterTargetDefaults(defaultProfile),
+        defaultProfile
+      )
+    );
     setTankOnboardingMode('existing_running');
     setIsAddingTankModalVisible(true);
   };
 
   const handleCancelEditTank = () => {
+    const defaultProfile = getDefaultWaterProfileForAquariumType('');
     setEditingTankId(null);
     setTankName('');
     setTankLiters('');
     setTankAquariumType('');
     setTankSubstrateType('');
+    setTankSubstrateTypes([]);
     setTankLightIntensity('');
     setTankLightHours('');
+    setTankWaterProfile(defaultProfile);
+    setTankWaterProfileCustomized(false);
+    setTankTargetRangeDraft(
+      buildTargetRangeInputDraftFromRanges(
+        getWaterTargetDefaults(defaultProfile),
+        defaultProfile
+      )
+    );
     setTankOnboardingMode('existing_running');
   };
 
   const handleCancelAddTank = () => {
+    const defaultProfile = getDefaultWaterProfileForAquariumType('');
     setIsAddingTankModalVisible(false);
     setTankName('');
     setTankLiters('');
     setTankAquariumType('');
     setTankSubstrateType('');
+    setTankSubstrateTypes([]);
     setTankLightIntensity('');
     setTankLightHours('');
+    setTankWaterProfile(defaultProfile);
+    setTankWaterProfileCustomized(false);
+    setTankTargetRangeDraft(
+      buildTargetRangeInputDraftFromRanges(
+        getWaterTargetDefaults(defaultProfile),
+        defaultProfile
+      )
+    );
     setTankOnboardingMode('existing_running');
   };
+
+  const handleSelectTankWaterProfile = (nextProfile) => {
+    const normalizedProfile = normalizeWaterProfile(nextProfile);
+    setTankWaterProfileCustomized(true);
+    setTankWaterProfile(normalizedProfile);
+    setTankTargetRangeDraft(
+      buildTargetRangeInputDraftFromRanges(
+        getWaterTargetDefaults(normalizedProfile),
+        normalizedProfile
+      )
+    );
+  };
+
+  const handleChangeTankTargetDraftValue = (fieldKey, bound, value) => {
+    const normalizedBound = bound === 'max' ? 'Max' : 'Min';
+    const key = `${fieldKey}${normalizedBound}`;
+    setTankWaterProfileCustomized(true);
+    setTankTargetRangeDraft((prev) => ({
+      ...prev,
+      [key]: value,
+    }));
+  };
+
+  const isTankSubstrateSelected = (value) =>
+    normalizeSubstrateTypes(tankSubstrateTypes).includes(value);
+
+  const handleToggleTankSubstrate = (value) => {
+    const normalized = normalizeSubstrateType(value);
+    if (!normalized) {
+      return;
+    }
+
+    setTankSubstrateTypes((prev) => {
+      const current = normalizeSubstrateTypes(prev);
+      if (current.includes(normalized)) {
+        const next = current.filter((item) => item !== normalized);
+        setTankSubstrateType(next[0] ?? '');
+        return next;
+      }
+
+      const next = [...current, normalized];
+      setTankSubstrateType(next[0] ?? '');
+      return next;
+    });
+  };
+
+  const renderTankWaterTargetsSection = (scopeKey) => (
+    <View
+      style={{
+        borderWidth: 1,
+        borderColor: themeBorder,
+        borderRadius: 12,
+        padding: 10,
+        marginBottom: 10,
+        backgroundColor: themeCardBgAlt,
+      }}>
+      <Text
+        style={{
+          color: themeTextPrimary,
+          marginBottom: 6,
+          fontSize: 13,
+          fontWeight: '700',
+        }}>
+        Profil i zakresy docelowe wody
+      </Text>
+      <Text
+        style={{
+          color: themeTextSecondary,
+          marginBottom: 8,
+          fontSize: 12,
+          lineHeight: 17,
+        }}>
+        Analiza bedzie porownywac pomiary do tych ustawien.
+      </Text>
+      <View
+        style={{
+          flexDirection: 'row',
+          flexWrap: 'wrap',
+          gap: 8,
+          marginBottom: 10,
+        }}>
+        {WATER_PROFILE_OPTIONS.map((option) => (
+          <Pressable
+            key={`${scopeKey}-water-profile-${option.value}`}
+            onPress={() => handleSelectTankWaterProfile(option.value)}
+            style={{
+              borderWidth: 1,
+              borderColor:
+                tankWaterProfile === option.value ? themeAccent : themeBorderStrong,
+              backgroundColor:
+                tankWaterProfile === option.value
+                  ? '#102235'
+                  : isLightTheme
+                    ? '#ffffff'
+                    : '#111',
+              borderRadius: 999,
+              paddingVertical: 6,
+              paddingHorizontal: 10,
+            }}>
+            <Text
+              style={{
+                color: tankWaterProfile === option.value ? 'white' : themeTextPrimary,
+                fontSize: 12,
+              }}>
+              {option.label}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -4 }}>
+        {WATER_TARGET_FIELDS.map((field) => (
+          <View
+            key={`${scopeKey}-target-${field.key}`}
+            style={{
+              width: windowWidth >= 980 ? '33.3333%' : windowWidth >= 640 ? '50%' : '100%',
+              paddingHorizontal: 4,
+              marginBottom: 8,
+            }}>
+            <View
+              style={{
+                borderWidth: 1,
+                borderColor: themeBorder,
+                borderRadius: 10,
+                padding: 8,
+                backgroundColor: themeCardBg,
+              }}>
+              <Text
+                style={{
+                  color: themeTextPrimary,
+                  fontSize: 12,
+                  fontWeight: '700',
+                  marginBottom: 6,
+                }}>
+                {field.label} {field.unit ? `(${field.unit})` : ''}
+              </Text>
+              <View style={{ flexDirection: 'row', gap: 6 }}>
+                <TextInput
+                  placeholder="min"
+                  placeholderTextColor={themePlaceholder}
+                  value={tankTargetRangeDraft[`${field.key}Min`] ?? ''}
+                  onChangeText={(value) =>
+                    handleChangeTankTargetDraftValue(field.key, 'min', value)
+                  }
+                  keyboardType="numeric"
+                  style={{
+                    flex: 1,
+                    borderWidth: 1,
+                    borderColor: themeInputBorder,
+                    color: themeInputText,
+                    paddingHorizontal: 8,
+                    paddingVertical: 8,
+                    borderRadius: 8,
+                    backgroundColor: themeInputBg,
+                  }}
+                />
+                <TextInput
+                  placeholder="max"
+                  placeholderTextColor={themePlaceholder}
+                  value={tankTargetRangeDraft[`${field.key}Max`] ?? ''}
+                  onChangeText={(value) =>
+                    handleChangeTankTargetDraftValue(field.key, 'max', value)
+                  }
+                  keyboardType="numeric"
+                  style={{
+                    flex: 1,
+                    borderWidth: 1,
+                    borderColor: themeInputBorder,
+                    color: themeInputText,
+                    paddingHorizontal: 8,
+                    paddingVertical: 8,
+                    borderRadius: 8,
+                    backgroundColor: themeInputBg,
+                  }}
+                />
+              </View>
+            </View>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+
+  useEffect(() => {
+    if (tankWaterProfileCustomized) {
+      return;
+    }
+
+    const autoProfile = getDefaultWaterProfileForAquariumType(tankAquariumType);
+    setTankWaterProfile(autoProfile);
+    setTankTargetRangeDraft(
+      buildTargetRangeInputDraftFromRanges(
+        getWaterTargetDefaults(autoProfile),
+        autoProfile
+      )
+    );
+  }, [tankAquariumType, tankWaterProfileCustomized]);
 
   const handleOpenEquipmentCatalog = (type) => {
     if (!selectedTank?.id || !user?.uid) {
@@ -8011,9 +8689,11 @@ export default function HomeScreen() {
         equipmentType
       );
       const nextList = [...currentList, nextEquipment];
+      const nextLegacyValue = nextList[0] ?? deleteField();
       const payload = {
+        ...buildTankRuleSanitizationPatch(selectedTank),
         [listField]: nextList,
-        [legacyField]: nextList[0] ?? null,
+        [legacyField]: nextLegacyValue,
       };
 
       await updateDoc(doc(db, 'tanks', selectedTank.id), {
@@ -8071,15 +8751,20 @@ export default function HomeScreen() {
 
       return index !== itemIndex;
     });
+    if (nextList.length === currentList.length) {
+      return;
+    }
 
     const listField = getTankEquipmentListField(normalizedType);
     const legacyField = getTankEquipmentLegacyField(normalizedType);
+    const nextLegacyValue = nextList[0] ?? deleteField();
 
     setEquipmentSavingBusy(true);
     try {
       await updateDoc(doc(db, 'tanks', selectedTank.id), {
+        ...buildTankRuleSanitizationPatch(selectedTank),
         [listField]: nextList,
-        [legacyField]: nextList[0] ?? null,
+        [legacyField]: nextLegacyValue,
         updatedAt: new Date(),
       });
       await fetchTanks(user.uid, selectedTank.id);
@@ -8360,19 +9045,29 @@ export default function HomeScreen() {
 
       const liters = parsePositiveNumberOrThrow('litraz', tankLiters);
       const aquariumType = normalizeAquariumType(tankAquariumType);
-      const substrateType = normalizeSubstrateType(tankSubstrateType);
+      const substrateTypes = normalizeSubstrateTypes(
+        tankSubstrateTypes.length > 0 ? tankSubstrateTypes : tankSubstrateType
+      );
+      const substrateType = substrateTypes[0] ?? '';
       const lightIntensity = normalizeLightIntensity(tankLightIntensity);
       const lightHours = parsePositiveNumberOrThrow(
         'godziny swiecenia',
         tankLightHours
       );
+      const defaultWaterProfile = getDefaultWaterProfileForAquariumType(aquariumType);
+      const waterProfile = tankWaterProfileCustomized
+        ? normalizeWaterProfile(tankWaterProfile || defaultWaterProfile)
+        : defaultWaterProfile;
+      const targetRanges = tankWaterProfileCustomized
+        ? parseTankTargetRangeDraftOrThrow(tankTargetRangeDraft, waterProfile)
+        : getWaterTargetDefaults(waterProfile);
 
       if (!AQUARIUM_TYPE_OPTIONS.some((item) => item.value === aquariumType)) {
         throw new Error('Wybierz typ akwarium');
       }
 
-      if (!SUBSTRATE_OPTIONS.some((item) => item.value === substrateType)) {
-        throw new Error('Wybierz rodzaj podloza');
+      if (substrateTypes.length === 0) {
+        throw new Error('Wybierz przynajmniej 1 rodzaj podloza');
       }
 
       if (
@@ -8395,8 +9090,11 @@ export default function HomeScreen() {
           liters,
           aquariumType,
           substrateType,
+          substrateTypes,
           lightIntensity,
           lightHours,
+          waterProfile,
+          targetRanges,
           updatedAt: new Date(),
         });
       } else {
@@ -8407,8 +9105,11 @@ export default function HomeScreen() {
           liters,
           aquariumType,
           substrateType,
+          substrateTypes,
           lightIntensity,
           lightHours,
+          waterProfile,
+          targetRanges,
           onboardingMode,
           onboardingStartAt: onboardingMode === 'fresh_start' ? now : null,
           createdAt: now,
@@ -8421,8 +9122,18 @@ export default function HomeScreen() {
       setTankLiters('');
       setTankAquariumType('');
       setTankSubstrateType('');
+      setTankSubstrateTypes([]);
       setTankLightIntensity('');
       setTankLightHours('');
+      const resetProfile = getDefaultWaterProfileForAquariumType('');
+      setTankWaterProfile(resetProfile);
+      setTankWaterProfileCustomized(false);
+      setTankTargetRangeDraft(
+        buildTargetRangeInputDraftFromRanges(
+          getWaterTargetDefaults(resetProfile),
+          resetProfile
+        )
+      );
       setTankOnboardingMode('existing_running');
       await fetchTanks(user.uid, preferredTankId ?? undefined);
       await fetchHomeData(user.uid);
@@ -8527,52 +9238,89 @@ export default function HomeScreen() {
       let minLiters = 0;
 
       if (stockType === 'fish') {
-        if (!selectedCatalogFishId) {
-          throw new Error('Wybierz gatunek ryby z katalogu.');
-        }
-
         const quantity = parsePositiveNumberOrThrow('ilosc', fishQuantity);
 
         if (!Number.isInteger(quantity)) {
           throw new Error('Pole ilosc musi byc liczba calkowita');
         }
 
-        const selectedFish = fishCatalog.find(
+        const searchPhrase = String(stockFishSearch ?? '').trim();
+        const normalizedSearchPhrase = normalizeText(searchPhrase);
+        let selectedFish = fishCatalog.find(
           (item) => item.id === selectedCatalogFishId
         );
 
-        if (!selectedFish) {
-          throw new Error(
-            'Wybrany gatunek nie istnieje w katalogu. Odswiez liste i sprobuj ponownie.'
-          );
+        if (!selectedFish && normalizedSearchPhrase) {
+          selectedFish =
+            fishCatalog.find(
+              (item) =>
+                normalizeText(item.commonName) === normalizedSearchPhrase ||
+                normalizeText(item.latinName) === normalizedSearchPhrase
+            ) ?? null;
         }
 
-        const schoolingProfile = resolveFishSchoolingProfile(selectedFish);
-        const aggressionLevel = resolveFishAggressionLevel(selectedFish);
-        minLiters = Number(selectedFish.minLiters);
-        payload = {
-          userId: user.uid,
-          tankId: selectedTank.id,
-          tankName: selectedTank.name,
-          type: 'fish',
-          name: selectedFish.commonName,
-          commonName: selectedFish.commonName,
-          latinName: selectedFish.latinName,
-          catalogFishId: selectedFish.id,
-          phMin: Number(selectedFish.phMin),
-          phMax: Number(selectedFish.phMax),
-          ghMin: Number(selectedFish.ghMin),
-          ghMax: Number(selectedFish.ghMax),
-          tempMin: Number(selectedFish.tempMin),
-          tempMax: Number(selectedFish.tempMax),
-          quantity,
-          minLiters,
-          isSchooling: schoolingProfile.isSchooling,
-          minGroupSize: schoolingProfile.minGroupSize,
-          aggressionLevel,
-          notes: selectedFish.notes ?? '',
-          createdAt: new Date(),
-        };
+        if (selectedFish) {
+          const sanitizedFish = getSanitizedFishCatalogFields(selectedFish);
+          const schoolingProfile = resolveFishSchoolingProfile(selectedFish);
+          const aggressionLevel = resolveFishAggressionLevel(selectedFish);
+          minLiters = sanitizedFish.minLiters;
+          payload = {
+            userId: user.uid,
+            tankId: selectedTank.id,
+            tankName: selectedTank.name,
+            type: 'fish',
+            name: sanitizedFish.commonName,
+            commonName: sanitizedFish.commonName,
+            latinName: sanitizedFish.latinName,
+            catalogFishId: selectedFish.id,
+            phMin: sanitizedFish.phMin,
+            phMax: sanitizedFish.phMax,
+            ghMin: sanitizedFish.ghMin,
+            ghMax: sanitizedFish.ghMax,
+            tempMin: sanitizedFish.tempMin,
+            tempMax: sanitizedFish.tempMax,
+            quantity,
+            minLiters,
+            isSchooling: schoolingProfile.isSchooling,
+            minGroupSize: schoolingProfile.isSchooling
+              ? Math.max(1, Number(schoolingProfile.minGroupSize) || 1)
+              : 1,
+            aggressionLevel,
+            notes: String(selectedFish.notes ?? '').slice(0, 1000),
+            createdAt: new Date(),
+          };
+        } else if (!searchPhrase) {
+          throw new Error('Wpisz nazwe ryby albo wybierz gatunek z katalogu.');
+        } else {
+          const manualFishName = searchPhrase.replace(/\s+/g, ' ').trim();
+          if (manualFishName.length < 2) {
+            throw new Error('Wpisz pelna nazwe ryby (minimum 2 znaki).');
+          }
+
+          payload = {
+            userId: user.uid,
+            tankId: selectedTank.id,
+            tankName: selectedTank.name,
+            type: 'fish',
+            name: manualFishName,
+            commonName: manualFishName,
+            latinName: manualFishName,
+            catalogFishId: null,
+            phMin: EXPANDED_FISH_DEFAULTS.phMin,
+            phMax: EXPANDED_FISH_DEFAULTS.phMax,
+            ghMin: EXPANDED_FISH_DEFAULTS.ghMin,
+            ghMax: EXPANDED_FISH_DEFAULTS.ghMax,
+            tempMin: EXPANDED_FISH_DEFAULTS.tempMin,
+            tempMax: EXPANDED_FISH_DEFAULTS.tempMax,
+            quantity,
+            minLiters: EXPANDED_FISH_DEFAULTS.minLiters,
+            isSchooling: false,
+            minGroupSize: 1,
+            aggressionLevel: 'peaceful',
+            notes: 'Dodane recznie.',
+            createdAt: new Date(),
+          };
+        }
       } else {
         if (!selectedCatalogPlantId) {
           throw new Error('Wybierz rosline z katalogu.');
@@ -8886,7 +9634,6 @@ export default function HomeScreen() {
       }
 
       const measurement = { note };
-      let filledMeasurementCount = 0;
 
       measurementInputRows.forEach((field) => {
         const parsedValue = field.parseValue(field.value);
@@ -8896,19 +9643,18 @@ export default function HomeScreen() {
         }
 
         measurement[field.key] = parsedValue;
-        filledMeasurementCount += 1;
       });
-
-      if (filledMeasurementCount === 0 && !editingMeasurementId && !note) {
-        throw new Error('Uzupelnij przynajmniej 1 widoczny parametr pomiaru.');
-      }
 
       const co2Estimated = calculateCo2FromKhPhLogic(measurement.kh, measurement.ph);
       if (co2Estimated !== null) {
         measurement.co2 = co2Estimated;
       }
 
-      const baseAnalysis = analyzeMeasurementLogic(measurement, selectedTests);
+      const baseAnalysis = analyzeMeasurementLogic(
+        measurement,
+        selectedTests,
+        selectedTankWaterAnalysisOptions
+      );
       const contextInsights = buildContextualEcosystemInsights({
         measurement,
         enabledTests: selectedTests,
@@ -9160,32 +9906,35 @@ export default function HomeScreen() {
         throw new Error('Wybrana ryba nie istnieje w katalogu.');
       }
 
+      const sanitizedFish = getSanitizedFishCatalogFields(selectedFish);
       const schoolingProfile = resolveFishSchoolingProfile(selectedFish);
       const aggressionLevel = resolveFishAggressionLevel(selectedFish);
       const quantity = 1;
-      const minLiters = Number(selectedFish.minLiters);
+      const minLiters = sanitizedFish.minLiters;
 
       await addDoc(collection(db, 'stockItems'), {
         userId: user.uid,
         tankId: tank.id,
         tankName: tank.name,
         type: 'fish',
-        name: selectedFish.commonName,
-        commonName: selectedFish.commonName,
-        latinName: selectedFish.latinName,
+        name: sanitizedFish.commonName,
+        commonName: sanitizedFish.commonName,
+        latinName: sanitizedFish.latinName,
         catalogFishId: selectedFish.id,
-        phMin: Number(selectedFish.phMin),
-        phMax: Number(selectedFish.phMax),
-        ghMin: Number(selectedFish.ghMin),
-        ghMax: Number(selectedFish.ghMax),
-        tempMin: Number(selectedFish.tempMin),
-        tempMax: Number(selectedFish.tempMax),
+        phMin: sanitizedFish.phMin,
+        phMax: sanitizedFish.phMax,
+        ghMin: sanitizedFish.ghMin,
+        ghMax: sanitizedFish.ghMax,
+        tempMin: sanitizedFish.tempMin,
+        tempMax: sanitizedFish.tempMax,
         quantity,
         minLiters,
         isSchooling: schoolingProfile.isSchooling,
-        minGroupSize: schoolingProfile.minGroupSize,
+        minGroupSize: schoolingProfile.isSchooling
+          ? Math.max(1, Number(schoolingProfile.minGroupSize) || 1)
+          : 1,
         aggressionLevel,
-        notes: selectedFish.notes ?? '',
+        notes: String(selectedFish.notes ?? '').slice(0, 1000),
         createdAt: new Date(),
       });
 
@@ -10070,8 +10819,34 @@ export default function HomeScreen() {
     Boolean(selectedTank) &&
     tanks.length > 1;
   const selectedTankLiters = Number(selectedTank?.liters);
+  const selectedTankWaterProfile = useMemo(
+    () =>
+      normalizeWaterProfile(
+        selectedTank?.waterProfile ??
+          getDefaultWaterProfileForAquariumType(selectedTank?.aquariumType)
+      ),
+    [selectedTank?.aquariumType, selectedTank?.waterProfile]
+  );
+  const selectedTankTargetRanges = useMemo(
+    () =>
+      normalizeTankTargetRanges(
+        selectedTank?.targetRanges,
+        selectedTankWaterProfile
+      ),
+    [selectedTank?.targetRanges, selectedTankWaterProfile]
+  );
+  const selectedTankWaterAnalysisOptions = useMemo(
+    () => ({
+      targetRanges: selectedTankTargetRanges,
+    }),
+    [selectedTankTargetRanges]
+  );
   const currentMeasurement = useMemo(
     () => buildLatestMeasurementSnapshot(measurements),
+    [measurements]
+  );
+  const currentMeasurementDisplay = useMemo(
+    () => buildLatestMeasurementDisplaySnapshot(measurements),
     [measurements]
   );
   const selectedTankEnvironmentProfile = useMemo(
@@ -10107,18 +10882,23 @@ export default function HomeScreen() {
 
       return analyzeMeasurementLogic(
         currentMeasurement,
-        availableMeasurementTests
+        availableMeasurementTests,
+        selectedTankWaterAnalysisOptions
       );
     },
-    [availableMeasurementTests, currentMeasurement]
+    [availableMeasurementTests, currentMeasurement, selectedTankWaterAnalysisOptions]
   );
   const currentAnalysis = useMemo(
     () => mergeWaterAnalysisWithContext(currentBaseAnalysis, currentContextInsights),
     [currentBaseAnalysis, currentContextInsights]
   );
   const currentMeasurementDetailRows = useMemo(
-    () => buildMeasurementDetailRows(currentMeasurement, availableMeasurementTests),
-    [availableMeasurementTests, currentMeasurement]
+    () =>
+      buildMeasurementDetailRows(
+        currentMeasurementDisplay,
+        availableMeasurementTests
+      ),
+    [availableMeasurementTests, currentMeasurementDisplay]
   );
   const currentMeasurementValueSourceMsByKey = useMemo(
     () => buildLatestMeasurementValueSourceMsByKey(measurements),
@@ -10127,7 +10907,7 @@ export default function HomeScreen() {
   const currentMeasurementIssueSeverityByKey = useMemo(() => {
     const map = new Map();
 
-    if (!currentMeasurement) {
+    if (!currentMeasurementDisplay) {
       return map;
     }
 
@@ -10154,7 +10934,7 @@ export default function HomeScreen() {
 
     return map;
   }, [
-    currentMeasurement,
+    currentMeasurementDisplay,
     currentMeasurementDetailRows,
   ]);
   const currentRiskNotes = useMemo(
@@ -11462,6 +12242,19 @@ export default function HomeScreen() {
     };
   }, [isEditingFish]);
   useEffect(() => {
+    if (!isEditingFish || !selectedCatalogFishId) {
+      return;
+    }
+
+    const selectedStillVisible = filteredFishCatalog.some(
+      (item) => item.id === selectedCatalogFishId
+    );
+
+    if (!selectedStillVisible) {
+      setSelectedCatalogFishId(null);
+    }
+  }, [filteredFishCatalog, isEditingFish, selectedCatalogFishId]);
+  useEffect(() => {
     if (!ENABLE_FISH_IMAGES) {
       return;
     }
@@ -11746,7 +12539,11 @@ export default function HomeScreen() {
         .sort((a, b) => getCreatedAtMs(b.createdAt) - getCreatedAtMs(a.createdAt));
       const latestMeasurement = tankMeasurements[0] ?? null;
       const latestAnalysis = latestMeasurement
-        ? analyzeMeasurementLogic(latestMeasurement, availableMeasurementTests)
+        ? analyzeMeasurementLogic(
+            latestMeasurement,
+            availableMeasurementTests,
+            getWaterAnalysisOptionsForTank(tank)
+          )
         : null;
 
       const measurementActionsToday = (latestAnalysis?.recommendations ?? []).filter(
@@ -12068,13 +12865,21 @@ export default function HomeScreen() {
   const currentSubscriptionProductId =
     subscriptionPlatformProductIdByTier[subscriptionPlan.tier] ?? null;
   const canManualSwitchSubscriptionPlan = canManageSubscriptionManually;
-  const selectedTankSubstrateValue = normalizeSubstrateType(selectedTank?.substrateType);
-  const selectedTankSubstrateOption = SUBSTRATE_OPTIONS.find(
-    (item) => item.value === selectedTankSubstrateValue
+  const selectedTankSubstrateValues = normalizeSubstrateTypes(
+    selectedTank?.substrateTypes ?? selectedTank?.substrateType
   );
-  const selectedTankSubstrateLabel = selectedTankSubstrateOption
-    ? t(selectedTankSubstrateOption.labelKey)
-    : t('noDataCaps');
+  const selectedTankSubstrateLabel =
+    selectedTankSubstrateValues.length > 0
+      ? selectedTankSubstrateValues
+          .map((value) => {
+            const option = SUBSTRATE_OPTIONS.find((item) => item.value === value);
+            if (!option) {
+              return value;
+            }
+            return option.labelKey ? t(option.labelKey) : option.label;
+          })
+          .join(', ')
+      : t('noDataCaps');
   const selectedTankLightValue = normalizeLightIntensity(selectedTank?.lightIntensity);
   const selectedTankLightOption = LIGHT_INTENSITY_OPTIONS.find(
     (item) => item.value === selectedTankLightValue
@@ -13812,10 +14617,16 @@ export default function HomeScreen() {
             />
           }
           contentContainerStyle={{
-            paddingHorizontal: 18,
+            paddingHorizontal: appHorizontalPadding,
             paddingTop: 18,
             paddingBottom: 24,
           }}>
+          <View
+            style={{
+              width: '100%',
+              maxWidth: appContentMaxWidth,
+              alignSelf: 'center',
+            }}>
           <View
             style={{
               flexDirection: 'row',
@@ -16468,6 +17279,7 @@ export default function HomeScreen() {
                         themeOverlay={themeOverlay}
                         themeDragHandle={themeDragHandle}
                         isLightTheme={isLightTheme}
+                        maxWidth={isLargeScreen ? 980 : 760}
                         keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}>
                         <View
                           style={{
@@ -16532,7 +17344,11 @@ export default function HomeScreen() {
                                   }}>
                                   {stockBusy
                                     ? t('addItemInProgress')
-                                    : t('addFishFromCatalog')}
+                                    : selectedCatalogFishId
+                                      ? t('addFishFromCatalog')
+                                      : String(stockFishSearch ?? '').trim().length > 0
+                                        ? 'Dodaj rybe recznie'
+                                        : t('addFishFromCatalog')}
                                 </Text>
                               </Pressable>
 
@@ -16551,11 +17367,26 @@ export default function HomeScreen() {
                               {t('loadingFishCatalog')}
                             </Text>
                           ) : visibleFilteredFishCatalog.length === 0 ? (
-                            <Text style={{ color: themeTextSecondary, marginBottom: 10 }}>
-                              {t('noFishResults')}
-                            </Text>
+                            <>
+                              <Text style={{ color: themeTextSecondary, marginBottom: 8 }}>
+                                {t('noFishResults')}
+                              </Text>
+                              {String(stockFishSearch ?? '').trim().length > 0 ? (
+                                <Text style={{ color: themeTextSecondary, marginBottom: 10 }}>
+                                  Nie ma takiej ryby w katalogu. Mozesz dodac wpis recznie tym samym
+                                  przyciskiem powyzej.
+                                </Text>
+                              ) : null}
+                            </>
                           ) : (
-                            <View style={{ marginBottom: 10 }}>
+                            <View
+                              style={{
+                                marginBottom: 10,
+                                flexDirection: catalogGridColumns === 2 ? 'row' : 'column',
+                                flexWrap: 'wrap',
+                                justifyContent: 'space-between',
+                                rowGap: 6,
+                              }}>
                               {ENABLE_FISH_IMAGES &&
                               IS_IOS_EXPO_GO &&
                               String(stockFishSearch ?? '').trim().length === 0 &&
@@ -16584,13 +17415,14 @@ export default function HomeScreen() {
                                     <View
                                       key={fish.id}
                                       style={{
+                                        width: catalogCardWidth,
                                         borderWidth: 1,
                                         borderColor: isSelectedCatalogFish
                                           ? themeSuccessBg
                                           : themeBorder,
                                         borderRadius: 8,
                                         padding: 10,
-                                        marginBottom: 6,
+                                        marginBottom: catalogGridColumns === 2 ? 0 : 6,
                                         backgroundColor: isSelectedCatalogFish
                                           ? themeSuccessSoftBg
                                           : themeCardBgAlt,
@@ -16805,6 +17637,7 @@ export default function HomeScreen() {
                         themeOverlay={themeOverlay}
                         themeDragHandle={themeDragHandle}
                         isLightTheme={isLightTheme}
+                        maxWidth={isLargeScreen ? 980 : 760}
                         keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}>
                         <ScrollView
                           style={{ flex: 1 }}
@@ -16855,7 +17688,14 @@ export default function HomeScreen() {
                         {t('noPlantResults')}
                       </Text>
                     ) : (
-                      <View style={{ marginBottom: 10 }}>
+                      <View
+                        style={{
+                          marginBottom: 10,
+                          flexDirection: catalogGridColumns === 2 ? 'row' : 'column',
+                          flexWrap: 'wrap',
+                          justifyContent: 'space-between',
+                          rowGap: 6,
+                        }}>
                         {ENABLE_PLANT_IMAGES &&
                         IS_IOS_EXPO_GO &&
                         String(stockPlantSearch ?? '').trim().length === 0 &&
@@ -16882,11 +17722,12 @@ export default function HomeScreen() {
                             <View
                               key={plant.id}
                               style={{
+                                width: catalogCardWidth,
                                 borderWidth: 1,
                                 borderColor: isSelectedCatalogPlant ? themeSuccessBg : themeBorder,
                                 borderRadius: 8,
                                 padding: 10,
-                                marginBottom: 6,
+                                marginBottom: catalogGridColumns === 2 ? 0 : 6,
                                 backgroundColor: isSelectedCatalogPlant
                                   ? themeSuccessSoftBg
                                   : themeCardBgAlt,
@@ -20391,6 +21232,14 @@ export default function HomeScreen() {
                 }}>
                 {t('substrate')}
               </Text>
+              <Text
+                style={{
+                  color: '#9da3af',
+                  marginBottom: 6,
+                  fontSize: 11,
+                }}>
+                Mozesz zaznaczyc wiecej niz jedno podloze.
+              </Text>
               <View
                 style={{
                   flexDirection: 'row',
@@ -20401,13 +21250,15 @@ export default function HomeScreen() {
                 {SUBSTRATE_OPTIONS.map((option) => (
                   <Pressable
                     key={`add-substrate-${option.value}`}
-                    onPress={() => setTankSubstrateType(option.value)}
+                    onPress={() => handleToggleTankSubstrate(option.value)}
                     style={{
                       borderWidth: 1,
                       borderColor:
-                        tankSubstrateType === option.value ? themeAccent : themeBorderStrong,
+                        isTankSubstrateSelected(option.value)
+                          ? themeAccent
+                          : themeBorderStrong,
                       backgroundColor:
-                        tankSubstrateType === option.value
+                        isTankSubstrateSelected(option.value)
                           ? '#102235'
                           : isLightTheme
                             ? '#ffffff'
@@ -20419,12 +21270,12 @@ export default function HomeScreen() {
                     <Text
                       style={{
                         color:
-                          tankSubstrateType === option.value
+                          isTankSubstrateSelected(option.value)
                             ? 'white'
                             : themeTextPrimary,
                         fontSize: 12,
                       }}>
-                      {t(option.labelKey)}
+                      {option.labelKey ? t(option.labelKey) : option.label}
                     </Text>
                   </Pressable>
                 ))}
@@ -20491,6 +21342,7 @@ export default function HomeScreen() {
                   marginBottom: 10,
                 }}
               />
+              {renderTankWaterTargetsSection('inline-add')}
               <Pressable
                 onPress={handleSaveTank}
                 style={{
@@ -20560,7 +21412,12 @@ export default function HomeScreen() {
                     style={{ flex: 1 }}
                     keyboardShouldPersistTaps="handled"
                     keyboardDismissMode="on-drag"
-                    contentContainerStyle={{ padding: 16, paddingBottom: 24 }}>
+                    contentContainerStyle={{
+                      padding: 16,
+                      paddingBottom: 24,
+                      alignItems: 'center',
+                    }}>
+                    <View style={{ width: '100%', maxWidth: formContentMaxWidth }}>
                     <TextInput
                       placeholder={t('tankNamePlaceholder')}
                       placeholderTextColor={themePlaceholder}
@@ -20688,6 +21545,14 @@ export default function HomeScreen() {
                       }}>
                       {t('substrate')}
                     </Text>
+                    <Text
+                      style={{
+                        color: '#9da3af',
+                        marginBottom: 6,
+                        fontSize: 11,
+                      }}>
+                      Mozesz zaznaczyc wiecej niz jedno podloze.
+                    </Text>
                     <View
                       style={{
                         flexDirection: 'row',
@@ -20698,13 +21563,15 @@ export default function HomeScreen() {
                       {SUBSTRATE_OPTIONS.map((option) => (
                         <Pressable
                           key={`add-modal-substrate-${option.value}`}
-                          onPress={() => setTankSubstrateType(option.value)}
+                          onPress={() => handleToggleTankSubstrate(option.value)}
                           style={{
                             borderWidth: 1,
                             borderColor:
-                              tankSubstrateType === option.value ? themeAccent : themeBorderStrong,
+                              isTankSubstrateSelected(option.value)
+                                ? themeAccent
+                                : themeBorderStrong,
                             backgroundColor:
-                              tankSubstrateType === option.value
+                              isTankSubstrateSelected(option.value)
                                 ? '#102235'
                                 : isLightTheme
                                   ? '#ffffff'
@@ -20716,12 +21583,12 @@ export default function HomeScreen() {
                           <Text
                             style={{
                               color:
-                                tankSubstrateType === option.value
+                                isTankSubstrateSelected(option.value)
                                   ? 'white'
                                   : themeTextPrimary,
                               fontSize: 12,
                             }}>
-                            {t(option.labelKey)}
+                            {option.labelKey ? t(option.labelKey) : option.label}
                           </Text>
                         </Pressable>
                       ))}
@@ -20788,6 +21655,7 @@ export default function HomeScreen() {
                         marginBottom: 10,
                       }}
                     />
+                    {renderTankWaterTargetsSection('modal-add')}
 
                     <Pressable
                       onPress={handleSaveTank}
@@ -20820,6 +21688,7 @@ export default function HomeScreen() {
                         {t('cancel')}
                       </Text>
                     </Pressable>
+                    </View>
                   </ScrollView>
                 </KeyboardAvoidingView>
               </SafeAreaView>
@@ -20890,7 +21759,12 @@ export default function HomeScreen() {
                     style={{ flex: 1 }}
                     keyboardShouldPersistTaps="handled"
                     keyboardDismissMode="on-drag"
-                    contentContainerStyle={{ padding: 16, paddingBottom: 24 }}>
+                    contentContainerStyle={{
+                      padding: 16,
+                      paddingBottom: 24,
+                      alignItems: 'center',
+                    }}>
+                    <View style={{ width: '100%', maxWidth: formContentMaxWidth }}>
                     <View
                       style={{
                         borderWidth: 1,
@@ -20935,13 +21809,20 @@ export default function HomeScreen() {
                         Brak wynikow dla podanego wyszukiwania.
                       </Text>
                     ) : (
-                      <View style={{ gap: 12 }}>
+                      <View
+                        style={{
+                          gap: 12,
+                          flexDirection: catalogGridColumns === 2 ? 'row' : 'column',
+                          flexWrap: 'wrap',
+                          justifyContent: 'space-between',
+                        }}>
                         {filteredEquipmentCatalog.map((item) => (
                           <Pressable
                             key={`equipment-catalog-item-${item.id}`}
                             onPress={() => handleAssignEquipmentToTank(item)}
                             disabled={equipmentSavingBusy}
                             style={{
+                              width: catalogCardWidth,
                               borderWidth: 1,
                               borderColor: item.fitsTank ? themeSuccessBg : themeBorder,
                               borderRadius: 18,
@@ -21137,6 +22018,7 @@ export default function HomeScreen() {
                         ))}
                       </View>
                     )}
+                    </View>
                   </ScrollView>
                 </KeyboardAvoidingView>
               </SafeAreaView>
@@ -21194,7 +22076,12 @@ export default function HomeScreen() {
                     style={{ flex: 1 }}
                     keyboardShouldPersistTaps="handled"
                     keyboardDismissMode="on-drag"
-                    contentContainerStyle={{ padding: 16, paddingBottom: 24 }}>
+                    contentContainerStyle={{
+                      padding: 16,
+                      paddingBottom: 24,
+                      alignItems: 'center',
+                    }}>
+                    <View style={{ width: '100%', maxWidth: formContentMaxWidth }}>
                     <TextInput
                       placeholder={t('newTankNamePlaceholder')}
                       placeholderTextColor={themePlaceholder}
@@ -21276,6 +22163,14 @@ export default function HomeScreen() {
                       }}>
                       {t('substrate')}
                     </Text>
+                    <Text
+                      style={{
+                        color: '#9da3af',
+                        marginBottom: 6,
+                        fontSize: 11,
+                      }}>
+                      Mozesz zaznaczyc wiecej niz jedno podloze.
+                    </Text>
                     <View
                       style={{
                         flexDirection: 'row',
@@ -21286,13 +22181,15 @@ export default function HomeScreen() {
                       {SUBSTRATE_OPTIONS.map((option) => (
                         <Pressable
                           key={`edit-substrate-${option.value}`}
-                          onPress={() => setTankSubstrateType(option.value)}
+                          onPress={() => handleToggleTankSubstrate(option.value)}
                           style={{
                             borderWidth: 1,
                             borderColor:
-                              tankSubstrateType === option.value ? themeAccent : themeBorderStrong,
+                              isTankSubstrateSelected(option.value)
+                                ? themeAccent
+                                : themeBorderStrong,
                             backgroundColor:
-                              tankSubstrateType === option.value
+                              isTankSubstrateSelected(option.value)
                                 ? '#102235'
                                 : isLightTheme
                                   ? '#ffffff'
@@ -21304,12 +22201,12 @@ export default function HomeScreen() {
                           <Text
                             style={{
                               color:
-                                tankSubstrateType === option.value
+                                isTankSubstrateSelected(option.value)
                                   ? 'white'
                                   : themeTextPrimary,
                               fontSize: 12,
                             }}>
-                            {t(option.labelKey)}
+                            {option.labelKey ? t(option.labelKey) : option.label}
                           </Text>
                         </Pressable>
                       ))}
@@ -21376,6 +22273,7 @@ export default function HomeScreen() {
                         marginBottom: 10,
                       }}
                     />
+                    {renderTankWaterTargetsSection('modal-edit')}
 
                     <Pressable
                       onPress={handleSaveTank}
@@ -21430,6 +22328,7 @@ export default function HomeScreen() {
                         {t('cancel')}
                       </Text>
                     </Pressable>
+                    </View>
                   </ScrollView>
                 </KeyboardAvoidingView>
               </SafeAreaView>
@@ -22370,7 +23269,7 @@ export default function HomeScreen() {
                         <View
                           key={`current-measurement-${item.label}`}
                           style={{
-                            width: '33.3333%',
+                            width: currentParameterTileWidth,
                             paddingHorizontal: 4,
                             marginBottom: 8,
                           }}>
@@ -23469,7 +24368,8 @@ export default function HomeScreen() {
                         const isSelected = selectedMeasurementId === measurement.id;
                         const baseAnalysis = analyzeMeasurementLogic(
                           measurement,
-                          availableMeasurementTests
+                          availableMeasurementTests,
+                          selectedTankWaterAnalysisOptions
                         );
                         const contextInsights = buildContextualEcosystemInsights({
                           measurement,
@@ -23937,6 +24837,7 @@ export default function HomeScreen() {
               )}
             </View>
           )}
+          </View>
         </ScrollView>
         {isDeleteAccountReauthModalVisible ? (
           <BottomSheetModal
