@@ -310,6 +310,65 @@ function parseNonNegativeNumberOrThrow(label, rawValue) {
   return value;
 }
 
+function formatDateInputValue(value) {
+  const ms = getCreatedAtMs(value);
+
+  if (!ms) {
+    return '';
+  }
+
+  const date = new Date(ms);
+  const year = String(date.getFullYear());
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function buildTodayDateInputValue() {
+  return formatDateInputValue(new Date());
+}
+
+function parseMeasurementDateInputOrThrow(rawValue) {
+  const normalized = String(rawValue ?? '')
+    .trim()
+    .replace(/\./g, '-')
+    .replace(/\//g, '-');
+
+  if (!normalized) {
+    throw new Error('Pole data pomiaru jest wymagane');
+  }
+
+  let year = 0;
+  let month = 0;
+  let day = 0;
+
+  const yearFirstMatch = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const dayFirstMatch = normalized.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+
+  if (yearFirstMatch) {
+    year = Number(yearFirstMatch[1]);
+    month = Number(yearFirstMatch[2]);
+    day = Number(yearFirstMatch[3]);
+  } else if (dayFirstMatch) {
+    day = Number(dayFirstMatch[1]);
+    month = Number(dayFirstMatch[2]);
+    year = Number(dayFirstMatch[3]);
+  } else {
+    throw new Error('Data pomiaru musi miec format RRRR-MM-DD lub DD-MM-RRRR');
+  }
+
+  const parsedDate = new Date(year, month - 1, day, 12, 0, 0, 0);
+  if (
+    parsedDate.getFullYear() !== year ||
+    parsedDate.getMonth() !== month - 1 ||
+    parsedDate.getDate() !== day
+  ) {
+    throw new Error('Podana data pomiaru jest nieprawidlowa');
+  }
+
+  return parsedDate;
+}
+
 function getCreatedAtMs(createdAt) {
   if (!createdAt) {
     return 0;
@@ -327,14 +386,12 @@ function getCreatedAtMs(createdAt) {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
-function formatCreatedAt(createdAt) {
-  const ms = getCreatedAtMs(createdAt);
-
-  if (!ms) {
-    return '-';
+function getMeasurementRecordedAtMs(measurement) {
+  if (!measurement || typeof measurement !== 'object') {
+    return 0;
   }
 
-  return new Date(ms).toLocaleString();
+  return getCreatedAtMs(measurement.measuredAt ?? measurement.createdAt);
 }
 
 function formatDateOnly(value) {
@@ -455,12 +512,31 @@ function getTankEquipmentList(tank, type) {
 
 function buildTankRuleSanitizationPatch(tank) {
   const patch = {};
+  const hasField = (field) =>
+    Boolean(tank && Object.prototype.hasOwnProperty.call(tank, field));
+  const isTimestampLike = (value) => {
+    if (value === null || value === undefined) {
+      return true;
+    }
+    if (value instanceof Date) {
+      return true;
+    }
+    return (
+      typeof value === 'object' &&
+      typeof value?.toMillis === 'function'
+    );
+  };
+  const isPlainMap = (value) =>
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value);
   const fieldsToDeleteWhenNull = [
     'aquariumType',
     'substrateType',
     'substrateTypes',
     'lightIntensity',
     'waterProfile',
+    'singleSpeciesFishId',
     'targetRanges',
     'plantFertilizationEntries',
     'heaterEquipments',
@@ -469,10 +545,167 @@ function buildTankRuleSanitizationPatch(tank) {
     'filterEquipment',
     'onboardingTaskChecks',
   ];
+  const allowedTankFields = new Set([
+    'userId',
+    'name',
+    'liters',
+    'aquariumType',
+    'substrateType',
+    'substrateTypes',
+    'lightIntensity',
+    'lightHours',
+    'waterProfile',
+    'singleSpeciesFishId',
+    'targetRanges',
+    'onboardingMode',
+    'onboardingStartAt',
+    'onboardingTaskChecks',
+    'plantFertilizationEntries',
+    'heaterEquipments',
+    'filterEquipments',
+    'heaterEquipment',
+    'filterEquipment',
+    'createdAt',
+    'updatedAt',
+  ]);
+
+  Object.keys(tank ?? {}).forEach((field) => {
+    if (field === 'id') {
+      return;
+    }
+    if (!allowedTankFields.has(field)) {
+      patch[field] = deleteField();
+    }
+  });
 
   fieldsToDeleteWhenNull.forEach((field) => {
     if (tank?.[field] === null) {
       patch[field] = deleteField();
+    }
+  });
+
+  const optionalStringFields = [
+    ['aquariumType', 20],
+    ['substrateType', 40],
+    ['lightIntensity', 20],
+    ['waterProfile', 30],
+    ['singleSpeciesFishId', 128],
+    ['onboardingMode', 30],
+  ];
+  optionalStringFields.forEach(([field, maxLen]) => {
+    if (!hasField(field)) {
+      return;
+    }
+    const value = tank[field];
+    if (value === null || value === undefined) {
+      return;
+    }
+    if (typeof value !== 'string' || value.length > maxLen) {
+      patch[field] = deleteField();
+    }
+  });
+
+  const optionalTimestampFields = ['onboardingStartAt'];
+  optionalTimestampFields.forEach((field) => {
+    if (!hasField(field)) {
+      return;
+    }
+    const value = tank[field];
+    if (!isTimestampLike(value)) {
+      patch[field] = deleteField();
+    }
+  });
+
+  if (hasField('lightHours')) {
+    const lightHours = Number(tank.lightHours);
+    if (!Number.isFinite(lightHours) || lightHours < 1 || lightHours > 24) {
+      patch.lightHours = deleteField();
+    }
+  }
+
+  if (hasField('aquariumType')) {
+    const allowedAquariumTypes = new Set(['plant', 'shrimp', 'mixed', '']);
+    const value = String(tank.aquariumType ?? '').trim().toLowerCase();
+    if (!allowedAquariumTypes.has(value)) {
+      patch.aquariumType = deleteField();
+    }
+  }
+
+  if (hasField('lightIntensity')) {
+    const allowedLightIntensities = new Set(['low', 'medium', 'high', '']);
+    const value = String(tank.lightIntensity ?? '').trim().toLowerCase();
+    if (!allowedLightIntensities.has(value)) {
+      patch.lightIntensity = deleteField();
+    }
+  }
+
+  if (hasField('onboardingMode')) {
+    const allowedModes = new Set(['fresh_start', 'existing_running']);
+    const value = String(tank.onboardingMode ?? '').trim().toLowerCase();
+    if (!allowedModes.has(value)) {
+      patch.onboardingMode = deleteField();
+    }
+  }
+
+  if (hasField('substrateTypes')) {
+    const value = tank.substrateTypes;
+    if (!Array.isArray(value)) {
+      patch.substrateTypes = deleteField();
+    } else {
+      const normalized = normalizeSubstrateTypes(value).slice(0, 12);
+      patch.substrateTypes = normalized;
+      if (!hasField('substrateType')) {
+        patch.substrateType = normalized[0] ?? '';
+      }
+    }
+  }
+
+  const optionalListFields = [
+    ['plantFertilizationEntries', 200],
+    ['heaterEquipments', 30],
+    ['filterEquipments', 30],
+  ];
+  optionalListFields.forEach(([field, maxSize]) => {
+    if (!hasField(field)) {
+      return;
+    }
+    const value = tank[field];
+    if (!Array.isArray(value)) {
+      if (value !== null && value !== undefined) {
+        patch[field] = deleteField();
+      }
+      return;
+    }
+    if (value.length > maxSize) {
+      patch[field] = value.slice(0, maxSize);
+    }
+  });
+
+  const optionalMapFields = [
+    ['targetRanges', 40],
+    ['heaterEquipment', 30],
+    ['filterEquipment', 30],
+    ['onboardingTaskChecks', 300],
+  ];
+  optionalMapFields.forEach(([field, maxSize]) => {
+    if (!hasField(field)) {
+      return;
+    }
+    const value = tank[field];
+    if (value === null || value === undefined) {
+      return;
+    }
+    if (!isPlainMap(value)) {
+      patch[field] = deleteField();
+      return;
+    }
+    const keys = Object.keys(value);
+    if (keys.length > maxSize) {
+      const trimmed = {};
+      keys.slice(0, maxSize).forEach((key) => {
+        trimmed[key] = value[key];
+      });
+      patch[field] = trimmed;
     }
   });
 
@@ -536,6 +769,8 @@ function buildMeasurementDetailRows(measurement, enabledTests = {}) {
       : null,
     enabledTests.ca ? { key: 'ca', label: 'Ca', value: measurement.ca } : null,
     enabledTests.mg ? { key: 'mg', label: 'Mg', value: measurement.mg } : null,
+    enabledTests.k ? { key: 'k', label: 'K', value: measurement.k } : null,
+    enabledTests.tds ? { key: 'tds', label: 'TDS', value: measurement.tds } : null,
     enabledTests.no2 ? { key: 'no2', label: 'NO2', value: measurement.no2 } : null,
     enabledTests.no3 ? { key: 'no3', label: 'NO3', value: measurement.no3 } : null,
     enabledTests.nh3nh4
@@ -557,6 +792,8 @@ const MEASUREMENT_VALUE_KEYS = [
   'kh',
   'ca',
   'mg',
+  'k',
+  'tds',
   'no2',
   'no3',
   'nh3nh4',
@@ -619,7 +856,7 @@ function buildLatestMeasurementValueSourceMsByKey(measurements = []) {
     for (const measurement of measurements) {
       const value = getMeasurementNumericValue(measurement, key);
       if (value !== null) {
-        sourceMsByKey.set(key, getCreatedAtMs(measurement?.createdAt));
+        sourceMsByKey.set(key, getMeasurementRecordedAtMs(measurement));
         break;
       }
     }
@@ -628,7 +865,7 @@ function buildLatestMeasurementValueSourceMsByKey(measurements = []) {
   for (const measurement of measurements) {
     const directCo2 = Number(measurement?.co2);
     if (Number.isFinite(directCo2)) {
-      sourceMsByKey.set('co2', getCreatedAtMs(measurement?.createdAt));
+      sourceMsByKey.set('co2', getMeasurementRecordedAtMs(measurement));
       break;
     }
   }
@@ -664,6 +901,8 @@ function getMeasurementKeysFromRecommendationParameter(parameter) {
   if (/\bkh\b/.test(normalized)) push('kh');
   if (/\bca\b/.test(normalized)) push('ca');
   if (/\bmg\b/.test(normalized)) push('mg');
+  if (/\btds\b/.test(normalized)) push('tds');
+  if (/\bk\b/.test(normalized)) push('k');
   if (/\bno2\b/.test(normalized)) push('no2');
   if (/\bno3\b/.test(normalized)) push('no3');
   if (/nh3|nh4/.test(normalized)) push('nh3nh4');
@@ -677,6 +916,8 @@ function getMeasurementKeysFromRecommendationParameter(parameter) {
   if (normalized.includes('amoniak')) push('nh3nh4');
   if (normalized.includes('fosforan')) push('po4');
   if (normalized.includes('zelazo')) push('fe');
+  if (normalized.includes('potas')) push('k');
+  if (normalized.includes('przewodnosc')) push('tds');
   if (normalized.includes('twardosc ogolna')) push('gh');
   if (normalized.includes('twardosc weglanowa')) push('kh');
   if (normalized.includes('grzalk')) push('temperature');
@@ -721,6 +962,18 @@ function getMeasurementSeverityFromValue(key, rawValue) {
   if (key === 'mg') {
     if (value < 2 || value > 35) return 'critical';
     if (value < 5 || value > 20) return 'warning';
+    return 'ok';
+  }
+
+  if (key === 'k') {
+    if (value < 2 || value > 40) return 'critical';
+    if (value < 5 || value > 30) return 'warning';
+    return 'ok';
+  }
+
+  if (key === 'tds') {
+    if (value < 40 || value > 600) return 'critical';
+    if (value < 80 || value > 450) return 'warning';
     return 'ok';
   }
 
@@ -774,6 +1027,8 @@ function getMeasurementTargetRangeLabel(key) {
   if (key === 'kh') return '3-8 dKH';
   if (key === 'ca') return '20-60 mg/l';
   if (key === 'mg') return '5-20 mg/l';
+  if (key === 'k') return '5-30 mg/l';
+  if (key === 'tds') return '80-450 ppm';
   if (key === 'no2') return '0 mg/l';
   if (key === 'no3') return '5-25 mg/l';
   if (key === 'nh3nh4') return '<= 0.05 mg/l';
@@ -803,6 +1058,14 @@ function getMeasurementDefaultAction(key, severity) {
 
   if (key === 'co2') {
     return 'Skoryguj dozowanie CO2 i utrzymuj stabilny poziom przez kolejne dni.';
+  }
+
+  if (key === 'k') {
+    return 'Skoryguj nawozenie potasem i monitoruj proporcje K:Ca:Mg przy kolejnych pomiarach.';
+  }
+
+  if (key === 'tds') {
+    return 'Dostosuj mineralizacje i podmiany, aby wrocic do stabilnego zakresu TDS.';
   }
 
   return severity === 'critical'
@@ -1020,7 +1283,11 @@ function buildHomeSectionCounts({
   const fishAggressionConflicts = [];
   for (let index = 0; index < fishItems.length; index += 1) {
     for (let compareIndex = index + 1; compareIndex < fishItems.length; compareIndex += 1) {
-      const conflict = getFishAggressionConflict(fishItems[index], fishItems[compareIndex]);
+      const conflict = getFishAggressionConflict(
+        fishItems[index],
+        fishItems[compareIndex],
+        tankLiters
+      );
       if (conflict) {
         fishAggressionConflicts.push({
           id: `${fishItems[index].id}-${fishItems[compareIndex].id}`,
@@ -1468,6 +1735,8 @@ const TEST_PARAMETER_OPTIONS = [
   { key: 'kh', label: 'KH' },
   { key: 'ca', label: 'Ca' },
   { key: 'mg', label: 'Mg' },
+  { key: 'k', label: 'K' },
+  { key: 'tds', label: 'TDS' },
   { key: 'no2', label: 'NO2' },
   { key: 'no3', label: 'NO3' },
   { key: 'nh3nh4', label: 'NH3/NH4' },
@@ -1493,6 +1762,8 @@ const HISTORY_CHART_PARAMETERS = [
   { key: 'co2', label: 'CO2', unit: 'mg/l' },
   { key: 'ca', label: 'Ca', unit: 'mg/l' },
   { key: 'mg', label: 'Mg', unit: 'mg/l' },
+  { key: 'k', label: 'K', unit: 'mg/l' },
+  { key: 'tds', label: 'TDS', unit: 'ppm' },
   { key: 'no2', label: 'NO2', unit: 'mg/l' },
   { key: 'no3', label: 'NO3', unit: 'mg/l' },
   { key: 'nh3nh4', label: 'NH3/NH4', unit: 'mg/l' },
@@ -1540,14 +1811,16 @@ const AQUARIUM_TYPE_OPTIONS = [
   { value: 'shrimp', label: 'Krewetkarskie', labelKey: 'aquariumTypeShrimp' },
   { value: 'mixed', label: 'Mieszane', labelKey: 'aquariumTypeMixed' },
 ];
-const DEFAULT_WATER_PROFILE = 'low_tech';
+const DEFAULT_WATER_PROFILE = 'general';
 const WATER_PROFILE_OPTIONS = [
-  { value: 'plant', label: 'Roslinniak' },
-  { value: 'shrimp', label: 'Krewetkarium' },
+  { value: 'general', label: 'Ogolne' },
+  { value: 'plant', label: 'Roslinne' },
+  { value: 'low_tech', label: 'Low-tech' },
+  { value: 'high_tech', label: 'High-tech' },
   { value: 'tanganyika', label: 'Tanganika' },
   { value: 'malawi', label: 'Malawi' },
-  { value: 'high_tech', label: 'High-tech' },
-  { value: 'low_tech', label: 'Low-tech' },
+  { value: 'single_species', label: 'Jednogatunkowe' },
+  { value: 'shrimp', label: 'Krewetkarium' },
 ];
 const WATER_TARGET_FIELDS = [
   { key: 'ph', label: 'pH', unit: '' },
@@ -1560,10 +1833,28 @@ const WATER_TARGET_FIELDS = [
   { key: 'fe', label: 'Fe', unit: 'mg/l' },
   { key: 'ca', label: 'Ca', unit: 'mg/l' },
   { key: 'mg', label: 'Mg', unit: 'mg/l' },
+  { key: 'k', label: 'K', unit: 'mg/l' },
+  { key: 'tds', label: 'TDS', unit: 'ppm' },
   { key: 'temperature', label: 'Temp', unit: 'C' },
   { key: 'co2', label: 'CO2', unit: 'mg/l' },
 ];
 const WATER_TARGET_DEFAULTS_BY_PROFILE = {
+  general: {
+    ph: { min: 6.5, max: 7.8 },
+    gh: { min: 4, max: 14 },
+    kh: { min: 3, max: 8 },
+    no2: { min: 0, max: 0.05 },
+    no3: { min: 5, max: 25 },
+    nh3nh4: { min: 0, max: 0.05 },
+    po4: { min: 0.1, max: 1.0 },
+    fe: { min: 0.02, max: 0.2 },
+    ca: { min: 20, max: 60 },
+    mg: { min: 5, max: 20 },
+    k: { min: 5, max: 20 },
+    tds: { min: 100, max: 320 },
+    temperature: { min: 24, max: 27 },
+    co2: { min: 10, max: 20 },
+  },
   plant: {
     ph: { min: 6.2, max: 7.2 },
     gh: { min: 4, max: 12 },
@@ -1575,6 +1866,8 @@ const WATER_TARGET_DEFAULTS_BY_PROFILE = {
     fe: { min: 0.02, max: 0.2 },
     ca: { min: 20, max: 60 },
     mg: { min: 5, max: 20 },
+    k: { min: 10, max: 30 },
+    tds: { min: 120, max: 320 },
     temperature: { min: 23, max: 27 },
     co2: { min: 15, max: 30 },
   },
@@ -1589,6 +1882,8 @@ const WATER_TARGET_DEFAULTS_BY_PROFILE = {
     fe: { min: 0.01, max: 0.15 },
     ca: { min: 20, max: 50 },
     mg: { min: 4, max: 12 },
+    k: { min: 4, max: 15 },
+    tds: { min: 120, max: 280 },
     temperature: { min: 21, max: 24 },
     co2: { min: 0, max: 20 },
   },
@@ -1603,6 +1898,8 @@ const WATER_TARGET_DEFAULTS_BY_PROFILE = {
     fe: { min: 0, max: 0.1 },
     ca: { min: 30, max: 80 },
     mg: { min: 8, max: 20 },
+    k: { min: 2, max: 15 },
+    tds: { min: 280, max: 550 },
     temperature: { min: 24, max: 27 },
     co2: { min: 0, max: 15 },
   },
@@ -1617,6 +1914,8 @@ const WATER_TARGET_DEFAULTS_BY_PROFILE = {
     fe: { min: 0, max: 0.1 },
     ca: { min: 25, max: 70 },
     mg: { min: 6, max: 18 },
+    k: { min: 2, max: 15 },
+    tds: { min: 220, max: 450 },
     temperature: { min: 24, max: 27 },
     co2: { min: 0, max: 15 },
   },
@@ -1631,8 +1930,26 @@ const WATER_TARGET_DEFAULTS_BY_PROFILE = {
     fe: { min: 0.05, max: 0.25 },
     ca: { min: 20, max: 50 },
     mg: { min: 5, max: 15 },
+    k: { min: 15, max: 35 },
+    tds: { min: 140, max: 300 },
     temperature: { min: 23, max: 26 },
     co2: { min: 20, max: 35 },
+  },
+  single_species: {
+    ph: { min: 6.5, max: 7.8 },
+    gh: { min: 4, max: 14 },
+    kh: { min: 3, max: 8 },
+    no2: { min: 0, max: 0.05 },
+    no3: { min: 5, max: 25 },
+    nh3nh4: { min: 0, max: 0.05 },
+    po4: { min: 0.1, max: 1.0 },
+    fe: { min: 0.02, max: 0.2 },
+    ca: { min: 20, max: 60 },
+    mg: { min: 5, max: 20 },
+    k: { min: 5, max: 20 },
+    tds: { min: 100, max: 320 },
+    temperature: { min: 24, max: 27 },
+    co2: { min: 10, max: 20 },
   },
   low_tech: {
     ph: { min: 6.5, max: 7.8 },
@@ -1645,6 +1962,8 @@ const WATER_TARGET_DEFAULTS_BY_PROFILE = {
     fe: { min: 0.02, max: 0.2 },
     ca: { min: 20, max: 60 },
     mg: { min: 5, max: 20 },
+    k: { min: 5, max: 20 },
+    tds: { min: 100, max: 320 },
     temperature: { min: 24, max: 27 },
     co2: { min: 10, max: 20 },
   },
@@ -1742,7 +2061,7 @@ function normalizeWaterProfile(value) {
 function getDefaultWaterProfileForAquariumType(aquariumType) {
   const normalizedType = normalizeAquariumType(aquariumType);
   if (normalizedType === 'plant') {
-    return 'low_tech';
+    return 'plant';
   }
   if (normalizedType === 'shrimp') {
     return 'shrimp';
@@ -1764,6 +2083,45 @@ function getWaterTargetDefaults(profile) {
       max: Number(raw.max),
     };
   });
+
+  return next;
+}
+
+function getFishCatalogDisplayLabel(fish) {
+  const commonName = String(fish?.commonName ?? fish?.name ?? '').trim();
+  const latinName = String(fish?.latinName ?? '').trim();
+
+  if (commonName && latinName) {
+    return `${commonName} (${latinName})`;
+  }
+
+  return commonName || latinName || 'Wybrany gatunek';
+}
+
+function buildSingleSpeciesTargetRangesFromFish(
+  fish,
+  fallbackProfile = DEFAULT_WATER_PROFILE
+) {
+  const base = getWaterTargetDefaults(fallbackProfile);
+  if (!fish) {
+    return base;
+  }
+
+  const next = { ...base };
+  const applyRange = (key, minRaw, maxRaw) => {
+    const min = Number(minRaw);
+    const max = Number(maxRaw);
+
+    if (!Number.isFinite(min) || !Number.isFinite(max) || min > max) {
+      return;
+    }
+
+    next[key] = { min, max };
+  };
+
+  applyRange('ph', fish.phMin, fish.phMax);
+  applyRange('gh', fish.ghMin, fish.ghMax);
+  applyRange('temperature', fish.tempMin, fish.tempMax);
 
   return next;
 }
@@ -1835,6 +2193,15 @@ function parseTankTargetRangeDraftOrThrow(draft, profile = DEFAULT_WATER_PROFILE
   });
 
   return result;
+}
+
+function isFirestorePermissionDeniedError(error) {
+  const code = String(error?.code ?? '').toLowerCase();
+  const message = String(error?.message ?? '').toLowerCase();
+  return (
+    code.includes('permission-denied') ||
+    message.includes('missing or insufficient permissions')
+  );
 }
 
 function getWaterAnalysisOptionsForTank(tank) {
@@ -2272,6 +2639,35 @@ const AGGRESSION_COMPATIBILITY_MATRIX = {
     aggressive: true,
   },
 };
+const SHRIMP_KEYWORDS = [
+  'krewet',
+  'shrimp',
+  'garnele',
+  'caridina',
+  'neocaridina',
+  'atyopsis',
+  'atyidae',
+];
+const SHRIMP_PREDATOR_LATIN_PREFIXES = [
+  'epalzeorhynchos',
+  'labeo',
+  'andinoacara',
+  'rocio',
+  'cichla',
+  'amphilophus',
+  'astronotus',
+  'pterois',
+];
+const SHRIMP_PREDATOR_KEYWORDS = [
+  'grubowarg',
+  'rainbow shark',
+  'red tail shark',
+  'black shark',
+  'pielegnic',
+  'akara',
+  'terytorial',
+  'drapiez',
+];
 const FISH_AGGRESSION_LEVEL_OVERRIDES = {
   'astronotus ocellatus': 'aggressive',
   'betta splendens': 'semi-aggressive',
@@ -2336,6 +2732,8 @@ const SEMI_AGGRESSIVE_FISH_KEYWORDS = [
   'trichopodus',
   'trichogaster',
   'trichopsis',
+  'akara',
+  'pielegnic',
   'apistogramma',
   'pielegniczka',
   'barwniak',
@@ -2345,6 +2743,492 @@ const SEMI_AGGRESSIVE_FISH_KEYWORDS = [
   'epalzeorhynchos',
   'pyszczak',
 ];
+const FIN_NIPPER_KEYWORDS = [
+  'podgryza',
+  'podskubywac',
+  'fin nipper',
+  'barb',
+  'brzanka',
+  'tetrazona',
+];
+const LONG_FIN_FISH_KEYWORDS = [
+  'bojownik',
+  'betta',
+  'skalar',
+  'pterophyllum',
+  'welon',
+  'veiltail',
+  'guppy',
+  'mieczyk',
+];
+const CARNIVORE_FISH_KEYWORDS = [
+  'drapiez',
+  'predator',
+  'carnivore',
+  'puffer',
+  'rozdymka',
+  'oscar',
+  'astronotus',
+];
+
+function normalizeFishWaterZone(value) {
+  const normalized = normalizeText(value);
+  if (normalized.includes('bottom') || normalized.includes('denn')) {
+    return 'bottom';
+  }
+  if (normalized.includes('middle') || normalized.includes('srodk')) {
+    return 'middle';
+  }
+  if (normalized.includes('top') || normalized.includes('gorn')) {
+    return 'top';
+  }
+  return 'all';
+}
+
+function normalizeFishTemperament(value) {
+  const aggression = normalizeAggressionLevel(value);
+  if (aggression === 'aggressive') {
+    return 'aggressive';
+  }
+  if (aggression === 'semi-aggressive') {
+    return 'semi_aggressive';
+  }
+  return 'peaceful';
+}
+
+function normalizeFishDiet(value) {
+  const normalized = normalizeText(value);
+  if (normalized.includes('herbivore') || normalized.includes('roslinozern')) {
+    return 'herbivore';
+  }
+  if (
+    normalized.includes('carnivore') ||
+    normalized.includes('miesozern') ||
+    normalized.includes('drapiez')
+  ) {
+    return 'carnivore';
+  }
+  return 'omnivore';
+}
+
+function normalizeFishActivity(value) {
+  const normalized = normalizeText(value);
+  if (normalized.includes('calm') || normalized.includes('spokoj')) {
+    return 'calm';
+  }
+  if (normalized.includes('active') || normalized.includes('aktywn')) {
+    return 'active';
+  }
+  return 'active';
+}
+
+function normalizeFishSocialType(value, schoolingProfile) {
+  const normalized = normalizeText(value);
+  if (normalized.includes('school') || normalized.includes('lawic')) {
+    return 'school';
+  }
+  if (normalized.includes('group') || normalized.includes('grup')) {
+    return 'group';
+  }
+  if (normalized.includes('pair') || normalized.includes('para')) {
+    return 'pair';
+  }
+  if (normalized.includes('solo') || normalized.includes('single')) {
+    return 'solo';
+  }
+  if (schoolingProfile?.isSchooling) {
+    return 'school';
+  }
+  return 'solo';
+}
+
+function normalizeShrimpSafe(value) {
+  const normalized = normalizeText(value);
+  if (normalized === 'no' || normalized === 'nie') {
+    return 'no';
+  }
+  if (normalized === 'maybe' || normalized === 'moze' || normalized === 'ryzyko') {
+    return 'maybe';
+  }
+  return 'yes';
+}
+
+function inferFishWaterZone(rawFish) {
+  const text = normalizeText(
+    `${rawFish?.waterZone ?? ''} ${rawFish?.commonName ?? ''} ${rawFish?.latinName ?? ''} ${rawFish?.notes ?? ''}`
+  );
+  if (
+    text.includes('denn') ||
+    text.includes('przy dnie') ||
+    text.includes('bottom') ||
+    text.includes('corydoras')
+  ) {
+    return 'bottom';
+  }
+  if (text.includes('powierzch') || text.includes('top')) {
+    return 'top';
+  }
+  if (text.includes('srodk') || text.includes('middle')) {
+    return 'middle';
+  }
+  return 'all';
+}
+
+function inferFishDiet(rawFish) {
+  const text = normalizeText(
+    `${rawFish?.diet ?? ''} ${rawFish?.commonName ?? ''} ${rawFish?.latinName ?? ''} ${rawFish?.notes ?? ''}`
+  );
+  if (CARNIVORE_FISH_KEYWORDS.some((keyword) => text.includes(keyword))) {
+    return 'carnivore';
+  }
+  if (text.includes('herbivore') || text.includes('roslinozern')) {
+    return 'herbivore';
+  }
+  return 'omnivore';
+}
+
+function inferFishActivity(rawFish) {
+  const text = normalizeText(
+    `${rawFish?.activity ?? ''} ${rawFish?.commonName ?? ''} ${rawFish?.latinName ?? ''} ${rawFish?.notes ?? ''}`
+  );
+  if (text.includes('spokoj') || text.includes('calm')) {
+    return 'calm';
+  }
+  if (text.includes('active') || text.includes('aktywn')) {
+    return 'active';
+  }
+  return 'active';
+}
+
+function inferAdultSizeCm(rawFish, minTankLiters) {
+  const explicit = Number(rawFish?.adultSizeCm);
+  if (Number.isFinite(explicit) && explicit > 0) {
+    return Math.round(explicit * 10) / 10;
+  }
+
+  const liters = Number(minTankLiters);
+  if (!Number.isFinite(liters) || liters <= 0) {
+    return 6;
+  }
+  if (liters >= 300) return 25;
+  if (liters >= 180) return 18;
+  if (liters >= 100) return 12;
+  if (liters >= 60) return 9;
+  if (liters >= 30) return 7;
+  return 5;
+}
+
+function inferFinNipper(rawFish) {
+  const text = normalizeText(
+    `${rawFish?.commonName ?? ''} ${rawFish?.latinName ?? ''} ${rawFish?.notes ?? ''}`
+  );
+  return FIN_NIPPER_KEYWORDS.some((keyword) => text.includes(keyword));
+}
+
+function inferLongFinRisk(rawFish) {
+  const text = normalizeText(
+    `${rawFish?.commonName ?? ''} ${rawFish?.latinName ?? ''} ${rawFish?.notes ?? ''}`
+  );
+  return LONG_FIN_FISH_KEYWORDS.some((keyword) => text.includes(keyword));
+}
+
+function buildFishSpeciesProfile(rawFish, quantity = null) {
+  const sanitized = getSanitizedFishCatalogFields(rawFish);
+  const schoolingProfile = resolveFishSchoolingProfile(rawFish);
+  const temperament = normalizeFishTemperament(
+    rawFish?.temperament ?? rawFish?.aggressionLevel
+  );
+  const waterZone = rawFish?.waterZone
+    ? normalizeFishWaterZone(rawFish.waterZone)
+    : inferFishWaterZone(rawFish);
+  const diet = rawFish?.diet ? normalizeFishDiet(rawFish.diet) : inferFishDiet(rawFish);
+  const activity = rawFish?.activity
+    ? normalizeFishActivity(rawFish.activity)
+    : inferFishActivity(rawFish);
+  const socialType = normalizeFishSocialType(rawFish?.socialType, schoolingProfile);
+  const finNipper =
+    typeof rawFish?.finNipper === 'boolean'
+      ? rawFish.finNipper
+      : inferFinNipper(rawFish);
+  const explicitPredatorRisk =
+    typeof rawFish?.predatorRisk === 'boolean' ? rawFish.predatorRisk : null;
+  const { latinKey, text } = buildFishConflictFingerprint(rawFish);
+  const adultSizeCm = inferAdultSizeCm(rawFish, sanitized.minLiters);
+  const derivedPredatorRisk =
+    temperament === 'aggressive' ||
+    diet === 'carnivore' ||
+    adultSizeCm >= 12 ||
+    SHRIMP_PREDATOR_LATIN_PREFIXES.some((prefix) => latinKey.startsWith(prefix)) ||
+    SHRIMP_PREDATOR_KEYWORDS.some((keyword) => text.includes(keyword));
+  const predatorRisk =
+    explicitPredatorRisk === null ? derivedPredatorRisk : explicitPredatorRisk;
+
+  const explicitShrimpSafe = String(rawFish?.shrimpSafe ?? '').trim();
+  const shrimpSafe = explicitShrimpSafe
+    ? normalizeShrimpSafe(explicitShrimpSafe)
+    : predatorRisk
+      ? temperament === 'semi_aggressive'
+        ? 'maybe'
+        : 'no'
+      : 'yes';
+  const specialTags = Array.isArray(rawFish?.specialTags)
+    ? rawFish.specialTags
+        .map((tag) => normalizeText(tag))
+        .filter(Boolean)
+        .slice(0, 16)
+    : [];
+  if (inferLongFinRisk(rawFish) && !specialTags.includes('long_fins')) {
+    specialTags.push('long_fins');
+  }
+  if (finNipper && !specialTags.includes('fin_nipper')) {
+    specialTags.push('fin_nipper');
+  }
+  if (predatorRisk && !specialTags.includes('predator_risk')) {
+    specialTags.push('predator_risk');
+  }
+
+  const normalizedQuantity = Number.isFinite(Number(quantity))
+    ? Math.max(1, Math.round(Number(quantity)))
+    : Math.max(1, getFishQuantity(rawFish));
+
+  return {
+    minTankLiters: Number(sanitized.minLiters),
+    minGroupSize: schoolingProfile.isSchooling
+      ? Math.max(2, Number(schoolingProfile.minGroupSize) || DEFAULT_SCHOOLING_GROUP_SIZE)
+      : 1,
+    adultSizeCm,
+    temperatureMin: Number(sanitized.tempMin),
+    temperatureMax: Number(sanitized.tempMax),
+    phMin: Number(sanitized.phMin),
+    phMax: Number(sanitized.phMax),
+    ghMin: Number(sanitized.ghMin),
+    ghMax: Number(sanitized.ghMax),
+    waterZone,
+    temperament,
+    diet,
+    activity,
+    socialType,
+    finNipper,
+    predatorRisk,
+    shrimpSafe,
+    specialTags,
+    quantity: normalizedQuantity,
+  };
+}
+
+function getFishSpeciesProfile(rawFish) {
+  if (rawFish?.fishProfile && typeof rawFish.fishProfile === 'object') {
+    const profile = rawFish.fishProfile;
+    const normalized = buildFishSpeciesProfile(
+      {
+        ...rawFish,
+        ...profile,
+        aggressionLevel:
+          profile.temperament === 'semi_aggressive'
+            ? 'semi-aggressive'
+            : profile.temperament,
+      },
+      profile.quantity ?? rawFish?.quantity
+    );
+    return normalized;
+  }
+
+  return buildFishSpeciesProfile(rawFish, rawFish?.quantity);
+}
+
+function rangesOverlap(minA, maxA, minB, maxB) {
+  const aMin = Number(minA);
+  const aMax = Number(maxA);
+  const bMin = Number(minB);
+  const bMax = Number(maxB);
+  if (
+    !Number.isFinite(aMin) ||
+    !Number.isFinite(aMax) ||
+    !Number.isFinite(bMin) ||
+    !Number.isFinite(bMax)
+  ) {
+    return true;
+  }
+  return Math.max(aMin, bMin) <= Math.min(aMax, bMax);
+}
+
+function evaluateFishPairCompatibility(firstFish, secondFish, tankLiters = null) {
+  const firstProfile = getFishSpeciesProfile(firstFish);
+  const secondProfile = getFishSpeciesProfile(secondFish);
+  const firstLabel = String(
+    firstFish?.commonName ?? firstFish?.name ?? firstFish?.latinName ?? 'Ryba 1'
+  ).trim();
+  const secondLabel = String(
+    secondFish?.commonName ?? secondFish?.name ?? secondFish?.latinName ?? 'Ryba 2'
+  ).trim();
+
+  let score = 100;
+  const reasons = [];
+  const penalties = [];
+  const applyPenalty = (points, reason) => {
+    score -= points;
+    penalties.push(points);
+    reasons.push(reason);
+  };
+
+  if (
+    !rangesOverlap(
+      firstProfile.temperatureMin,
+      firstProfile.temperatureMax,
+      secondProfile.temperatureMin,
+      secondProfile.temperatureMax
+    )
+  ) {
+    applyPenalty(40, 'Brak wspolnego zakresu temperatury.');
+  }
+  if (
+    !rangesOverlap(firstProfile.phMin, firstProfile.phMax, secondProfile.phMin, secondProfile.phMax)
+  ) {
+    applyPenalty(30, 'Brak wspolnego zakresu pH.');
+  }
+  if (
+    !rangesOverlap(firstProfile.ghMin, firstProfile.ghMax, secondProfile.ghMin, secondProfile.ghMax)
+  ) {
+    applyPenalty(20, 'Brak wspolnego zakresu GH.');
+  }
+
+  const requiredLiters = Math.max(
+    Number(firstProfile.minTankLiters) || 0,
+    Number(secondProfile.minTankLiters) || 0
+  );
+  if (Number.isFinite(Number(tankLiters)) && Number(tankLiters) > 0 && requiredLiters > Number(tankLiters)) {
+    applyPenalty(
+      40,
+      `Za maly zbiornik dla tego zestawu gatunkow (zalecane min. ${requiredLiters} l).`
+    );
+  }
+
+  const firstTemp = firstProfile.temperament;
+  const secondTemp = secondProfile.temperament;
+  const firstAggLevel =
+    firstTemp === 'semi_aggressive' ? 'semi-aggressive' : firstTemp;
+  const secondAggLevel =
+    secondTemp === 'semi_aggressive' ? 'semi-aggressive' : secondTemp;
+  const matrixConflict =
+    AGGRESSION_COMPATIBILITY_MATRIX[firstAggLevel]?.[secondAggLevel] ??
+    AGGRESSION_COMPATIBILITY_MATRIX[secondAggLevel]?.[firstAggLevel] ??
+    false;
+  if (matrixConflict) {
+    applyPenalty(20, 'Podwyzszone ryzyko konfliktu zachowan terytorialnych.');
+  }
+  if (
+    (firstTemp === 'aggressive' && secondTemp === 'peaceful') ||
+    (firstTemp === 'peaceful' && secondTemp === 'aggressive')
+  ) {
+    applyPenalty(35, 'Polaczenie ryby agresywnej i spokojnej.');
+  } else if (
+    (firstTemp === 'aggressive' && secondTemp === 'semi_aggressive') ||
+    (firstTemp === 'semi_aggressive' && secondTemp === 'aggressive')
+  ) {
+    applyPenalty(20, 'Polaczenie ryb agresywnych i polagresywnych.');
+  } else if (
+    (firstTemp === 'semi_aggressive' && secondTemp === 'peaceful') ||
+    (firstTemp === 'peaceful' && secondTemp === 'semi_aggressive')
+  ) {
+    applyPenalty(15, 'Polaczenie ryb polagresywnych i spokojnych.');
+  }
+
+  const bigger =
+    Number(firstProfile.adultSizeCm) >= Number(secondProfile.adultSizeCm)
+      ? { profile: firstProfile, fish: firstFish, label: firstLabel }
+      : { profile: secondProfile, fish: secondFish, label: secondLabel };
+  const smaller = bigger.fish === firstFish
+    ? { profile: secondProfile, fish: secondFish, label: secondLabel }
+    : { profile: firstProfile, fish: firstFish, label: firstLabel };
+  const sizeRatio =
+    (Number(bigger.profile.adultSizeCm) || 0) /
+    Math.max(1, Number(smaller.profile.adultSizeCm) || 1);
+  if (
+    sizeRatio >= 2.5 &&
+    (bigger.profile.predatorRisk || bigger.profile.diet === 'carnivore')
+  ) {
+    applyPenalty(
+      35,
+      `Duza roznica rozmiaru (${bigger.label} vs ${smaller.label}) - ryzyko potraktowania mniejszej ryby jako pokarm.`
+    );
+  }
+
+  const firstLongFins = firstProfile.specialTags.includes('long_fins');
+  const secondLongFins = secondProfile.specialTags.includes('long_fins');
+  if (
+    (firstProfile.finNipper && secondLongFins) ||
+    (secondProfile.finNipper && firstLongFins)
+  ) {
+    applyPenalty(30, 'Ryzyko podgryzania pletw.');
+  }
+
+  if (
+    firstProfile.waterZone === 'bottom' &&
+    secondProfile.waterZone === 'bottom' &&
+    Number.isFinite(Number(tankLiters)) &&
+    Number(tankLiters) > 0 &&
+    Number(tankLiters) < 100
+  ) {
+    applyPenalty(10, 'Oba gatunki sa denne - mozliwa konkurencja o rewiry przy dnie.');
+  }
+
+  if (
+    (firstProfile.socialType === 'school' || firstProfile.socialType === 'group') &&
+    Number(firstProfile.quantity) < Number(firstProfile.minGroupSize)
+  ) {
+    applyPenalty(
+      10,
+      `${firstLabel} wymaga wiekszej grupy (min. ${firstProfile.minGroupSize}).`
+    );
+  }
+  if (
+    (secondProfile.socialType === 'school' || secondProfile.socialType === 'group') &&
+    Number(secondProfile.quantity) < Number(secondProfile.minGroupSize)
+  ) {
+    applyPenalty(
+      10,
+      `${secondLabel} wymaga wiekszej grupy (min. ${secondProfile.minGroupSize}).`
+    );
+  }
+
+  const firstShrimp = isShrimpLikeFish(firstFish);
+  const secondShrimp = isShrimpLikeFish(secondFish);
+  if (
+    (firstShrimp && secondProfile.shrimpSafe === 'no') ||
+    (secondShrimp && firstProfile.shrimpSafe === 'no')
+  ) {
+    applyPenalty(35, 'Ryba moze traktowac krewetki jako pokarm.');
+  } else if (
+    (firstShrimp && secondProfile.shrimpSafe === 'maybe') ||
+    (secondShrimp && firstProfile.shrimpSafe === 'maybe')
+  ) {
+    applyPenalty(20, 'Mozliwe ryzyko dla krewetek.');
+  }
+
+  score = clampScore(score, 0, 100);
+  let level = 'compatible';
+  let label = 'zgodne';
+  if (score < 40) {
+    level = 'incompatible';
+    label = 'niezgodne';
+  } else if (score < 60) {
+    level = 'risky';
+    label = 'ryzykowne';
+  } else if (score < 80) {
+    level = 'mostly_compatible';
+    label = 'raczej zgodne';
+  }
+
+  return {
+    score,
+    level,
+    label,
+    reasons,
+    penalties,
+    firstProfile,
+    secondProfile,
+  };
+}
 
 function parseOptionalPositiveInteger(value) {
   const parsed = Number(value);
@@ -2388,13 +3272,55 @@ function resolveFishSchoolingProfile(rawFish) {
 }
 
 function normalizeAggressionLevel(value) {
-  const normalized = String(value ?? '').trim().toLowerCase();
+  const normalized = normalizeText(value).replace(/\s+/g, ' ').trim();
 
-  if (normalized === 'aggressive') {
+  if (!normalized) {
+    return 'peaceful';
+  }
+
+  if (
+    normalized === 'aggressive' ||
+    normalized === 'agresywny' ||
+    normalized === 'agresywna' ||
+    normalized === 'agresywne' ||
+    normalized === 'bardzo agresywny' ||
+    normalized === 'very aggressive'
+  ) {
     return 'aggressive';
   }
 
-  if (normalized === 'semi-aggressive' || normalized === 'semi aggressive') {
+  if (
+    normalized === 'semi-aggressive' ||
+    normalized === 'semi aggressive' ||
+    normalized === 'semiaggressive' ||
+    normalized === 'semi agresywny' ||
+    normalized === 'semi agresywna' ||
+    normalized === 'polagresywny' ||
+    normalized === 'polagresywna' ||
+    normalized === 'umiarkowanie agresywny' ||
+    normalized === 'umiarkowanie agresywna' ||
+    normalized === 'terytorialny' ||
+    normalized === 'terytorialna' ||
+    normalized === 'semi territorial'
+  ) {
+    return 'semi-aggressive';
+  }
+
+  if (
+    normalized.includes('semi') &&
+    (normalized.includes('agres') || normalized.includes('aggress'))
+  ) {
+    return 'semi-aggressive';
+  }
+
+  if (normalized.includes('agres') || normalized.includes('aggress')) {
+    return 'aggressive';
+  }
+
+  if (
+    normalized.includes('terytorial') ||
+    normalized.includes('territorial')
+  ) {
     return 'semi-aggressive';
   }
 
@@ -2438,19 +3364,53 @@ function resolveFishAggressionLevel(rawFish) {
   return inferFishAggressionLevel(rawFish);
 }
 
-function getFishAggressionConflict(firstFish, secondFish) {
-  const firstLevel = resolveFishAggressionLevel(firstFish);
-  const secondLevel = resolveFishAggressionLevel(secondFish);
-  const hasConflict =
-    AGGRESSION_COMPATIBILITY_MATRIX[firstLevel]?.[secondLevel] ?? false;
+function buildFishConflictFingerprint(rawFish) {
+  const latinKey = normalizeLatinCatalogKey(rawFish?.latinName);
+  const text = normalizeText(
+    `${rawFish?.commonName ?? ''} ${rawFish?.name ?? ''} ${rawFish?.latinName ?? ''} ${rawFish?.notes ?? ''}`
+  );
 
-  if (!hasConflict) {
+  return {
+    latinKey,
+    text,
+  };
+}
+
+function isShrimpLikeFish(rawFish) {
+  const { latinKey, text } = buildFishConflictFingerprint(rawFish);
+  if (!latinKey && !text) {
+    return false;
+  }
+
+  if (
+    latinKey.startsWith('caridina') ||
+    latinKey.startsWith('neocaridina') ||
+    latinKey.startsWith('atyopsis')
+  ) {
+    return true;
+  }
+
+  return SHRIMP_KEYWORDS.some((keyword) => text.includes(keyword));
+}
+
+function getFishAggressionConflict(firstFish, secondFish, tankLiters = null) {
+  const compatibility = evaluateFishPairCompatibility(
+    firstFish,
+    secondFish,
+    tankLiters
+  );
+
+  if (compatibility.score >= 60) {
     return null;
   }
 
   return {
-    firstLevel,
-    secondLevel,
+    score: compatibility.score,
+    level: compatibility.level,
+    label: compatibility.label,
+    reasons: compatibility.reasons,
+    firstProfile: compatibility.firstProfile,
+    secondProfile: compatibility.secondProfile,
   };
 }
 
@@ -2849,6 +3809,13 @@ function buildFishSeedEntry(rawFish, source) {
     Number.isFinite(Number(rawFish.tempMin)) &&
     Number.isFinite(Number(rawFish.tempMax)) &&
     Number.isFinite(Number(rawFish.minLiters));
+  const fishProfile = buildFishSpeciesProfile({
+    ...rawFish,
+    notes,
+    aggressionLevel,
+    isSchooling,
+    minGroupSize,
+  });
 
   return {
     commonName,
@@ -2863,6 +3830,7 @@ function buildFishSeedEntry(rawFish, source) {
     isSchooling,
     minGroupSize,
     aggressionLevel,
+    fishProfile,
     notes: notes || (!hasCustomRange ? EXPANDED_FISH_DEFAULTS.notes : ''),
     source,
   };
@@ -5203,7 +6171,13 @@ function buildAquariumHealthAssessment({
       compareIndex < fishItems.length;
       compareIndex += 1
     ) {
-      if (getFishAggressionConflict(fishItems[index], fishItems[compareIndex])) {
+      if (
+        getFishAggressionConflict(
+          fishItems[index],
+          fishItems[compareIndex],
+          tankLiters
+        )
+      ) {
         aggressionConflictCount += 1;
       }
     }
@@ -6333,12 +7307,17 @@ export default function HomeScreen() {
   const [kh, setKh] = useState('');
   const [ca, setCa] = useState('');
   const [mg, setMg] = useState('');
+  const [k, setK] = useState('');
+  const [tds, setTds] = useState('');
   const [no2, setNo2] = useState('');
   const [no3, setNo3] = useState('');
   const [nh3nh4, setNh3Nh4] = useState('');
   const [po4, setPo4] = useState('');
   const [fe, setFe] = useState('');
   const [temperature, setTemperature] = useState('');
+  const [measurementDateInput, setMeasurementDateInput] = useState(() =>
+    buildTodayDateInputValue()
+  );
   const [measurementNote, setMeasurementNote] = useState('');
   const [stockType, setStockType] = useState('fish');
   const [fishCatalog, setFishCatalog] = useState([]);
@@ -6396,6 +7375,8 @@ export default function HomeScreen() {
   const [tankLightIntensity, setTankLightIntensity] = useState('');
   const [tankLightHours, setTankLightHours] = useState('');
   const [tankWaterProfile, setTankWaterProfile] = useState(DEFAULT_WATER_PROFILE);
+  const [tankSingleSpeciesFishId, setTankSingleSpeciesFishId] = useState('');
+  const [tankSingleSpeciesFishSearch, setTankSingleSpeciesFishSearch] = useState('');
   const [tankWaterProfileCustomized, setTankWaterProfileCustomized] = useState(false);
   const [tankTargetRangeDraft, setTankTargetRangeDraft] = useState(() =>
     buildTargetRangeInputDraftFromRanges(
@@ -6750,8 +7731,7 @@ export default function HomeScreen() {
         .filter((item) => item.tankId === tankId)
         .sort(
           (a, b) =>
-            getCreatedAtMs(b.createdAt) -
-            getCreatedAtMs(a.createdAt)
+            getMeasurementRecordedAtMs(b) - getMeasurementRecordedAtMs(a)
         );
 
       setMeasurements(data);
@@ -6841,7 +7821,7 @@ export default function HomeScreen() {
           id: item.id,
           ...item.data(),
         }))
-        .sort((a, b) => getCreatedAtMs(b.createdAt) - getCreatedAtMs(a.createdAt));
+        .sort((a, b) => getMeasurementRecordedAtMs(b) - getMeasurementRecordedAtMs(a));
 
       const allStockItemsRaw = stockItemsSnapshot.docs
         .map((item) => ({
@@ -7037,6 +8017,14 @@ export default function HomeScreen() {
           normalizeAggressionLevel(fish.aggressionLevel)
         ) {
           patch.aggressionLevel = normalizeAggressionLevel(fish.aggressionLevel);
+        }
+
+        const existingFishProfile = getFishSpeciesProfile(existingItem);
+        const nextFishProfile = getFishSpeciesProfile(fish);
+        if (
+          JSON.stringify(existingFishProfile) !== JSON.stringify(nextFishProfile)
+        ) {
+          patch.fishProfile = nextFishProfile;
         }
 
         if (String(existingItem.notes ?? '').trim() !== String(fish.notes ?? '').trim()) {
@@ -7783,6 +8771,14 @@ export default function HomeScreen() {
   }, [activeSection, stockType]);
 
   useEffect(() => {
+    if (!user?.uid || activeSection !== 'home') {
+      return;
+    }
+
+    fetchHomeData(user.uid).catch(() => null);
+  }, [activeSection, user?.uid, fetchHomeData]);
+
+  useEffect(() => {
     if (activeSection === 'tank') {
       setActiveSection('tankInfo');
     }
@@ -8194,12 +9190,15 @@ export default function HomeScreen() {
     setKh('');
     setCa('');
     setMg('');
+    setK('');
+    setTds('');
     setNo2('');
     setNo3('');
     setNh3Nh4('');
     setPo4('');
     setFe('');
     setTemperature('');
+    setMeasurementDateInput(buildTodayDateInputValue());
     setMeasurementNote('');
   };
 
@@ -8212,12 +9211,18 @@ export default function HomeScreen() {
     setKh(toDraftValue(measurement?.kh));
     setCa(toDraftValue(measurement?.ca));
     setMg(toDraftValue(measurement?.mg));
+    setK(toDraftValue(measurement?.k));
+    setTds(toDraftValue(measurement?.tds));
     setNo2(toDraftValue(measurement?.no2));
     setNo3(toDraftValue(measurement?.no3));
     setNh3Nh4(toDraftValue(measurement?.nh3nh4));
     setPo4(toDraftValue(measurement?.po4));
     setFe(toDraftValue(measurement?.fe));
     setTemperature(toDraftValue(measurement?.temperature));
+    setMeasurementDateInput(
+      formatDateInputValue(measurement?.measuredAt ?? measurement?.createdAt) ||
+        buildTodayDateInputValue()
+    );
     setMeasurementNote(String(measurement?.note ?? ''));
   };
 
@@ -8321,6 +9326,29 @@ export default function HomeScreen() {
     setSelectedMeasurementTileDetails(null);
   }, []);
 
+  const selectedSingleSpeciesFish = useMemo(
+    () =>
+      tankSingleSpeciesFishId
+        ? fishCatalog.find((item) => item.id === tankSingleSpeciesFishId) ?? null
+        : null,
+    [fishCatalog, tankSingleSpeciesFishId]
+  );
+  const filteredSingleSpeciesFishCatalog = useMemo(() => {
+    const normalizedSearch = normalizeText(tankSingleSpeciesFishSearch);
+    return fishCatalog
+      .filter((item) => {
+        if (!normalizedSearch) {
+          return true;
+        }
+        const haystack = normalizeText(
+          `${item?.commonName ?? ''} ${item?.latinName ?? ''} ${item?.name ?? ''}`
+        );
+        return haystack.includes(normalizedSearch);
+      })
+      .sort((a, b) => compareCatalogEntryCommonNames(a, b, catalogSortLocale))
+      .slice(0, 32);
+  }, [catalogSortLocale, fishCatalog, tankSingleSpeciesFishSearch]);
+
   const handleStartEditTank = () => {
     if (!selectedTank) {
       alert('Najpierw wybierz aktywne akwarium do edycji');
@@ -8337,6 +9365,20 @@ export default function HomeScreen() {
       selectedTank.targetRanges,
       profile
     );
+    const initialSingleSpeciesFishId = String(
+      selectedTank.singleSpeciesFishId ?? ''
+    );
+    const initialSingleSpeciesFish =
+      profile === 'single_species' && initialSingleSpeciesFishId
+        ? fishCatalog.find((item) => item.id === initialSingleSpeciesFishId) ?? null
+        : null;
+    const resolvedTargetRanges =
+      profile === 'single_species'
+        ? buildSingleSpeciesTargetRangesFromFish(
+            initialSingleSpeciesFish,
+            DEFAULT_WATER_PROFILE
+          )
+        : targetRanges;
 
     setEditingTankId(selectedTank.id);
     setTankName(selectedTank.name ?? '');
@@ -8354,11 +9396,13 @@ export default function HomeScreen() {
       selectedTank.lightHours === undefined ? '' : String(selectedTank.lightHours)
     );
     setTankWaterProfile(profile);
+    setTankSingleSpeciesFishId(initialSingleSpeciesFishId);
+    setTankSingleSpeciesFishSearch('');
     setTankWaterProfileCustomized(
       Boolean(selectedTank.waterProfile || selectedTank.targetRanges)
     );
     setTankTargetRangeDraft(
-      buildTargetRangeInputDraftFromRanges(targetRanges, profile)
+      buildTargetRangeInputDraftFromRanges(resolvedTargetRanges, profile)
     );
     setTankOnboardingMode(normalizeOnboardingMode(selectedTank.onboardingMode));
   };
@@ -8384,6 +9428,8 @@ export default function HomeScreen() {
     setTankLightIntensity('');
     setTankLightHours('');
     setTankWaterProfile(defaultProfile);
+    setTankSingleSpeciesFishId('');
+    setTankSingleSpeciesFishSearch('');
     setTankWaterProfileCustomized(false);
     setTankTargetRangeDraft(
       buildTargetRangeInputDraftFromRanges(
@@ -8406,6 +9452,8 @@ export default function HomeScreen() {
     setTankLightIntensity('');
     setTankLightHours('');
     setTankWaterProfile(defaultProfile);
+    setTankSingleSpeciesFishId('');
+    setTankSingleSpeciesFishSearch('');
     setTankWaterProfileCustomized(false);
     setTankTargetRangeDraft(
       buildTargetRangeInputDraftFromRanges(
@@ -8427,6 +9475,8 @@ export default function HomeScreen() {
     setTankLightIntensity('');
     setTankLightHours('');
     setTankWaterProfile(defaultProfile);
+    setTankSingleSpeciesFishId('');
+    setTankSingleSpeciesFishSearch('');
     setTankWaterProfileCustomized(false);
     setTankTargetRangeDraft(
       buildTargetRangeInputDraftFromRanges(
@@ -8441,10 +9491,36 @@ export default function HomeScreen() {
     const normalizedProfile = normalizeWaterProfile(nextProfile);
     setTankWaterProfileCustomized(true);
     setTankWaterProfile(normalizedProfile);
+    if (normalizedProfile !== 'single_species') {
+      setTankSingleSpeciesFishSearch('');
+    }
+    const nextRanges =
+      normalizedProfile === 'single_species'
+        ? buildSingleSpeciesTargetRangesFromFish(
+            selectedSingleSpeciesFish,
+            DEFAULT_WATER_PROFILE
+          )
+        : getWaterTargetDefaults(normalizedProfile);
     setTankTargetRangeDraft(
       buildTargetRangeInputDraftFromRanges(
-        getWaterTargetDefaults(normalizedProfile),
+        nextRanges,
         normalizedProfile
+      )
+    );
+  };
+
+  const handleSelectSingleSpeciesFish = (fishId) => {
+    const selectedFish = fishCatalog.find((item) => item.id === fishId) ?? null;
+    setTankSingleSpeciesFishId(String(fishId ?? ''));
+    setTankSingleSpeciesFishSearch('');
+    setTankWaterProfileCustomized(true);
+    setTankTargetRangeDraft(
+      buildTargetRangeInputDraftFromRanges(
+        buildSingleSpeciesTargetRangesFromFish(
+          selectedFish,
+          DEFAULT_WATER_PROFILE
+        ),
+        'single_species'
       )
     );
   };
@@ -8545,6 +9621,80 @@ export default function HomeScreen() {
           </Pressable>
         ))}
       </View>
+      {tankWaterProfile === 'single_species' ? (
+        <View
+          style={{
+            borderWidth: 1,
+            borderColor: themeBorder,
+            borderRadius: 10,
+            padding: 8,
+            marginBottom: 10,
+            backgroundColor: themeCardBg,
+          }}>
+          <Text
+            style={{
+              color: themeTextPrimary,
+              fontSize: 12,
+              fontWeight: '700',
+              marginBottom: 6,
+            }}>
+            Gatunek ryby (jednogatunkowe)
+          </Text>
+          <TextInput
+            placeholder="Wyszukaj gatunek..."
+            placeholderTextColor={themePlaceholder}
+            value={tankSingleSpeciesFishSearch}
+            onChangeText={setTankSingleSpeciesFishSearch}
+            style={{
+              borderWidth: 1,
+              borderColor: themeInputBorder,
+              color: themeInputText,
+              paddingHorizontal: 10,
+              paddingVertical: 8,
+              borderRadius: 8,
+              backgroundColor: themeInputBg,
+              marginBottom: 8,
+            }}
+          />
+          <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
+            {selectedSingleSpeciesFish
+              ? `Wybrano: ${getFishCatalogDisplayLabel(selectedSingleSpeciesFish)}`
+              : 'Wybierz gatunek, a zakresy pH/GH/temperatury ustawia sie z karty ryby.'}
+          </Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+            {filteredSingleSpeciesFishCatalog.map((fish) => {
+              const isSelected = tankSingleSpeciesFishId === fish.id;
+              return (
+                <Pressable
+                  key={`${scopeKey}-single-species-fish-${fish.id}`}
+                  onPress={() => handleSelectSingleSpeciesFish(fish.id)}
+                  style={{
+                    borderWidth: 1,
+                    borderColor: isSelected ? themeAccent : themeBorderStrong,
+                    backgroundColor: isSelected
+                      ? '#102235'
+                      : isLightTheme
+                        ? '#ffffff'
+                        : '#111',
+                    borderRadius: 999,
+                    paddingVertical: 5,
+                    paddingHorizontal: 10,
+                    maxWidth: '100%',
+                  }}>
+                  <Text
+                    numberOfLines={1}
+                    style={{
+                      color: isSelected ? 'white' : themeTextPrimary,
+                      fontSize: 11,
+                    }}>
+                    {getFishCatalogDisplayLabel(fish)}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+      ) : null}
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -4 }}>
         {WATER_TARGET_FIELDS.map((field) => (
           <View
@@ -9038,6 +10188,7 @@ export default function HomeScreen() {
 
     try {
       const name = tankName.trim();
+      let savedInCompatibilityMode = false;
 
       if (!name) {
         throw new Error('Pole nazwa akwarium jest wymagane');
@@ -9058,13 +10209,21 @@ export default function HomeScreen() {
       const waterProfile = tankWaterProfileCustomized
         ? normalizeWaterProfile(tankWaterProfile || defaultWaterProfile)
         : defaultWaterProfile;
-      const targetRanges = tankWaterProfileCustomized
+      const draftTargetRanges = tankWaterProfileCustomized
         ? parseTankTargetRangeDraftOrThrow(tankTargetRangeDraft, waterProfile)
         : getWaterTargetDefaults(waterProfile);
-
-      if (!AQUARIUM_TYPE_OPTIONS.some((item) => item.value === aquariumType)) {
-        throw new Error('Wybierz typ akwarium');
-      }
+      const singleSpeciesFishId = String(tankSingleSpeciesFishId ?? '').trim();
+      const singleSpeciesFish =
+        waterProfile === 'single_species'
+          ? fishCatalog.find((item) => item.id === singleSpeciesFishId) ?? null
+          : null;
+      const targetRanges =
+        waterProfile === 'single_species'
+          ? buildSingleSpeciesTargetRangesFromFish(
+              singleSpeciesFish,
+              DEFAULT_WATER_PROFILE
+            )
+          : draftTargetRanges;
 
       if (substrateTypes.length === 0) {
         throw new Error('Wybierz przynajmniej 1 rodzaj podloza');
@@ -9080,12 +10239,39 @@ export default function HomeScreen() {
         throw new Error('Godziny swiecenia musza byc w zakresie 1-24');
       }
 
+      if (waterProfile === 'single_species') {
+        if (!singleSpeciesFishId) {
+          throw new Error('Dla akwarium jednogatunkowego wybierz gatunek ryby');
+        }
+        if (!singleSpeciesFish) {
+          throw new Error('Wybrany gatunek ryby nie jest dostepny w katalogu');
+        }
+      }
+
       const onboardingMode = normalizeOnboardingMode(tankOnboardingMode);
+      const now = new Date();
+      const tankSanitizationPatch = buildTankRuleSanitizationPatch(selectedTank);
+      const legacySanitizationPatch = Object.entries(tankSanitizationPatch).reduce(
+        (acc, [key, value]) => {
+          if (
+            key === 'substrateTypes' ||
+            key === 'waterProfile' ||
+            key === 'singleSpeciesFishId' ||
+            key === 'targetRanges'
+          ) {
+            return acc;
+          }
+          acc[key] = value;
+          return acc;
+        },
+        {}
+      );
 
       let preferredTankId = editingTankId;
 
       if (editingTankId) {
-        await updateDoc(doc(db, 'tanks', editingTankId), {
+        const fullUpdatePayload = {
+          ...tankSanitizationPatch,
           name,
           liters,
           aquariumType,
@@ -9095,11 +10281,35 @@ export default function HomeScreen() {
           lightHours,
           waterProfile,
           targetRanges,
-          updatedAt: new Date(),
-        });
+          singleSpeciesFishId:
+            waterProfile === 'single_species'
+              ? singleSpeciesFishId
+              : deleteField(),
+          updatedAt: now,
+        };
+        const legacyUpdatePayload = {
+          ...legacySanitizationPatch,
+          name,
+          liters,
+          aquariumType,
+          substrateType,
+          lightIntensity,
+          lightHours,
+          updatedAt: now,
+        };
+
+        try {
+          await updateDoc(doc(db, 'tanks', editingTankId), fullUpdatePayload);
+        } catch (error) {
+          if (!isFirestorePermissionDeniedError(error)) {
+            throw error;
+          }
+
+          await updateDoc(doc(db, 'tanks', editingTankId), legacyUpdatePayload);
+          savedInCompatibilityMode = true;
+        }
       } else {
-        const now = new Date();
-        const tankDoc = await addDoc(collection(db, 'tanks'), {
+        const fullCreatePayload = {
           userId: user.uid,
           name,
           liters,
@@ -9110,10 +10320,37 @@ export default function HomeScreen() {
           lightHours,
           waterProfile,
           targetRanges,
+          ...(waterProfile === 'single_species' && singleSpeciesFishId
+            ? { singleSpeciesFishId }
+            : {}),
           onboardingMode,
           onboardingStartAt: onboardingMode === 'fresh_start' ? now : null,
           createdAt: now,
-        });
+        };
+        const legacyCreatePayload = {
+          userId: user.uid,
+          name,
+          liters,
+          aquariumType,
+          substrateType,
+          lightIntensity,
+          lightHours,
+          onboardingMode,
+          onboardingStartAt: onboardingMode === 'fresh_start' ? now : null,
+          createdAt: now,
+        };
+
+        let tankDoc = null;
+        try {
+          tankDoc = await addDoc(collection(db, 'tanks'), fullCreatePayload);
+        } catch (error) {
+          if (!isFirestorePermissionDeniedError(error)) {
+            throw error;
+          }
+
+          tankDoc = await addDoc(collection(db, 'tanks'), legacyCreatePayload);
+          savedInCompatibilityMode = true;
+        }
 
         preferredTankId = tankDoc.id;
       }
@@ -9127,6 +10364,8 @@ export default function HomeScreen() {
       setTankLightHours('');
       const resetProfile = getDefaultWaterProfileForAquariumType('');
       setTankWaterProfile(resetProfile);
+      setTankSingleSpeciesFishId('');
+      setTankSingleSpeciesFishSearch('');
       setTankWaterProfileCustomized(false);
       setTankTargetRangeDraft(
         buildTargetRangeInputDraftFromRanges(
@@ -9140,14 +10379,26 @@ export default function HomeScreen() {
 
       if (editingTankId) {
         setEditingTankId(null);
-        alert('Akwarium zaktualizowane');
+        if (savedInCompatibilityMode) {
+          alert(
+            'Akwarium zaktualizowane. Czesc nowych ustawien zapisze sie po aktualizacji reguł bazy.'
+          );
+        } else {
+          alert('Akwarium zaktualizowane');
+        }
       } else {
         setIsAddingTankModalVisible(false);
-        alert(
-          onboardingMode === 'fresh_start'
-            ? 'Akwarium dodane. Wlaczylismy onboarding dojrzewania (dzien 1).'
-            : 'Akwarium dodane'
-        );
+        if (savedInCompatibilityMode) {
+          alert(
+            'Akwarium dodane. Czesc nowych ustawien zapisze sie po aktualizacji reguł bazy.'
+          );
+        } else {
+          alert(
+            onboardingMode === 'fresh_start'
+              ? 'Akwarium dodane. Wlaczylismy onboarding dojrzewania (dzien 1).'
+              : 'Akwarium dodane'
+          );
+        }
       }
     } catch (error) {
       alert(
@@ -9236,8 +10487,23 @@ export default function HomeScreen() {
     try {
       let payload = null;
       let minLiters = 0;
+      let existingTankFishItems = [];
 
       if (stockType === 'fish') {
+        const stockSnapshot = await getDocs(
+          query(collection(db, 'stockItems'), where('userId', '==', user.uid))
+        );
+        existingTankFishItems = stockSnapshot.docs
+          .map((item) => ({
+            id: item.id,
+            ...item.data(),
+          }))
+          .filter(
+            (item) =>
+              item?.tankId === selectedTank.id &&
+              String(item?.type ?? '').toLowerCase() === 'fish'
+          );
+
         const quantity = parsePositiveNumberOrThrow('ilosc', fishQuantity);
 
         if (!Number.isInteger(quantity)) {
@@ -9263,6 +10529,13 @@ export default function HomeScreen() {
           const sanitizedFish = getSanitizedFishCatalogFields(selectedFish);
           const schoolingProfile = resolveFishSchoolingProfile(selectedFish);
           const aggressionLevel = resolveFishAggressionLevel(selectedFish);
+          const fishProfile = buildFishSpeciesProfile({
+            ...selectedFish,
+            ...sanitizedFish,
+            aggressionLevel,
+            isSchooling: schoolingProfile.isSchooling,
+            minGroupSize: schoolingProfile.minGroupSize,
+          }, quantity);
           minLiters = sanitizedFish.minLiters;
           payload = {
             userId: user.uid,
@@ -9286,6 +10559,7 @@ export default function HomeScreen() {
               ? Math.max(1, Number(schoolingProfile.minGroupSize) || 1)
               : 1,
             aggressionLevel,
+            fishProfile,
             notes: String(selectedFish.notes ?? '').slice(0, 1000),
             createdAt: new Date(),
           };
@@ -9317,6 +10591,25 @@ export default function HomeScreen() {
             isSchooling: false,
             minGroupSize: 1,
             aggressionLevel: 'peaceful',
+            fishProfile: buildFishSpeciesProfile(
+              {
+                commonName: manualFishName,
+                name: manualFishName,
+                latinName: manualFishName,
+                minLiters: EXPANDED_FISH_DEFAULTS.minLiters,
+                phMin: EXPANDED_FISH_DEFAULTS.phMin,
+                phMax: EXPANDED_FISH_DEFAULTS.phMax,
+                ghMin: EXPANDED_FISH_DEFAULTS.ghMin,
+                ghMax: EXPANDED_FISH_DEFAULTS.ghMax,
+                tempMin: EXPANDED_FISH_DEFAULTS.tempMin,
+                tempMax: EXPANDED_FISH_DEFAULTS.tempMax,
+                isSchooling: false,
+                minGroupSize: 1,
+                aggressionLevel: 'peaceful',
+                notes: 'Dodane recznie.',
+              },
+              quantity
+            ),
             notes: 'Dodane recznie.',
             createdAt: new Date(),
           };
@@ -9359,7 +10652,20 @@ export default function HomeScreen() {
         };
       }
 
-      await addDoc(collection(db, 'stockItems'), payload);
+      if (payload.type === 'fish' && payload.fishProfile) {
+        try {
+          await addDoc(collection(db, 'stockItems'), payload);
+        } catch (error) {
+          if (!isFirestorePermissionDeniedError(error)) {
+            throw error;
+          }
+
+          const { fishProfile, ...legacyPayload } = payload;
+          await addDoc(collection(db, 'stockItems'), legacyPayload);
+        }
+      } else {
+        await addDoc(collection(db, 'stockItems'), payload);
+      }
 
       setStockFishSearch('');
       setStockPlantSearch('');
@@ -9384,12 +10690,34 @@ export default function HomeScreen() {
       }
 
       if (payload.type === 'fish') {
-        const hasAggressionConflict = stockItems
-          .filter((item) => item.type === 'fish')
-          .some((item) => getFishAggressionConflict(payload, item));
+        const pairConflicts = existingTankFishItems
+          .map((item) => ({
+            item,
+            conflict: getFishAggressionConflict(
+              payload,
+              item,
+              Number(selectedTank?.liters)
+            ),
+          }))
+          .filter((entry) => entry.conflict);
 
-        if (hasAggressionConflict) {
-          addWarnings.push(t('fishAggressionWarning'));
+        if (pairConflicts.length > 0) {
+          const worstConflict = [...pairConflicts].sort(
+            (a, b) => Number(a.conflict?.score ?? 100) - Number(b.conflict?.score ?? 100)
+          )[0];
+          const otherFishName =
+            worstConflict?.item?.commonName ??
+            worstConflict?.item?.name ??
+            worstConflict?.item?.latinName ??
+            'inna ryba';
+          const reasons = (worstConflict?.conflict?.reasons ?? []).slice(0, 2);
+          const levelLabel = String(worstConflict?.conflict?.label ?? 'ryzykowne');
+          addWarnings.push(
+            `Konflikt obsady (${levelLabel}): ${payload.commonName ?? payload.name} + ${otherFishName}.`
+          );
+          if (reasons.length > 0) {
+            addWarnings.push(`Powody: ${reasons.join(' ')}`);
+          }
         }
       }
 
@@ -9626,6 +10954,7 @@ export default function HomeScreen() {
     try {
       const note = measurementNote.trim();
       const selectedTests = availableMeasurementTests;
+      const measuredAt = parseMeasurementDateInputOrThrow(measurementDateInput);
 
       if (measurementInputRows.length === 0) {
         throw new Error(
@@ -9633,7 +10962,7 @@ export default function HomeScreen() {
         );
       }
 
-      const measurement = { note };
+      const measurement = { note, measuredAt };
 
       measurementInputRows.forEach((field) => {
         const parsedValue = field.parseValue(field.value);
@@ -9911,8 +11240,40 @@ export default function HomeScreen() {
       const aggressionLevel = resolveFishAggressionLevel(selectedFish);
       const quantity = 1;
       const minLiters = sanitizedFish.minLiters;
+      const fishProfile = buildFishSpeciesProfile(
+        {
+          ...selectedFish,
+          ...sanitizedFish,
+          aggressionLevel,
+          isSchooling: schoolingProfile.isSchooling,
+          minGroupSize: schoolingProfile.minGroupSize,
+        },
+        quantity
+      );
+      const newFishCandidate = {
+        type: 'fish',
+        name: sanitizedFish.commonName,
+        commonName: sanitizedFish.commonName,
+        latinName: sanitizedFish.latinName,
+        aggressionLevel,
+        fishProfile,
+        notes: String(selectedFish.notes ?? '').slice(0, 1000),
+      };
+      const stockSnapshot = await getDocs(
+        query(collection(db, 'stockItems'), where('userId', '==', user.uid))
+      );
+      const existingTankFishItems = stockSnapshot.docs
+        .map((item) => ({
+          id: item.id,
+          ...item.data(),
+        }))
+        .filter(
+          (item) =>
+            item?.tankId === tank.id &&
+            String(item?.type ?? '').toLowerCase() === 'fish'
+        );
 
-      await addDoc(collection(db, 'stockItems'), {
+      const fishPayload = {
         userId: user.uid,
         tankId: tank.id,
         tankName: tank.name,
@@ -9934,9 +11295,20 @@ export default function HomeScreen() {
           ? Math.max(1, Number(schoolingProfile.minGroupSize) || 1)
           : 1,
         aggressionLevel,
+        fishProfile,
         notes: String(selectedFish.notes ?? '').slice(0, 1000),
         createdAt: new Date(),
-      });
+      };
+      try {
+        await addDoc(collection(db, 'stockItems'), fishPayload);
+      } catch (error) {
+        if (!isFirestorePermissionDeniedError(error)) {
+          throw error;
+        }
+
+        const { fishProfile: legacyFishProfile, ...legacyPayload } = fishPayload;
+        await addDoc(collection(db, 'stockItems'), legacyPayload);
+      }
 
       if (selectedTank?.id === tank.id) {
         await fetchStockItems(user.uid, tank.id);
@@ -9950,6 +11322,35 @@ export default function HomeScreen() {
             value: schoolingProfile.minGroupSize,
           })
         );
+      }
+
+      const pairConflicts = existingTankFishItems
+        .map((item) => ({
+          item,
+          conflict: getFishAggressionConflict(
+            newFishCandidate,
+            item,
+            Number(tank?.liters)
+          ),
+        }))
+        .filter((entry) => entry.conflict);
+      if (pairConflicts.length > 0) {
+        const worstConflict = [...pairConflicts].sort(
+          (a, b) => Number(a.conflict?.score ?? 100) - Number(b.conflict?.score ?? 100)
+        )[0];
+        const otherFishName =
+          worstConflict?.item?.commonName ??
+          worstConflict?.item?.name ??
+          worstConflict?.item?.latinName ??
+          'inna ryba';
+        const reasons = (worstConflict?.conflict?.reasons ?? []).slice(0, 2);
+        const levelLabel = String(worstConflict?.conflict?.label ?? 'ryzykowne');
+        addWarnings.push(
+          `Konflikt obsady (${levelLabel}): ${newFishCandidate.commonName} + ${otherFishName}.`
+        );
+        if (reasons.length > 0) {
+          addWarnings.push(`Powody: ${reasons.join(' ')}`);
+        }
       }
 
       if (Number(tank?.liters) < minLiters) {
@@ -10463,6 +11864,8 @@ export default function HomeScreen() {
       if (testKey === 'kh') setKh('');
       if (testKey === 'ca') setCa('');
       if (testKey === 'mg') setMg('');
+      if (testKey === 'k') setK('');
+      if (testKey === 'tds') setTds('');
       if (testKey === 'no2') setNo2('');
       if (testKey === 'no3') setNo3('');
       if (testKey === 'nh3nh4') setNh3Nh4('');
@@ -11141,17 +12544,17 @@ export default function HomeScreen() {
 
     const series = measurements
       .map((item) => {
-        const createdAtMs = getCreatedAtMs(item.createdAt);
+        const measuredAtMs = getMeasurementRecordedAtMs(item);
         const value = getMeasurementNumericValue(item, selectedHistoryChartMeta.key);
 
         return {
           id: item.id,
-          createdAtMs,
+          measuredAtMs,
           value,
         };
       })
-      .filter((item) => Number.isFinite(item.value) && item.createdAtMs > 0)
-      .sort((a, b) => a.createdAtMs - b.createdAtMs);
+      .filter((item) => Number.isFinite(item.value) && item.measuredAtMs > 0)
+      .sort((a, b) => a.measuredAtMs - b.measuredAtMs);
 
     const historyChartValues = series.map((item) => item.value);
     const latestValue =
@@ -11236,8 +12639,8 @@ export default function HomeScreen() {
       points,
       segments,
       hasLine: points.length >= 2 && historyChartWidth > 10,
-      firstDateMs: series[0]?.createdAtMs ?? 0,
-      lastDateMs: series[series.length - 1]?.createdAtMs ?? 0,
+      firstDateMs: series[0]?.measuredAtMs ?? 0,
+      lastDateMs: series[series.length - 1]?.measuredAtMs ?? 0,
       topPadding: historyChartTopPadding,
       bottomPadding: historyChartBottomPadding,
       areaHeight: historyChartAreaHeight,
@@ -11370,11 +12773,15 @@ export default function HomeScreen() {
             .filter((item) => item.type === 'fish')
             .map((item) => ({
               item,
-              conflict: getFishAggressionConflict(selectedCatalogFish, item),
+              conflict: getFishAggressionConflict(
+                selectedCatalogFish,
+                item,
+                selectedTankLiters
+              ),
             }))
             .filter((entry) => entry.conflict)
         : [],
-    [selectedCatalogFish, stockItems]
+    [selectedCatalogFish, selectedTankLiters, stockItems]
   );
   const selectedCatalogFishSchoolingWarning = useMemo(() => {
     if (!selectedCatalogFishSchoolingProfile?.isSchooling) {
@@ -12365,7 +13772,11 @@ export default function HomeScreen() {
         compareIndex += 1
       ) {
         const comparedFish = fishItems[compareIndex];
-        const conflict = getFishAggressionConflict(currentFish, comparedFish);
+        const conflict = getFishAggressionConflict(
+          currentFish,
+          comparedFish,
+          selectedTankLiters
+        );
 
         if (conflict) {
           conflicts.push({
@@ -12379,7 +13790,7 @@ export default function HomeScreen() {
     }
 
     return conflicts;
-  }, [stockItems]);
+  }, [selectedTankLiters, stockItems]);
   const fishIssueDetails = useMemo(
     () => [
       ...fishCompatibilityResults.flatMap((item) =>
@@ -12393,13 +13804,26 @@ export default function HomeScreen() {
           })}`
       ),
       ...fishAggressionConflicts.map((item) =>
-        t('fishAggressionPairWarning', {
-          first: item.firstFish.commonName ?? item.firstFish.name ?? item.firstFish.latinName,
-          second:
-            item.secondFish.commonName ??
-            item.secondFish.name ??
-            item.secondFish.latinName,
-        })
+        [
+          t('fishAggressionPairWarning', {
+            first:
+              item.firstFish.commonName ??
+              item.firstFish.name ??
+              item.firstFish.latinName,
+            second:
+              item.secondFish.commonName ??
+              item.secondFish.name ??
+              item.secondFish.latinName,
+          }),
+          item.label
+            ? `Ocena: ${item.label}.`
+            : null,
+          Array.isArray(item.reasons) && item.reasons.length > 0
+            ? `Powody: ${item.reasons.slice(0, 2).join(' ')}`
+            : null,
+        ]
+          .filter(Boolean)
+          .join(' ')
       ),
     ],
     [fishAggressionConflicts, fishCompatibilityResults, fishSchoolingWarnings, t]
@@ -12442,13 +13866,24 @@ export default function HomeScreen() {
     });
 
     fishAggressionConflicts.forEach((item) => {
-      const text = t('fishAggressionPairWarning', {
-        first: item.firstFish.commonName ?? item.firstFish.name ?? item.firstFish.latinName,
-        second:
-          item.secondFish.commonName ??
-          item.secondFish.name ??
-          item.secondFish.latinName,
-      });
+      const text = [
+        t('fishAggressionPairWarning', {
+          first:
+            item.firstFish.commonName ??
+            item.firstFish.name ??
+            item.firstFish.latinName,
+          second:
+            item.secondFish.commonName ??
+            item.secondFish.name ??
+            item.secondFish.latinName,
+        }),
+        item.label ? `Ocena: ${item.label}.` : null,
+        Array.isArray(item.reasons) && item.reasons.length > 0
+          ? `Powody: ${item.reasons.slice(0, 2).join(' ')}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(' ');
       appendWarning(item.firstFish.id, text, 'critical');
       appendWarning(item.secondFish.id, text, 'critical');
     });
@@ -12536,7 +13971,7 @@ export default function HomeScreen() {
       const tankStockItems = homeStockItemsByTankId.get(tank.id) ?? [];
       const tankMeasurements = homeMeasurements
         .filter((item) => item.tankId === tank.id)
-        .sort((a, b) => getCreatedAtMs(b.createdAt) - getCreatedAtMs(a.createdAt));
+        .sort((a, b) => getMeasurementRecordedAtMs(b) - getMeasurementRecordedAtMs(a));
       const latestMeasurement = tankMeasurements[0] ?? null;
       const latestAnalysis = latestMeasurement
         ? analyzeMeasurementLogic(
@@ -12588,7 +14023,13 @@ export default function HomeScreen() {
           compareIndex < tankFishItems.length;
           compareIndex += 1
         ) {
-          if (getFishAggressionConflict(tankFishItems[index], tankFishItems[compareIndex])) {
+          if (
+            getFishAggressionConflict(
+              tankFishItems[index],
+              tankFishItems[compareIndex],
+              tankLiters
+            )
+          ) {
             tankFishAggressionConflictsCount += 1;
           }
         }
@@ -12891,12 +14332,11 @@ export default function HomeScreen() {
   const selectedTankLightHoursLabel = Number.isFinite(selectedTankLightHoursValue)
     ? `${selectedTankLightHoursValue} h`
     : t('noDataCaps');
-  const selectedTankAquariumTypeValue = normalizeAquariumType(selectedTank?.aquariumType);
-  const selectedTankAquariumTypeOption = AQUARIUM_TYPE_OPTIONS.find(
-    (item) => item.value === selectedTankAquariumTypeValue
+  const selectedTankWaterProfileOption = WATER_PROFILE_OPTIONS.find(
+    (item) => item.value === selectedTankWaterProfile
   );
-  const selectedTankAquariumTypeLabel = selectedTankAquariumTypeOption
-    ? t(selectedTankAquariumTypeOption.labelKey)
+  const selectedTankWaterProfileLabel = selectedTankWaterProfileOption
+    ? selectedTankWaterProfileOption.label
     : t('noDataCaps');
   const selectedTankPlantFertilizationSummary = useMemo(
     () => summarizePlantFertilization(selectedTank?.plantFertilizationEntries),
@@ -13043,6 +14483,28 @@ export default function HomeScreen() {
           onChangeText: setMg,
           parseValue: (rawValue) =>
             parseOptionalNonNegativeNumberOrThrow('Mg', rawValue),
+          isRecommended: true,
+        }
+      : null,
+    enabledTests.k
+      ? {
+          key: 'k',
+          label: 'K',
+          value: k,
+          onChangeText: setK,
+          parseValue: (rawValue) =>
+            parseOptionalNonNegativeNumberOrThrow('K', rawValue),
+          isRecommended: true,
+        }
+      : null,
+    enabledTests.tds
+      ? {
+          key: 'tds',
+          label: 'TDS',
+          value: tds,
+          onChangeText: setTds,
+          parseValue: (rawValue) =>
+            parseOptionalNonNegativeNumberOrThrow('TDS', rawValue),
           isRecommended: true,
         }
       : null,
@@ -15300,7 +16762,7 @@ export default function HomeScreen() {
                     {[
                       {
                         label: t('aquariumTypeLabel'),
-                        value: selectedTankAquariumTypeLabel,
+                        value: selectedTankWaterProfileLabel,
                       },
                       {
                         label: t('substrate'),
@@ -17581,7 +19043,14 @@ export default function HomeScreen() {
                                                           entry.item.commonName ??
                                                           entry.item.name ??
                                                           entry.item.latinName,
-                                                      })}
+                                                      })}{' '}
+                                                      {entry.conflict?.label
+                                                        ? `(${entry.conflict.label})`
+                                                        : ''}
+                                                      {Array.isArray(entry.conflict?.reasons) &&
+                                                      entry.conflict.reasons.length > 0
+                                                        ? `: ${entry.conflict.reasons[0]}`
+                                                        : ''}
                                                     </Text>
                                                   ))}
                                               </View>
@@ -21138,52 +22607,6 @@ export default function HomeScreen() {
                   marginBottom: 6,
                   fontSize: 12,
                 }}>
-                {t('aquariumTypeLabel')}
-              </Text>
-              <View
-                style={{
-                  flexDirection: 'row',
-                  flexWrap: 'wrap',
-                  gap: 8,
-                  marginBottom: 10,
-                }}>
-                {AQUARIUM_TYPE_OPTIONS.map((option) => (
-                  <Pressable
-                    key={`add-type-inline-${option.value}`}
-                    onPress={() => setTankAquariumType(option.value)}
-                    style={{
-                      borderWidth: 1,
-                      borderColor:
-                        tankAquariumType === option.value ? themeAccent : themeBorderStrong,
-                      backgroundColor:
-                        tankAquariumType === option.value
-                          ? '#102235'
-                          : isLightTheme
-                            ? '#ffffff'
-                            : '#111',
-                      borderRadius: 999,
-                      paddingVertical: 6,
-                      paddingHorizontal: 10,
-                    }}>
-                    <Text
-                      style={{
-                        color:
-                          tankAquariumType === option.value
-                            ? 'white'
-                            : themeTextPrimary,
-                        fontSize: 12,
-                      }}>
-                      {t(option.labelKey)}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-              <Text
-                style={{
-                  color: '#9da3af',
-                  marginBottom: 6,
-                  fontSize: 12,
-                }}>
                 Start akwarium
               </Text>
               <View
@@ -21445,52 +22868,6 @@ export default function HomeScreen() {
                         marginBottom: 10,
                       }}
                     />
-                    <Text
-                      style={{
-                        color: '#9da3af',
-                        marginBottom: 6,
-                        fontSize: 12,
-                      }}>
-                      {t('aquariumTypeLabel')}
-                    </Text>
-                    <View
-                      style={{
-                        flexDirection: 'row',
-                        flexWrap: 'wrap',
-                        gap: 8,
-                        marginBottom: 10,
-                      }}>
-                      {AQUARIUM_TYPE_OPTIONS.map((option) => (
-                        <Pressable
-                          key={`add-type-modal-${option.value}`}
-                          onPress={() => setTankAquariumType(option.value)}
-                          style={{
-                            borderWidth: 1,
-                            borderColor:
-                              tankAquariumType === option.value ? themeAccent : themeBorderStrong,
-                            backgroundColor:
-                              tankAquariumType === option.value
-                                ? '#102235'
-                                : isLightTheme
-                                  ? '#ffffff'
-                                  : '#111',
-                            borderRadius: 999,
-                            paddingVertical: 6,
-                            paddingHorizontal: 10,
-                          }}>
-                          <Text
-                            style={{
-                              color:
-                                tankAquariumType === option.value
-                                  ? 'white'
-                                  : themeTextPrimary,
-                              fontSize: 12,
-                            }}>
-                            {t(option.labelKey)}
-                          </Text>
-                        </Pressable>
-                      ))}
-                    </View>
                     <Text
                       style={{
                         color: '#9da3af',
@@ -22115,52 +23492,6 @@ export default function HomeScreen() {
                         marginBottom: 6,
                         fontSize: 12,
                       }}>
-                      {t('aquariumTypeLabel')}
-                    </Text>
-                    <View
-                      style={{
-                        flexDirection: 'row',
-                        flexWrap: 'wrap',
-                        gap: 8,
-                        marginBottom: 10,
-                      }}>
-                      {AQUARIUM_TYPE_OPTIONS.map((option) => (
-                        <Pressable
-                          key={`edit-type-${option.value}`}
-                          onPress={() => setTankAquariumType(option.value)}
-                          style={{
-                            borderWidth: 1,
-                            borderColor:
-                              tankAquariumType === option.value ? themeAccent : themeBorderStrong,
-                            backgroundColor:
-                              tankAquariumType === option.value
-                                ? '#102235'
-                                : isLightTheme
-                                  ? '#ffffff'
-                                  : '#111',
-                            borderRadius: 999,
-                            paddingVertical: 6,
-                            paddingHorizontal: 10,
-                          }}>
-                          <Text
-                            style={{
-                              color:
-                                tankAquariumType === option.value
-                                  ? 'white'
-                                  : themeTextPrimary,
-                              fontSize: 12,
-                            }}>
-                            {t(option.labelKey)}
-                          </Text>
-                        </Pressable>
-                      ))}
-                    </View>
-                    <Text
-                      style={{
-                        color: '#9da3af',
-                        marginBottom: 6,
-                        fontSize: 12,
-                      }}>
                       {t('substrate')}
                     </Text>
                     <Text
@@ -22687,6 +24018,44 @@ export default function HomeScreen() {
                         W ustawieniach wybierz pola, ktore chcesz widziec w formularzu pomiarow.
                       </Text>
                     ) : null}
+
+                    <View
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        marginBottom: 10,
+                        gap: 10,
+                      }}>
+                      <View style={{ width: 74 }}>
+                        <Text
+                          style={{
+                            color: themeTextSecondary,
+                            fontWeight: '700',
+                            fontSize: 13,
+                          }}>
+                          Data
+                        </Text>
+                      </View>
+                      <TextInput
+                        placeholder="RRRR-MM-DD"
+                        placeholderTextColor={themePlaceholder}
+                        value={measurementDateInput}
+                        onChangeText={setMeasurementDateInput}
+                        editable={Boolean(selectedTank)}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        style={{
+                          flex: 1,
+                          borderWidth: 1,
+                          borderColor: themeInputBorder,
+                          color: themeInputText,
+                          paddingVertical: 10,
+                          paddingHorizontal: 12,
+                          borderRadius: 10,
+                          backgroundColor: themeInputBg,
+                        }}
+                      />
+                    </View>
 
                     {measurementInputRows.map((field) => (
                       <View
@@ -24439,7 +25808,7 @@ export default function HomeScreen() {
                               backgroundColor: themeCardBgAlt,
                             }}>
                             <Text style={{ color: themeTextPrimary, marginBottom: 4 }}>
-                              {formatCreatedAt(measurement.createdAt)}
+                              {formatDateOnly(getMeasurementRecordedAtMs(measurement))}
                             </Text>
 
                             <Text style={{ color: themeTextSecondary, fontSize: 12 }}>

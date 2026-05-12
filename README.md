@@ -71,6 +71,17 @@ npm install
 npm start
 ```
 
+## Reguly Firestore (deploy)
+
+Po zmianach w modelu danych (np. nowe pola w `tanks` lub `stockItems`) trzeba opublikowac reguly:
+
+```bash
+firebase login
+npm run firestore:deploy:rules
+```
+
+Jesli w aplikacji pojawia sie komunikat o zapisie "po aktualizacji regul bazy", oznacza to, ze reguly na serwerze sa starsze niz aktualny kod aplikacji.
+
 ## Panel admina (web)
 
 Webowy panel admina znajduje sie w katalogu `admin/`.

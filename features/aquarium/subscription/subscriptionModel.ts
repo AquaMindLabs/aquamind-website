@@ -30,6 +30,8 @@ export type SubscriptionMeasurementParameterKey =
   | 'ph'
   | 'gh'
   | 'kh'
+  | 'k'
+  | 'tds'
   | 'no2'
   | 'no3'
   | 'temperature'
@@ -157,6 +159,8 @@ const PREMIUM_MEASUREMENT_KEYS: SubscriptionMeasurementParameterKey[] = [
   ...FREE_MEASUREMENT_KEYS,
   'gh',
   'kh',
+  'k',
+  'tds',
   'po4',
   'nh3nh4',
   'fe',

@@ -42,6 +42,8 @@ export type EnabledTests = {
   ph: boolean;
   gh: boolean;
   kh: boolean;
+  k: boolean;
+  tds: boolean;
   no2: boolean;
   no3: boolean;
   temperature: boolean;
@@ -226,6 +228,8 @@ const DEFAULT_ENABLED_TESTS: EnabledTests = {
   ph: true,
   gh: true,
   kh: true,
+  k: false,
+  tds: false,
   no2: true,
   no3: true,
   temperature: true,

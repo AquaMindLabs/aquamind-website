@@ -91,6 +91,7 @@ service cloud.firestore {
           'lightIntensity',
           'lightHours',
           'waterProfile',
+          'singleSpeciesFishId',
           'targetRanges',
           'onboardingMode',
           'onboardingStartAt',
@@ -113,6 +114,7 @@ service cloud.firestore {
         optionalList(data, 'substrateTypes', 12) &&
         optionalString(data, 'lightIntensity', 20) &&
         optionalString(data, 'waterProfile', 30) &&
+        optionalString(data, 'singleSpeciesFishId', 128) &&
         optionalMap(data, 'targetRanges', 40) &&
         optionalTimestamp(data, 'onboardingStartAt') &&
         optionalTimestamp(data, 'updatedAt') &&
@@ -135,6 +137,7 @@ service cloud.firestore {
           'tankId',
           'tankName',
           'note',
+          'measuredAt',
           'ph',
           'gh',
           'kh',
@@ -146,6 +149,8 @@ service cloud.firestore {
           'fe',
           'ca',
           'mg',
+          'k',
+          'tds',
           'co2',
           'createdAt',
           'updatedAt'
@@ -158,6 +163,7 @@ service cloud.firestore {
         data.tankName.size() >= 1 &&
         data.tankName.size() <= 80 &&
         optionalString(data, 'note', 1000) &&
+        optionalTimestamp(data, 'measuredAt') &&
         optionalTimestamp(data, 'updatedAt') &&
         (!('ph' in data) || inRangeNumber(data.ph, 0, 14)) &&
         (!('gh' in data) || inRangeNumber(data.gh, 0, 60)) &&
@@ -170,6 +176,8 @@ service cloud.firestore {
         (!('fe' in data) || inRangeNumber(data.fe, 0, 10)) &&
         (!('ca' in data) || inRangeNumber(data.ca, 0, 500)) &&
         (!('mg' in data) || inRangeNumber(data.mg, 0, 300)) &&
+        (!('k' in data) || inRangeNumber(data.k, 0, 200)) &&
+        (!('tds' in data) || inRangeNumber(data.tds, 0, 3000)) &&
         (!('co2' in data) || inRangeNumber(data.co2, 0, 200));
     }
 
@@ -214,6 +222,7 @@ service cloud.firestore {
           'isSchooling',
           'minGroupSize',
           'aggressionLevel',
+          'fishProfile',
           'notes',
           'createdAt'
         ]) &&
@@ -232,6 +241,7 @@ service cloud.firestore {
         data.commonName.size() >= 1 &&
         data.commonName.size() <= 120 &&
         optionalString(data, 'source', 20) &&
+        optionalMap(data, 'fishProfile', 40) &&
         data.latinName is string &&
         data.latinName.size() >= 1 &&
         data.latinName.size() <= 120 &&

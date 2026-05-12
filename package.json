@@ -8,7 +8,8 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "expo lint",
-    "test:firestore": "firebase emulators:exec --only firestore --project demo-aquarium-mobile \"node --test tests/firestore.rules.test.cjs\""
+    "test:firestore": "firebase emulators:exec --only firestore --project demo-aquarium-mobile \"node --test tests/firestore.rules.test.cjs\"",
+    "firestore:deploy:rules": "firebase deploy --only firestore:rules --project my-aquarium-assistant"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",

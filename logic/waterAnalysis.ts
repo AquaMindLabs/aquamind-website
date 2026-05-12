@@ -88,6 +88,8 @@ const DEFAULT_TARGET_RANGES: Record<string, WaterTargetRange> = {
   fe: { min: 0.02, max: 0.2 },
   ca: { min: 20, max: 60 },
   mg: { min: 5, max: 20 },
+  k: { min: 5, max: 30 },
+  tds: { min: 80, max: 450 },
   temperature: { min: 24, max: 27 },
   co2: { min: 10, max: 30 },
 };
@@ -123,6 +125,14 @@ function getCreatedAtMs(createdAt: unknown): number {
 
   const parsed = new Date(createdAt as string | number).getTime();
   return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function getMeasurementRecordedAtMs(measurement: GenericRecord | null | undefined): number {
+  if (!measurement) {
+    return 0;
+  }
+
+  return getCreatedAtMs(measurement.measuredAt ?? measurement.createdAt);
 }
 
 function getDayBucketMs(value: unknown): number {
@@ -384,6 +394,8 @@ export function analyzeMeasurement(
   const khValue = toNumeric(measurement.kh);
   const caValue = toNumeric(measurement.ca);
   const mgValue = toNumeric(measurement.mg);
+  const kValue = toNumeric(measurement.k);
+  const tdsValue = toNumeric(measurement.tds);
   const no2Value = toNumeric(measurement.no2);
   const no3Value = toNumeric(measurement.no3);
   const nh3nh4Value = toNumeric(measurement.nh3nh4);
@@ -402,6 +414,8 @@ export function analyzeMeasurement(
   const feRange = resolveTargetRange('fe', options);
   const caRange = resolveTargetRange('ca', options);
   const mgRange = resolveTargetRange('mg', options);
+  const kRange = resolveTargetRange('k', options);
+  const tdsRange = resolveTargetRange('tds', options);
   const temperatureRange = resolveTargetRange('temperature', options);
   const co2Range = resolveTargetRange('co2', options);
 
@@ -636,6 +650,46 @@ export function analyzeMeasurement(
     }
   }
 
+  if (isTestEnabled('k') && kValue !== null) {
+    const kSeverity = getRangeSeverity(kValue, kRange);
+    if (kSeverity !== 'ok') {
+      recommendations.push(
+        createRecommendation({
+          severity: kSeverity,
+          parameter: 'K',
+          value: `${kValue} mg/l`,
+          expectedRange: buildRangeLabel(kRange, 'mg/l'),
+          issue:
+            kSeverity === 'critical'
+              ? 'Potas (K) mocno poza docelowym zakresem ustawionym dla akwarium.'
+              : 'Potas (K) poza docelowym zakresem ustawionym dla akwarium.',
+          action:
+            'Skoryguj nawozenie potasem i sprawdz proporcje K:Ca:Mg przy kolejnym pomiarze.',
+        })
+      );
+    }
+  }
+
+  if (isTestEnabled('tds') && tdsValue !== null) {
+    const tdsSeverity = getRangeSeverity(tdsValue, tdsRange);
+    if (tdsSeverity !== 'ok') {
+      recommendations.push(
+        createRecommendation({
+          severity: tdsSeverity,
+          parameter: 'TDS',
+          value: `${tdsValue} ppm`,
+          expectedRange: buildRangeLabel(tdsRange, 'ppm'),
+          issue:
+            tdsSeverity === 'critical'
+              ? 'TDS mocno poza docelowym zakresem ustawionym dla akwarium.'
+              : 'TDS poza docelowym zakresem ustawionym dla akwarium.',
+          action:
+            'Dostosuj mineralizacje i podmiany, aby stopniowo wrocic do stabilnego TDS.',
+        })
+      );
+    }
+  }
+
   if (isTestEnabled('temperature') && temperatureValue !== null) {
     const tempSeverity = getRangeSeverity(temperatureValue, temperatureRange);
     if (tempSeverity !== 'ok') {
@@ -699,6 +753,8 @@ export function buildCurrentRiskNotes(
   const khValue = toNumeric(measurement?.kh);
   const caValue = toNumeric(measurement?.ca);
   const mgValue = toNumeric(measurement?.mg);
+  const kValue = toNumeric(measurement?.k);
+  const tdsValue = toNumeric(measurement?.tds);
   const co2Value =
     toNumeric(measurement?.co2) ?? calculateCo2FromKhPh(khValue, phValue);
   const po4Value = toNumeric(measurement?.po4);
@@ -790,6 +846,20 @@ export function buildCurrentRiskNotes(
     pushRisk(
       'warning',
       'Mg poza zakresem moze pogarszac kondycje roslin i przyswajanie skladnikow.'
+    );
+  }
+
+  if (kValue !== null && (kValue < 5 || kValue > 30)) {
+    pushRisk(
+      'warning',
+      'Potas (K) poza zakresem moze ograniczac wzrost roslin i zaburzac rownowage nawozenia.'
+    );
+  }
+
+  if (tdsValue !== null && (tdsValue < 80 || tdsValue > 450)) {
+    pushRisk(
+      tdsValue < 50 || tdsValue > 600 ? 'critical' : 'warning',
+      'TDS poza zakresem moze powodowac stres osmotyczny i niestabilnosc warunkow.'
     );
   }
 
@@ -891,7 +961,7 @@ export function buildWaterTestingSchedule(
   now = new Date()
 ): WaterTestingScheduleResult {
   const todayBucketMs = getDayBucketMs(now);
-  const defaultBaseMs = getCreatedAtMs(measurements[0]?.createdAt) || now.getTime();
+  const defaultBaseMs = getMeasurementRecordedAtMs(measurements[0]) || now.getTime();
   const baseDate = new Date(defaultBaseMs);
   const isTestEnabled = (key: string) => Boolean(enabledTests?.[key]);
 
@@ -964,6 +1034,12 @@ export function buildWaterTestingSchedule(
     if (isTestEnabled('mg')) {
       parameters.push(buildPlan('mg', 'Mg', 'problem', 0, 'Brak danych - wykonaj pierwszy test.'));
     }
+    if (isTestEnabled('k')) {
+      parameters.push(buildPlan('k', 'K', 'problem', 0, 'Brak danych - wykonaj pierwszy test.'));
+    }
+    if (isTestEnabled('tds')) {
+      parameters.push(buildPlan('tds', 'TDS', 'problem', 0, 'Brak danych - wykonaj pierwszy test.'));
+    }
 
     return {
       parameters,
@@ -1006,6 +1082,8 @@ export function buildWaterTestingSchedule(
   const khValue = toNumeric(latestMeasurement.kh);
   const caValue = toNumeric(latestMeasurement.ca);
   const mgValue = toNumeric(latestMeasurement.mg);
+  const kValue = toNumeric(latestMeasurement.k);
+  const tdsValue = toNumeric(latestMeasurement.tds);
   const previousPhValue = toNumeric(previousMeasurement.ph);
   const phDelta =
     phValue !== null && previousPhValue !== null
@@ -1020,6 +1098,8 @@ export function buildWaterTestingSchedule(
   const kh = khValue ?? 0;
   const ca = caValue ?? 0;
   const mg = mgValue ?? 0;
+  const k = kValue ?? 0;
+  const tds = tdsValue ?? 0;
 
   const parameters: WaterTestingParameterPlan[] = [];
 
@@ -1331,6 +1411,66 @@ export function buildWaterTestingSchedule(
   } else if (isTestEnabled('mg')) {
     parameters.push(
       buildPlan('mg', 'Mg', 'ok', 21, 'Mg stabilne. Test kontrolny co 2-4 tygodnie.')
+    );
+  }
+
+  if (isTestEnabled('k') && kValue === null) {
+    parameters.push(
+      buildPlan('k', 'K', 'problem', 0, 'Brak odczytu - wykonaj test K.')
+    );
+  } else if (isTestEnabled('k') && (k < 2 || k > 40)) {
+    parameters.push(
+      buildPlan(
+        'k',
+        'K',
+        'problem',
+        1,
+        `K ${k} mg/l mocno poza zakresem. Test codziennie do stabilizacji.`
+      )
+    );
+  } else if (isTestEnabled('k') && (k < 5 || k > 30)) {
+    parameters.push(
+      buildPlan(
+        'k',
+        'K',
+        'warning',
+        3,
+        `K ${k} mg/l lekko poza zakresem. Test co 3-7 dni.`
+      )
+    );
+  } else if (isTestEnabled('k')) {
+    parameters.push(
+      buildPlan('k', 'K', 'ok', 21, 'K stabilne. Test kontrolny co 2-4 tygodnie.')
+    );
+  }
+
+  if (isTestEnabled('tds') && tdsValue === null) {
+    parameters.push(
+      buildPlan('tds', 'TDS', 'problem', 0, 'Brak odczytu - wykonaj test TDS.')
+    );
+  } else if (isTestEnabled('tds') && (tds < 50 || tds > 600)) {
+    parameters.push(
+      buildPlan(
+        'tds',
+        'TDS',
+        'problem',
+        1,
+        `TDS ${tds} ppm mocno poza zakresem. Test codziennie do stabilizacji.`
+      )
+    );
+  } else if (isTestEnabled('tds') && (tds < 80 || tds > 450)) {
+    parameters.push(
+      buildPlan(
+        'tds',
+        'TDS',
+        'warning',
+        3,
+        `TDS ${tds} ppm lekko poza zakresem. Test co 3-7 dni.`
+      )
+    );
+  } else if (isTestEnabled('tds')) {
+    parameters.push(
+      buildPlan('tds', 'TDS', 'ok', 14, 'TDS stabilne. Test kontrolny co 1-2 tygodnie.')
     );
   }
 
