@@ -15,7 +15,10 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return isSignedIn() && request.auth.token.admin == true;
+      return isSignedIn() &&
+        request.auth.token is map &&
+        ('admin' in request.auth.token) &&
+        request.auth.token.admin == true;
     }
 
     function optionalString(data, field, maxLen) {
@@ -43,6 +46,9 @@ service cloud.firestore {
         value == 'shrimp' ||
         value == 'mixed' ||
         value == 'general' ||
+        value == 'biotope' ||
+        value == 'species_only' ||
+        value == 'custom' ||
         value == 'planted_low_tech' ||
         value == 'planted_high_tech' ||
         value == 'malawi' ||
@@ -81,7 +87,8 @@ service cloud.firestore {
     }
 
     function validWaterProfile(value) {
-      return value == 'general' ||
+      return value == '' ||
+        value == 'general' ||
         value == 'plant' ||
         value == 'low_tech' ||
         value == 'high_tech' ||
@@ -170,8 +177,10 @@ service cloud.firestore {
           'singleSpeciesFishId',
           'targetRanges',
           'onboardingMode',
+          'onboardingEnabled',
           'onboardingStartAt',
           'onboardingTaskChecks',
+          'maintenanceActionState',
           'plantFertilizationEntries',
           'heaterEquipments',
           'filterEquipments',
@@ -200,6 +209,7 @@ service cloud.firestore {
         optionalString(data, 'singleSpeciesFishId', 128) &&
         optionalMap(data, 'targetRanges', 40) &&
         optionalMap(data, 'zones', 20) &&
+        (!('onboardingEnabled' in data) || data.onboardingEnabled is bool) &&
         optionalTimestamp(data, 'onboardingStartAt') &&
         optionalTimestamp(data, 'updatedAt') &&
         optionalList(data, 'plantFertilizationEntries', 200) &&
@@ -208,6 +218,7 @@ service cloud.firestore {
         optionalMap(data, 'heaterEquipment', 30) &&
         optionalMap(data, 'filterEquipment', 30) &&
         optionalMap(data, 'onboardingTaskChecks', 300) &&
+        optionalMap(data, 'maintenanceActionState', 80) &&
         (!('aquariumType' in data) || validAquariumType(data.aquariumType)) &&
         (!('lightIntensity' in data) || validLightIntensity(data.lightIntensity)) &&
         (!('lightHours' in data) || inRangeNumber(data.lightHours, 1, 24)) &&

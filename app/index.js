@@ -713,6 +713,7 @@ function buildTankRuleSanitizationPatch(tank) {
     'lineOfSightBreaks',
     'zones',
     'onboardingTaskChecks',
+    'onboardingEnabled',
     'maintenanceActionState',
   ];
   const allowedTankFields = new Set([
@@ -743,6 +744,7 @@ function buildTankRuleSanitizationPatch(tank) {
     'singleSpeciesFishId',
     'targetRanges',
     'onboardingMode',
+    'onboardingEnabled',
     'onboardingStartAt',
     'onboardingTaskChecks',
     'maintenanceActionState',
@@ -888,13 +890,21 @@ function buildTankRuleSanitizationPatch(tank) {
   if (hasField('onboardingMode')) {
     const allowedModes = new Set([
       'fresh_start',
-      'existing_running',
       'restart',
       'mature_media_start',
     ]);
     const value = String(tank.onboardingMode ?? '').trim().toLowerCase();
-    if (!allowedModes.has(value)) {
+    if (value === 'existing_running') {
+      patch.onboardingMode = 'mature_media_start';
+    } else if (!allowedModes.has(value)) {
       patch.onboardingMode = deleteField();
+    }
+  }
+
+  if (hasField('onboardingEnabled')) {
+    const value = tank.onboardingEnabled;
+    if (value !== null && value !== undefined && typeof value !== 'boolean') {
+      patch.onboardingEnabled = deleteField();
     }
   }
 
@@ -1192,7 +1202,7 @@ function buildLatestMeasurementValueSourceMsByKey(measurements = []) {
 
   for (const measurement of measurements) {
     const directCo2 = Number(measurement?.co2);
-    if (Number.isFinite(directCo2)) {
+    if (Number.isFinite(directCo2) && directCo2 > 0) {
       sourceMsByKey.set('co2', getMeasurementRecordedAtMs(measurement));
       break;
     }
@@ -2447,11 +2457,57 @@ const ROOT_TABS_DUE_SOON_DAYS = 14;
 const MAX_PLANT_FERTILIZATION_ENTRIES = 120;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-const ONBOARDING_START_OPTIONS = [
-  { value: 'fresh_start', label: 'Fresh start: nowy zbiornik od zera' },
-  { value: 'existing_running', label: 'Istniejace, juz dzialajace akwarium' },
-  { value: 'restart', label: 'Restart zbiornika (przearanzowanie/reset)' },
-  { value: 'mature_media_start', label: 'Start na dojrzalym medium filtracyjnym' },
+const ADD_TANK_WIZARD_STEPS = [
+  { id: 'basic', title: 'Podstawowe informacje' },
+  { id: 'start', title: 'Sposob uruchomienia' },
+  { id: 'onboarding', title: 'Onboarding' },
+  { id: 'profile', title: 'Profil akwarium' },
+  { id: 'substrate', title: 'Podloze' },
+  { id: 'water', title: 'Parametry wody' },
+  { id: 'temperature', title: 'Temperatura' },
+  { id: 'summary', title: 'Podsumowanie' },
+];
+const ADD_TANK_START_OPTIONS = [
+  {
+    value: 'new_from_scratch',
+    label: 'Nowy zbiornik od zera',
+    description: 'Uruchamiasz nowe akwarium od podstaw.',
+  },
+  {
+    value: 'restart_or_transfer',
+    label: 'Restart / przenoszenie akwarium',
+    description: 'Restartujesz lub przenosisz istniejacy zbiornik.',
+  },
+  {
+    value: 'mature_existing',
+    label: 'Istniejace dojrzale akwarium',
+    description: 'Masz juz stabilny zbiornik i chcesz go odwzorowac.',
+  },
+  {
+    value: 'based_on_existing',
+    label: 'Nowy zbiornik na bazie istnieacego akwarium',
+    description: 'Tworzysz nowe akwarium na bazie konfiguracji obecnego.',
+  },
+];
+const ADD_TANK_PROFILE_OPTIONS = [
+  { value: 'general', label: 'Ogolne' },
+  { value: 'planted_low_tech', label: 'Roslinne low-tech' },
+  { value: 'planted_high_tech', label: 'Roslinne high-tech' },
+  { value: 'shrimp', label: 'Krewetkarium' },
+  { value: 'species_only', label: 'Jednogatunkowe' },
+  { value: 'biotope', label: 'Biotopowe' },
+  { value: 'malawi', label: 'Malawi' },
+  { value: 'tanganyika', label: 'Tanganika' },
+  { value: 'custom', label: 'Wlasny profil' },
+];
+const WIZARD_SUBSTRATE_LAYER_OPTIONS = [
+  { value: 'none', label: 'Brak podloza', modelValue: 'other' },
+  { value: 'sand', label: 'Piasek', modelValue: 'sand' },
+  { value: 'gravel', label: 'Zwir', modelValue: 'gravel' },
+  { value: 'active_soil', label: 'Podloze aktywne', modelValue: 'active_soil' },
+  { value: 'substrate', label: 'Substrat pod rosliny', modelValue: 'mixed' },
+  { value: 'soil_layer', label: 'Ziemia / warstwa odzywcza', modelValue: 'garden_soil' },
+  { value: 'other', label: 'Inne', modelValue: 'other' },
 ];
 const ROOM_TEMPERATURE_MODE_OPTIONS = [
   { value: 'cold', label: 'Chlodno (18 C)' },
@@ -2610,13 +2666,108 @@ function normalizeAquariumType(value) {
 
 function normalizeOnboardingMode(value) {
   const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized === 'existing_running') {
+    return 'mature_media_start';
+  }
   const allowedModes = new Set([
     'fresh_start',
-    'existing_running',
     'restart',
     'mature_media_start',
   ]);
-  return allowedModes.has(normalized) ? normalized : 'existing_running';
+  return allowedModes.has(normalized) ? normalized : 'fresh_start';
+}
+
+function normalizeAddTankStartType(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  const allowed = new Set(ADD_TANK_START_OPTIONS.map((item) => item.value));
+  return allowed.has(normalized) ? normalized : 'new_from_scratch';
+}
+
+function onboardingModeFromStartType(startType) {
+  const normalized = normalizeAddTankStartType(startType);
+  if (normalized === 'restart_or_transfer') {
+    return 'restart';
+  }
+  if (normalized === 'mature_existing' || normalized === 'based_on_existing') {
+    return 'mature_media_start';
+  }
+  return 'fresh_start';
+}
+
+function mapWizardProfileToModel(profile) {
+  const normalized = String(profile ?? '').trim().toLowerCase();
+  if (normalized === 'planted_low_tech') {
+    return { aquariumType: 'planted_low_tech', waterProfile: 'low_tech' };
+  }
+  if (normalized === 'planted_high_tech') {
+    return { aquariumType: 'planted_high_tech', waterProfile: 'high_tech' };
+  }
+  if (normalized === 'shrimp') {
+    return { aquariumType: 'shrimp', waterProfile: 'shrimp' };
+  }
+  if (normalized === 'species_only') {
+    return { aquariumType: 'general', waterProfile: 'single_species' };
+  }
+  if (normalized === 'malawi') {
+    return { aquariumType: 'malawi', waterProfile: 'malawi' };
+  }
+  if (normalized === 'tanganyika') {
+    return { aquariumType: 'tanganyika', waterProfile: 'tanganyika' };
+  }
+  if (normalized === 'biotope') {
+    return { aquariumType: 'general', waterProfile: 'general' };
+  }
+  if (normalized === 'custom') {
+    return { aquariumType: 'general', waterProfile: 'general' };
+  }
+  return { aquariumType: 'general', waterProfile: 'general' };
+}
+
+function deriveWizardProfileFromTank(tank) {
+  const aquariumType = normalizeAquariumType(tank?.aquariumType);
+  const waterProfile = normalizeWaterProfile(
+    tank?.waterProfile ?? getDefaultWaterProfileForAquariumType(aquariumType)
+  );
+  if (waterProfile === 'single_species') {
+    return 'species_only';
+  }
+  if (aquariumType === 'planted_high_tech' || waterProfile === 'high_tech') {
+    return 'planted_high_tech';
+  }
+  if (aquariumType === 'planted_low_tech' || waterProfile === 'low_tech') {
+    return 'planted_low_tech';
+  }
+  if (aquariumType === 'shrimp' || waterProfile === 'shrimp') {
+    return 'shrimp';
+  }
+  if (aquariumType === 'malawi' || waterProfile === 'malawi') {
+    return 'malawi';
+  }
+  if (aquariumType === 'tanganyika' || waterProfile === 'tanganyika') {
+    return 'tanganyika';
+  }
+  return 'general';
+}
+
+function wizardStartTypeLabel(startType) {
+  return (
+    ADD_TANK_START_OPTIONS.find((item) => item.value === startType)?.label ??
+    'Nowy zbiornik od zera'
+  );
+}
+
+function wizardProfileLabel(profile) {
+  return (
+    ADD_TANK_PROFILE_OPTIONS.find((item) => item.value === profile)?.label ?? 'Ogolne'
+  );
+}
+
+function getWizardSubstrateLayerModelValue(layerType) {
+  const normalized = String(layerType ?? '').trim().toLowerCase();
+  return (
+    WIZARD_SUBSTRATE_LAYER_OPTIONS.find((item) => item.value === normalized)?.modelValue ??
+    'other'
+  );
 }
 
 function normalizeRoomTemperatureMode(value) {
@@ -9474,16 +9625,26 @@ function getMeasurementNumericValue(measurement, key) {
     return null;
   }
 
+  const toOptionalNumber = (rawValue) => {
+    if (rawValue === null || rawValue === undefined) {
+      return null;
+    }
+    if (typeof rawValue === 'string' && rawValue.trim() === '') {
+      return null;
+    }
+    const parsed = Number(rawValue);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
   if (key === 'co2') {
-    const directCo2 = Number(measurement.co2);
-    if (Number.isFinite(directCo2)) {
+    const directCo2 = toOptionalNumber(measurement.co2);
+    if (directCo2 !== null && directCo2 > 0) {
       return directCo2;
     }
     return calculateCo2FromKhPhLogic(measurement.kh, measurement.ph);
   }
 
-  const value = Number(measurement[key]);
-  return Number.isFinite(value) ? value : null;
+  return toOptionalNumber(measurement[key]);
 }
 
 function getRecentNumericSeries(measurements, key, limit = 5) {
@@ -10035,6 +10196,28 @@ function BottomSheetModal({
   );
 }
 
+function isWaterParameterIssueText(issueText) {
+  const normalized = String(issueText ?? '')
+    .trim()
+    .toLowerCase();
+
+  if (!normalized) {
+    return false;
+  }
+
+  if (normalized.includes('brak pomiar')) {
+    return true;
+  }
+
+  if (normalized.includes('parametr')) {
+    return true;
+  }
+
+  return /\b(ph|gh|kh|tds|co2|no2|no3|nh3\/nh4|nh3|nh4|po4|fe|ca|mg|k)\b/.test(
+    normalized
+  );
+}
+
 function getHistoryChartValueStatus(parameterKey, rawValue, targetRanges = null) {
   const value = Number(rawValue);
   if (!Number.isFinite(value)) {
@@ -10240,7 +10423,7 @@ export default function HomeScreen() {
   const [stockItems, setStockItems] = useState([]);
   const [isEditingFish, setIsEditingFish] = useState(false);
   const [isEditingPlant, setIsEditingPlant] = useState(false);
-  const [isPlantFertilizationExpanded, setIsPlantFertilizationExpanded] = useState(true);
+  const [isPlantFertilizationExpanded, setIsPlantFertilizationExpanded] = useState(false);
   const [isPlantStockExpanded, setIsPlantStockExpanded] = useState(true);
   const [isPlantFertilizationAddFormVisible, setIsPlantFertilizationAddFormVisible] =
     useState(false);
@@ -10263,6 +10446,19 @@ export default function HomeScreen() {
   const [plantFertilizationBusy, setPlantFertilizationBusy] = useState(false);
   const [tankName, setTankName] = useState('');
   const [tankLiters, setTankLiters] = useState('');
+  const [tankLengthCm, setTankLengthCm] = useState('');
+  const [tankWidthCm, setTankWidthCm] = useState('');
+  const [tankHeightCm, setTankHeightCm] = useState('');
+  const [isTankDimensionsExpanded, setIsTankDimensionsExpanded] = useState(false);
+  const [addTankWizardStepId, setAddTankWizardStepId] = useState('basic');
+  const [tankStartType, setTankStartType] = useState('new_from_scratch');
+  const [tankBasedOnExistingTankId, setTankBasedOnExistingTankId] = useState('');
+  const [tankWizardProfile, setTankWizardProfile] = useState('general');
+  const [tankRoomTempTypical, setTankRoomTempTypical] = useState('');
+  const [tankRoomTempMin, setTankRoomTempMin] = useState('');
+  const [tankRoomTempMax, setTankRoomTempMax] = useState('');
+  const [tankHasLid, setTankHasLid] = useState(false);
+  const [tankSubstrateLayers, setTankSubstrateLayers] = useState([]);
   const [tankAquariumType, setTankAquariumType] = useState('');
   const [tankSubstrateType, setTankSubstrateType] = useState('');
   const [tankSubstrateTypes, setTankSubstrateTypes] = useState([]);
@@ -10279,7 +10475,8 @@ export default function HomeScreen() {
   const [tankTargetTemperatureC, setTankTargetTemperatureC] = useState('25');
   const [tankAmbientTemperatureC, setTankAmbientTemperatureC] = useState('');
   const [tankRoomTemperatureMode, setTankRoomTemperatureMode] = useState('normal');
-  const [tankOnboardingMode, setTankOnboardingMode] = useState('existing_running');
+  const [tankOnboardingEnabled, setTankOnboardingEnabled] = useState(true);
+  const [tankOnboardingMode, setTankOnboardingMode] = useState('fresh_start');
   const [addTankBusy, setAddTankBusy] = useState(false);
   const [isAddingTankModalVisible, setIsAddingTankModalVisible] = useState(false);
   const [editingTankId, setEditingTankId] = useState(null);
@@ -10338,8 +10535,10 @@ export default function HomeScreen() {
     useState(null);
   const [isWaterTestingExpanded, setIsWaterTestingExpanded] =
     useState(false);
+  const [expandedStockingSectionKey, setExpandedStockingSectionKey] = useState('');
   const [maintenanceActionBusyId, setMaintenanceActionBusyId] = useState('');
   const [onboardingTaskBusy, setOnboardingTaskBusy] = useState(false);
+  const [onboardingToggleBusy, setOnboardingToggleBusy] = useState(false);
   const [isCompletedOnboardingVisible, setIsCompletedOnboardingVisible] =
     useState(false);
   const [expandedHistoryIssueId, setExpandedHistoryIssueId] = useState(null);
@@ -10554,6 +10753,7 @@ export default function HomeScreen() {
         setIsWaterTestingExpanded(false);
         setMaintenanceActionBusyId('');
         setOnboardingTaskBusy(false);
+        setOnboardingToggleBusy(false);
         setIsCompletedOnboardingVisible(false);
         setIsAddingTankModalVisible(false);
         setEditingTankId(null);
@@ -10568,8 +10768,24 @@ export default function HomeScreen() {
         setCustomEquipmentTankMinLiters('');
         setCustomEquipmentTankMaxLiters('');
         setEquipmentSavingBusy(false);
+        setTankName('');
+        setTankLiters('');
+        setTankLengthCm('');
+        setTankWidthCm('');
+        setTankHeightCm('');
+        setIsTankDimensionsExpanded(false);
+        setAddTankWizardStepId('basic');
+        setTankStartType('new_from_scratch');
+        setTankBasedOnExistingTankId('');
+        setTankWizardProfile('general');
+        setTankRoomTempTypical('');
+        setTankRoomTempMin('');
+        setTankRoomTempMax('');
+        setTankHasLid(false);
+        setTankSubstrateLayers([]);
         setTankAquariumType('');
-        setTankOnboardingMode('existing_running');
+        setTankOnboardingEnabled(true);
+        setTankOnboardingMode('fresh_start');
         setSelectedMeasurementId(null);
         setEditingMeasurementId(null);
         setDiseaseMode('catalog');
@@ -11915,6 +12131,19 @@ export default function HomeScreen() {
       setEditingTankId(null);
       setTankName('');
       setTankLiters('');
+      setTankLengthCm('');
+      setTankWidthCm('');
+      setTankHeightCm('');
+      setIsTankDimensionsExpanded(false);
+      setAddTankWizardStepId('basic');
+      setTankStartType('new_from_scratch');
+      setTankBasedOnExistingTankId('');
+      setTankWizardProfile('general');
+      setTankRoomTempTypical('');
+      setTankRoomTempMin('');
+      setTankRoomTempMax('');
+      setTankHasLid(false);
+      setTankSubstrateLayers([createEmptySubstrateLayer()]);
       setTankAquariumType('');
       setTankSubstrateType('');
       setTankSubstrateTypes([]);
@@ -11967,7 +12196,7 @@ export default function HomeScreen() {
     setEquipmentCatalogSearch('');
     setSelectedMeasurementId(null);
     setEditingMeasurementId(null);
-  }, [selectedTank?.id, editingTankId]);
+  }, [createEmptySubstrateLayer, selectedTank?.id, editingTankId]);
 
   useEffect(() => {
     if (activeSection === 'fish' && stockType !== 'fish') {
@@ -12021,6 +12250,7 @@ export default function HomeScreen() {
   }, [activeSection]);
 
   useEffect(() => {
+    setExpandedStockingSectionKey('');
     setExpandedHistoryIssueId(null);
     setHistoryIssueDeleteBusyId(null);
   }, [selectedTank?.id]);
@@ -12624,6 +12854,22 @@ export default function HomeScreen() {
     setTankLiters(
       selectedTank.liters === undefined ? '' : String(selectedTank.liters)
     );
+    setTankLengthCm(
+      Number.isFinite(Number(selectedTank.lengthCm)) ? String(selectedTank.lengthCm) : ''
+    );
+    setTankWidthCm(
+      Number.isFinite(Number(selectedTank.widthCm)) ? String(selectedTank.widthCm) : ''
+    );
+    setTankHeightCm(
+      Number.isFinite(Number(selectedTank.heightCm)) ? String(selectedTank.heightCm) : ''
+    );
+    setIsTankDimensionsExpanded(
+      Boolean(
+        Number.isFinite(Number(selectedTank.lengthCm)) ||
+          Number.isFinite(Number(selectedTank.widthCm)) ||
+          Number.isFinite(Number(selectedTank.heightCm))
+      )
+    );
     setTankAquariumType(normalizeAquariumType(selectedTank.aquariumType));
     const normalizedSubstrateTypes = normalizeSubstrateTypes(
       selectedTank.substrateTypes ?? selectedTank.substrateType
@@ -12652,6 +12898,36 @@ export default function HomeScreen() {
     setTankRoomTemperatureMode(
       normalizeRoomTemperatureMode(selectedTank.roomTemperatureMode)
     );
+    setTankRoomTempTypical(
+      Number.isFinite(Number(selectedTank.ambientTemperatureC))
+        ? String(selectedTank.ambientTemperatureC)
+        : ''
+    );
+    setTankRoomTempMin(
+      Number.isFinite(Number(selectedTank.ambientTemperatureC))
+        ? String(selectedTank.ambientTemperatureC)
+        : ''
+    );
+    setTankRoomTempMax('');
+    setTankHasLid(false);
+    setTankStartType('mature_existing');
+    setTankWizardProfile(deriveWizardProfileFromTank(selectedTank));
+    setTankBasedOnExistingTankId('');
+    setAddTankWizardStepId('basic');
+    setTankSubstrateLayers(
+      normalizedSubstrateTypes.length > 0
+        ? normalizedSubstrateTypes.map((item, index) => ({
+            id: `edit-layer-${index}`,
+            type:
+              WIZARD_SUBSTRATE_LAYER_OPTIONS.find(
+                (option) => option.modelValue === item
+              )?.value ?? 'other',
+            heightCm: '',
+            affectsWater: false,
+          }))
+        : [createEmptySubstrateLayer()]
+    );
+    setTankOnboardingEnabled(selectedTank.onboardingEnabled !== false);
     setTankOnboardingMode(normalizeOnboardingMode(selectedTank.onboardingMode));
   };
 
@@ -12670,9 +12946,22 @@ export default function HomeScreen() {
     setEditingTankId(null);
     setTankName('');
     setTankLiters('');
+    setTankLengthCm('');
+    setTankWidthCm('');
+    setTankHeightCm('');
+    setIsTankDimensionsExpanded(false);
+    setAddTankWizardStepId('basic');
+    setTankStartType('new_from_scratch');
+    setTankBasedOnExistingTankId('');
+    setTankWizardProfile('general');
+    setTankRoomTempTypical('');
+    setTankRoomTempMin('');
+    setTankRoomTempMax('');
+    setTankHasLid(false);
     setTankAquariumType('');
     setTankSubstrateType('');
     setTankSubstrateTypes([]);
+    setTankSubstrateLayers([createEmptySubstrateLayer()]);
     setTankWaterProfile(defaultProfile);
     setTankSingleSpeciesFishId('');
     setTankSingleSpeciesFishSearch('');
@@ -12686,18 +12975,32 @@ export default function HomeScreen() {
     setTankTargetTemperatureC('25');
     setTankAmbientTemperatureC('');
     setTankRoomTemperatureMode('normal');
-    setTankOnboardingMode('existing_running');
+    setTankOnboardingEnabled(true);
+    setTankOnboardingMode('fresh_start');
     setIsAddingTankModalVisible(true);
   };
 
-  const handleCancelEditTank = () => {
+  const handleCancelEditTank = useCallback(() => {
     const defaultProfile = getDefaultWaterProfileForAquariumType('');
     setEditingTankId(null);
     setTankName('');
     setTankLiters('');
+    setTankLengthCm('');
+    setTankWidthCm('');
+    setTankHeightCm('');
+    setIsTankDimensionsExpanded(false);
+    setAddTankWizardStepId('basic');
+    setTankStartType('new_from_scratch');
+    setTankBasedOnExistingTankId('');
+    setTankWizardProfile('general');
+    setTankRoomTempTypical('');
+    setTankRoomTempMin('');
+    setTankRoomTempMax('');
+    setTankHasLid(false);
     setTankAquariumType('');
     setTankSubstrateType('');
     setTankSubstrateTypes([]);
+    setTankSubstrateLayers([createEmptySubstrateLayer()]);
     setTankWaterProfile(defaultProfile);
     setTankSingleSpeciesFishId('');
     setTankSingleSpeciesFishSearch('');
@@ -12711,17 +13014,31 @@ export default function HomeScreen() {
     setTankTargetTemperatureC('25');
     setTankAmbientTemperatureC('');
     setTankRoomTemperatureMode('normal');
-    setTankOnboardingMode('existing_running');
-  };
+    setTankOnboardingEnabled(true);
+    setTankOnboardingMode('fresh_start');
+  }, [createEmptySubstrateLayer]);
 
-  const handleCancelAddTank = () => {
+  const handleCancelAddTank = useCallback(() => {
     const defaultProfile = getDefaultWaterProfileForAquariumType('');
     setIsAddingTankModalVisible(false);
     setTankName('');
     setTankLiters('');
+    setTankLengthCm('');
+    setTankWidthCm('');
+    setTankHeightCm('');
+    setIsTankDimensionsExpanded(false);
+    setAddTankWizardStepId('basic');
+    setTankStartType('new_from_scratch');
+    setTankBasedOnExistingTankId('');
+    setTankWizardProfile('general');
+    setTankRoomTempTypical('');
+    setTankRoomTempMin('');
+    setTankRoomTempMax('');
+    setTankHasLid(false);
     setTankAquariumType('');
     setTankSubstrateType('');
     setTankSubstrateTypes([]);
+    setTankSubstrateLayers([createEmptySubstrateLayer()]);
     setTankWaterProfile(defaultProfile);
     setTankSingleSpeciesFishId('');
     setTankSingleSpeciesFishSearch('');
@@ -12735,8 +13052,9 @@ export default function HomeScreen() {
     setTankTargetTemperatureC('25');
     setTankAmbientTemperatureC('');
     setTankRoomTemperatureMode('normal');
-    setTankOnboardingMode('existing_running');
-  };
+    setTankOnboardingEnabled(true);
+    setTankOnboardingMode('fresh_start');
+  }, [createEmptySubstrateLayer]);
 
   const handleSelectTankWaterProfile = (nextProfile) => {
     const normalizedProfile = normalizeWaterProfile(nextProfile);
@@ -12764,7 +13082,6 @@ export default function HomeScreen() {
     const selectedFish = fishCatalog.find((item) => item.id === fishId) ?? null;
     setTankSingleSpeciesFishId(String(fishId ?? ''));
     setTankSingleSpeciesFishSearch('');
-    setTankWaterProfileCustomized(true);
     setTankTargetRangeDraft(
       buildTargetRangeInputDraftFromRanges(
         buildSingleSpeciesTargetRangesFromFish(
@@ -12808,6 +13125,335 @@ export default function HomeScreen() {
       return next;
     });
   };
+
+  const syncTankSubstratesFromLayers = useCallback((layers) => {
+    const nextTypes = Array.isArray(layers)
+      ? layers
+          .map((layer) => getWizardSubstrateLayerModelValue(layer?.type))
+          .filter(Boolean)
+      : [];
+    const uniqueTypes = [...new Set(nextTypes)];
+    setTankSubstrateTypes(uniqueTypes);
+    setTankSubstrateType(uniqueTypes[0] ?? '');
+  }, []);
+
+  const createEmptySubstrateLayer = useCallback(() => {
+    const layerId = `layer-${Date.now().toString(36)}-${Math.random()
+      .toString(36)
+      .slice(2, 6)}`;
+    return {
+      id: layerId,
+      type: 'sand',
+      heightCm: '',
+      affectsWater: false,
+    };
+  }, []);
+
+  const addTankWizardVisibleSteps = useMemo(() => {
+    const shouldShowWaterStep =
+      tankWizardProfile === 'custom' || Boolean(tankWaterProfileCustomized);
+    return ADD_TANK_WIZARD_STEPS.filter(
+      (step) => step.id !== 'water' || shouldShowWaterStep
+    );
+  }, [tankWaterProfileCustomized, tankWizardProfile]);
+
+  const addTankWizardStepIndex = useMemo(
+    () =>
+      Math.max(
+        0,
+        addTankWizardVisibleSteps.findIndex((step) => step.id === addTankWizardStepId)
+      ),
+    [addTankWizardStepId, addTankWizardVisibleSteps]
+  );
+
+  const addTankWizardCurrentStep =
+    addTankWizardVisibleSteps[addTankWizardStepIndex] ?? addTankWizardVisibleSteps[0];
+
+  const getNextAddTankWizardStepId = useCallback(
+    (stepId) => {
+      const currentIndex = addTankWizardVisibleSteps.findIndex(
+        (step) => step.id === stepId
+      );
+      if (currentIndex < 0) {
+        return addTankWizardVisibleSteps[0]?.id ?? 'basic';
+      }
+      return (
+        addTankWizardVisibleSteps[Math.min(currentIndex + 1, addTankWizardVisibleSteps.length - 1)]
+          ?.id ?? stepId
+      );
+    },
+    [addTankWizardVisibleSteps]
+  );
+
+  const getPrevAddTankWizardStepId = useCallback(
+    (stepId) => {
+      const currentIndex = addTankWizardVisibleSteps.findIndex(
+        (step) => step.id === stepId
+      );
+      if (currentIndex <= 0) {
+        return addTankWizardVisibleSteps[0]?.id ?? 'basic';
+      }
+      return addTankWizardVisibleSteps[currentIndex - 1]?.id ?? stepId;
+    },
+    [addTankWizardVisibleSteps]
+  );
+
+  const validateAddTankWizardStep = useCallback(
+    (stepId) => {
+      if (stepId === 'basic') {
+        if (!String(tankName ?? '').trim()) {
+          alert('Podaj nazwe akwarium.');
+          return false;
+        }
+        try {
+          parsePositiveNumberOrThrow('litraz', tankLiters);
+        } catch (error) {
+          alert(error instanceof Error ? error.message : 'Niepoprawny litraz.');
+          return false;
+        }
+        if (String(tankLengthCm ?? '').trim()) {
+          try {
+            parseOptionalNonNegativeNumberOrThrow('dlugosc akwarium', tankLengthCm);
+          } catch (error) {
+            alert(error instanceof Error ? error.message : 'Niepoprawna dlugosc.');
+            return false;
+          }
+        }
+        if (String(tankWidthCm ?? '').trim()) {
+          try {
+            parseOptionalNonNegativeNumberOrThrow('szerokosc akwarium', tankWidthCm);
+          } catch (error) {
+            alert(error instanceof Error ? error.message : 'Niepoprawna szerokosc.');
+            return false;
+          }
+        }
+        if (String(tankHeightCm ?? '').trim()) {
+          try {
+            parseOptionalNonNegativeNumberOrThrow('wysokosc akwarium', tankHeightCm);
+          } catch (error) {
+            alert(error instanceof Error ? error.message : 'Niepoprawna wysokosc.');
+            return false;
+          }
+        }
+        return true;
+      }
+
+      if (stepId === 'start') {
+        if (!normalizeAddTankStartType(tankStartType)) {
+          alert('Wybierz sposob uruchomienia akwarium.');
+          return false;
+        }
+        if (
+          tankStartType === 'based_on_existing' &&
+          Array.isArray(tanks) &&
+          tanks.length > 0 &&
+          !String(tankBasedOnExistingTankId ?? '').trim()
+        ) {
+          alert('Wybierz akwarium bazowe.');
+          return false;
+        }
+        return true;
+      }
+
+      if (stepId === 'profile') {
+        if (!String(tankWizardProfile ?? '').trim()) {
+          alert('Wybierz profil akwarium.');
+          return false;
+        }
+        if (
+          mapWizardProfileToModel(tankWizardProfile).waterProfile === 'single_species' &&
+          !String(tankSingleSpeciesFishId ?? '').trim()
+        ) {
+          alert('Dla profilu jednogatunkowego wybierz gatunek ryby.');
+          return false;
+        }
+        return true;
+      }
+
+      if (stepId === 'substrate') {
+        if (!Array.isArray(tankSubstrateLayers) || tankSubstrateLayers.length === 0) {
+          alert('Dodaj przynajmniej jedna warstwe podloza.');
+          return false;
+        }
+        return true;
+      }
+
+      if (stepId === 'water') {
+        try {
+          const targetProfile = normalizeWaterProfile(
+            tankWaterProfile || mapWizardProfileToModel(tankWizardProfile).waterProfile
+          );
+          parseTankTargetRangeDraftOrThrow(tankTargetRangeDraft, targetProfile);
+        } catch (error) {
+          alert(
+            error instanceof Error
+              ? error.message
+              : 'Popraw zakresy parametrow wody.'
+          );
+          return false;
+        }
+        return true;
+      }
+
+      if (stepId === 'temperature') {
+        try {
+          parsePositiveNumberOrThrow(
+            'docelowa temperatura wody',
+            tankTargetTemperatureC || '25'
+          );
+          if (!String(tankRoomTempMin ?? '').trim()) {
+            throw new Error('Podaj minimalna temperature pomieszczenia.');
+          }
+          parseOptionalNonNegativeNumberOrThrow(
+            'minimalna temperatura pomieszczenia',
+            tankRoomTempMin
+          );
+        } catch (error) {
+          alert(error instanceof Error ? error.message : 'Niepoprawna temperatura.');
+          return false;
+        }
+      }
+
+      return true;
+    },
+    [
+      tankBasedOnExistingTankId,
+      tankHeightCm,
+      tankLengthCm,
+      tankLiters,
+      tankName,
+      tankRoomTempMin,
+      tankStartType,
+      tankSubstrateLayers,
+      tankTargetRangeDraft,
+      tankTargetTemperatureC,
+      tankWaterProfile,
+      tankWidthCm,
+      tankWizardProfile,
+      tankSingleSpeciesFishId,
+      tanks,
+    ]
+  );
+
+  const handleAddTankWizardNext = useCallback(() => {
+    const currentStepId = addTankWizardCurrentStep?.id ?? 'basic';
+    if (!validateAddTankWizardStep(currentStepId)) {
+      return;
+    }
+    setAddTankWizardStepId(getNextAddTankWizardStepId(currentStepId));
+  }, [addTankWizardCurrentStep?.id, getNextAddTankWizardStepId, validateAddTankWizardStep]);
+
+  const handleAddTankWizardBack = useCallback(() => {
+    const currentStepId = addTankWizardCurrentStep?.id ?? 'basic';
+    setAddTankWizardStepId(getPrevAddTankWizardStepId(currentStepId));
+  }, [addTankWizardCurrentStep?.id, getPrevAddTankWizardStepId]);
+
+  const handleSelectTankStartType = useCallback((nextType) => {
+    const normalized = normalizeAddTankStartType(nextType);
+    setTankStartType(normalized);
+    setTankOnboardingMode(onboardingModeFromStartType(normalized));
+    if (normalized === 'new_from_scratch') {
+      setTankOnboardingEnabled(true);
+    } else if (normalized === 'mature_existing') {
+      setTankOnboardingEnabled(false);
+    }
+  }, []);
+
+  const handleSelectWizardProfile = useCallback(
+    (profile) => {
+      const normalizedProfile = String(profile ?? '').trim().toLowerCase();
+      setTankWizardProfile(normalizedProfile);
+
+      const mappedProfile = mapWizardProfileToModel(normalizedProfile);
+      setTankAquariumType(mappedProfile.aquariumType);
+      setTankWaterProfile(mappedProfile.waterProfile);
+
+      if (normalizedProfile === 'custom') {
+        setTankWaterProfileCustomized(true);
+      }
+
+      if (
+        !tankWaterProfileCustomized &&
+        mappedProfile.waterProfile &&
+        mappedProfile.waterProfile !== 'single_species'
+      ) {
+        setTankTargetRangeDraft(
+          buildTargetRangeInputDraftFromRanges(
+            getWaterTargetDefaults(mappedProfile.waterProfile),
+            mappedProfile.waterProfile
+          )
+        );
+      }
+    },
+    [tankWaterProfileCustomized]
+  );
+
+  const handleApplyBasedOnExistingTank = useCallback(
+    (sourceTankId) => {
+      setTankBasedOnExistingTankId(sourceTankId);
+      const sourceTank = (tanks ?? []).find((item) => item.id === sourceTankId);
+      if (!sourceTank) {
+        return;
+      }
+
+      setTankLiters(
+        Number.isFinite(Number(sourceTank?.liters)) ? String(sourceTank.liters) : ''
+      );
+      setTankAquariumType(normalizeAquariumType(sourceTank?.aquariumType));
+      const copiedSubstrateTypes = normalizeSubstrateTypes(
+        sourceTank?.substrateTypes ?? sourceTank?.substrateType
+      );
+      setTankSubstrateTypes(copiedSubstrateTypes);
+      setTankSubstrateType(copiedSubstrateTypes[0] ?? '');
+      setTankSubstrateLayers(
+        copiedSubstrateTypes.length > 0
+          ? copiedSubstrateTypes.map((item, index) => ({
+              id: `copy-${sourceTankId}-${index}`,
+              type:
+                WIZARD_SUBSTRATE_LAYER_OPTIONS.find(
+                  (option) => option.modelValue === item
+                )?.value ?? 'other',
+              heightCm: '',
+              affectsWater: false,
+            }))
+          : [createEmptySubstrateLayer()]
+      );
+
+      const copiedWaterProfile = normalizeWaterProfile(
+        sourceTank?.waterProfile ??
+          getDefaultWaterProfileForAquariumType(sourceTank?.aquariumType)
+      );
+      setTankWaterProfile(copiedWaterProfile);
+      setTankWaterProfileCustomized(Boolean(sourceTank?.targetRanges));
+      setTankTargetRangeDraft(
+        buildTargetRangeInputDraftFromRanges(
+          normalizeTankTargetRanges(sourceTank?.targetRanges, copiedWaterProfile),
+          copiedWaterProfile
+        )
+      );
+      setTankSingleSpeciesFishId(String(sourceTank?.singleSpeciesFishId ?? ''));
+      setTankTargetTemperatureC(
+        Number.isFinite(Number(sourceTank?.targetTemperatureC))
+          ? String(sourceTank.targetTemperatureC)
+          : '25'
+      );
+      const copiedAmbientTemp = Number(sourceTank?.ambientTemperatureC);
+      setTankAmbientTemperatureC(
+        Number.isFinite(copiedAmbientTemp) ? String(copiedAmbientTemp) : ''
+      );
+      setTankRoomTempTypical(
+        Number.isFinite(copiedAmbientTemp) ? String(copiedAmbientTemp) : ''
+      );
+      setTankRoomTempMin(
+        Number.isFinite(copiedAmbientTemp) ? String(copiedAmbientTemp) : ''
+      );
+      setTankRoomTempMax('');
+      setTankRoomTemperatureMode(
+        normalizeRoomTemperatureMode(sourceTank?.roomTemperatureMode)
+      );
+    },
+    [createEmptySubstrateLayer, tanks]
+  );
 
   const renderTankWaterTargetsSection = (scopeKey) => (
     <View
@@ -13138,7 +13784,783 @@ export default function HomeScreen() {
   };
 
   useEffect(() => {
+    if (Array.isArray(tankSubstrateLayers) && tankSubstrateLayers.length > 0) {
+      return;
+    }
+    const normalized = normalizeSubstrateTypes(tankSubstrateTypes);
+    if (normalized.length === 0) {
+      return;
+    }
+    setTankSubstrateLayers(
+      normalized.map((type, index) => ({
+        id: `legacy-${index}`,
+        type:
+          WIZARD_SUBSTRATE_LAYER_OPTIONS.find((item) => item.modelValue === type)?.value ??
+          'other',
+        heightCm: '',
+        affectsWater: false,
+      }))
+    );
+  }, [createEmptySubstrateLayer, tankSubstrateLayers, tankSubstrateTypes]);
+
+  const renderAddTankWizard = (scopeKey = 'add-wizard') => {
+    const totalSteps = addTankWizardVisibleSteps.length;
+    const currentStepId = addTankWizardCurrentStep?.id ?? 'basic';
+    const currentStepLabel = addTankWizardCurrentStep?.title ?? 'Kreator';
+    const isSummaryStep = currentStepId === 'summary';
+    const canGoBack = addTankWizardStepIndex > 0;
+    const mappedProfile = mapWizardProfileToModel(tankWizardProfile);
+    const selectedSourceTank =
+      (tanks ?? []).find((item) => item.id === tankBasedOnExistingTankId) ?? null;
+    const profileUsesManualParameters =
+      tankWizardProfile === 'custom' || Boolean(tankWaterProfileCustomized);
+
+    return (
+      <View
+        style={{
+          borderWidth: 1,
+          borderColor: themeBorder,
+          borderRadius: 12,
+          padding: 12,
+          backgroundColor: themeCardBgAlt,
+        }}>
+        <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
+          Krok {addTankWizardStepIndex + 1} z {totalSteps}
+        </Text>
+        <Text style={{ color: themeTextPrimary, fontWeight: '700', marginTop: 4 }}>
+          {currentStepLabel}
+        </Text>
+        <View
+          style={{
+            marginTop: 8,
+            height: 6,
+            borderRadius: 999,
+            backgroundColor: themeCardBg,
+            overflow: 'hidden',
+            marginBottom: 10,
+          }}>
+          <View
+            style={{
+              width: `${Math.max(10, Math.round(((addTankWizardStepIndex + 1) / Math.max(totalSteps, 1)) * 100))}%`,
+              height: 6,
+              backgroundColor: themeAccentText,
+            }}
+          />
+        </View>
+
+        {currentStepId === 'basic' ? (
+          <>
+            <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
+              Podaj nazwe i pojemnosc akwarium. Na tej podstawie aplikacja bedzie liczyc
+              obsade, sprzet i zalecenia.
+            </Text>
+            <TextInput
+              placeholder={t('tankNamePlaceholder')}
+              placeholderTextColor={themePlaceholder}
+              value={tankName}
+              onChangeText={setTankName}
+              style={{
+                borderWidth: 1,
+                borderColor: themeInputBorder,
+                color: themeInputText,
+                padding: 10,
+                marginBottom: 8,
+                backgroundColor: themeInputBg,
+                borderRadius: 8,
+              }}
+            />
+            <TextInput
+              placeholder={t('tankLitersPlaceholder')}
+              placeholderTextColor={themePlaceholder}
+              value={tankLiters}
+              onChangeText={setTankLiters}
+              keyboardType="numeric"
+              style={{
+                borderWidth: 1,
+                borderColor: themeInputBorder,
+                color: themeInputText,
+                padding: 10,
+                marginBottom: 8,
+                backgroundColor: themeInputBg,
+                borderRadius: 8,
+              }}
+            />
+            <Pressable
+              onPress={() => setIsTankDimensionsExpanded((prev) => !prev)}
+              style={{
+                borderWidth: 1,
+                borderColor: themeBorderStrong,
+                borderRadius: 8,
+                paddingVertical: 8,
+                paddingHorizontal: 10,
+                backgroundColor: themeCardBg,
+              }}>
+              <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+                {isTankDimensionsExpanded ? 'Ukryj wymiary (opcjonalne)' : 'Pokaz wymiary (opcjonalne)'}
+              </Text>
+            </Pressable>
+            {isTankDimensionsExpanded ? (
+              <View style={{ marginTop: 8 }}>
+                <TextInput
+                  placeholder="Dlugosc akwarium (cm)"
+                  placeholderTextColor={themePlaceholder}
+                  value={tankLengthCm}
+                  onChangeText={setTankLengthCm}
+                  keyboardType="numeric"
+                  style={{
+                    borderWidth: 1,
+                    borderColor: themeInputBorder,
+                    color: themeInputText,
+                    padding: 10,
+                    marginBottom: 8,
+                    backgroundColor: themeInputBg,
+                    borderRadius: 8,
+                  }}
+                />
+                <TextInput
+                  placeholder="Szerokosc akwarium (cm)"
+                  placeholderTextColor={themePlaceholder}
+                  value={tankWidthCm}
+                  onChangeText={setTankWidthCm}
+                  keyboardType="numeric"
+                  style={{
+                    borderWidth: 1,
+                    borderColor: themeInputBorder,
+                    color: themeInputText,
+                    padding: 10,
+                    marginBottom: 8,
+                    backgroundColor: themeInputBg,
+                    borderRadius: 8,
+                  }}
+                />
+                <TextInput
+                  placeholder="Wysokosc akwarium (cm)"
+                  placeholderTextColor={themePlaceholder}
+                  value={tankHeightCm}
+                  onChangeText={setTankHeightCm}
+                  keyboardType="numeric"
+                  style={{
+                    borderWidth: 1,
+                    borderColor: themeInputBorder,
+                    color: themeInputText,
+                    padding: 10,
+                    backgroundColor: themeInputBg,
+                    borderRadius: 8,
+                  }}
+                />
+              </View>
+            ) : null}
+          </>
+        ) : null}
+
+        {currentStepId === 'start' ? (
+          <>
+            <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
+              Wybierz, jak startujesz zbiornik. Dzieki temu aplikacja lepiej dopasuje onboarding,
+              alerty i zalecenia.
+            </Text>
+            <View style={{ gap: 8 }}>
+              {ADD_TANK_START_OPTIONS.map((option) => {
+                const isSelected = tankStartType === option.value;
+                return (
+                  <Pressable
+                    key={`${scopeKey}-start-${option.value}`}
+                    onPress={() => handleSelectTankStartType(option.value)}
+                    style={{
+                      borderWidth: 1,
+                      borderColor: isSelected ? themeAccent : themeBorderStrong,
+                      borderRadius: 8,
+                      padding: 10,
+                      backgroundColor: isSelected ? '#102235' : themeCardBg,
+                    }}>
+                    <Text
+                      style={{
+                        color: isSelected ? 'white' : themeTextPrimary,
+                        fontWeight: '700',
+                        fontSize: 12,
+                      }}>
+                      {option.label}
+                    </Text>
+                    <Text
+                      style={{
+                        color: isSelected ? '#c6d9f0' : themeTextSecondary,
+                        marginTop: 4,
+                        fontSize: 12,
+                      }}>
+                      {option.description}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            {tankStartType === 'based_on_existing' ? (
+              <View style={{ marginTop: 10 }}>
+                <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 6 }}>
+                  Wybierz akwarium bazowe
+                </Text>
+                {Array.isArray(tanks) && tanks.length > 0 ? (
+                  <View style={{ gap: 6 }}>
+                    {tanks.map((tankItem) => {
+                      const isSelected = tankBasedOnExistingTankId === tankItem.id;
+                      return (
+                        <Pressable
+                          key={`${scopeKey}-source-tank-${tankItem.id}`}
+                          onPress={() => handleApplyBasedOnExistingTank(tankItem.id)}
+                          style={{
+                            borderWidth: 1,
+                            borderColor: isSelected ? themeAccent : themeBorder,
+                            borderRadius: 8,
+                            padding: 9,
+                            backgroundColor: isSelected ? '#102235' : themeCardBg,
+                          }}>
+                          <Text
+                            style={{
+                              color: isSelected ? 'white' : themeTextPrimary,
+                              fontWeight: '700',
+                            }}>
+                            {tankItem.name ?? 'Akwarium'}
+                          </Text>
+                          <Text
+                            style={{
+                              color: isSelected ? '#c6d9f0' : themeTextSecondary,
+                              marginTop: 3,
+                              fontSize: 12,
+                            }}>
+                            {formatLiters(tankItem?.liters)}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                ) : (
+                  <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
+                    Brak listy akwariow do skopiowania. Miejsce pod integracje jest przygotowane.
+                  </Text>
+                )}
+              </View>
+            ) : null}
+          </>
+        ) : null}
+
+        {currentStepId === 'onboarding' ? (
+          <>
+            <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
+              Czy chcesz, zeby aplikacja prowadzila Cie krok po kroku?
+            </Text>
+            <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
+              Onboarding pomoze zaplanowac pierwsze dni dzialania zbiornika, kontrole parametrow,
+              dojrzewanie filtra i moment bezpiecznego wpuszczania obsady.
+            </Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+              <Pressable
+                onPress={() => setTankOnboardingEnabled(true)}
+                style={{
+                  borderWidth: 1,
+                  borderColor: tankOnboardingEnabled ? themeAccent : themeBorderStrong,
+                  backgroundColor: tankOnboardingEnabled ? '#102235' : themeCardBg,
+                  borderRadius: 999,
+                  paddingVertical: 7,
+                  paddingHorizontal: 12,
+                }}>
+                <Text style={{ color: tankOnboardingEnabled ? 'white' : themeTextPrimary }}>
+                  Tak, prowadz mnie przez start akwarium
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setTankOnboardingEnabled(false)}
+                style={{
+                  borderWidth: 1,
+                  borderColor: !tankOnboardingEnabled ? themeAccent : themeBorderStrong,
+                  backgroundColor: !tankOnboardingEnabled ? '#102235' : themeCardBg,
+                  borderRadius: 999,
+                  paddingVertical: 7,
+                  paddingHorizontal: 12,
+                }}>
+                <Text style={{ color: !tankOnboardingEnabled ? 'white' : themeTextPrimary }}>
+                  Nie, chce tylko dodac dane akwarium
+                </Text>
+              </Pressable>
+            </View>
+          </>
+        ) : null}
+
+        {currentStepId === 'profile' ? (
+          <>
+            <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
+              Wybierz profil akwarium. Profil ustawia domyslne zakresy parametrow.
+            </Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+              {ADD_TANK_PROFILE_OPTIONS.map((option) => {
+                const isSelected = tankWizardProfile === option.value;
+                return (
+                  <Pressable
+                    key={`${scopeKey}-profile-${option.value}`}
+                    onPress={() => handleSelectWizardProfile(option.value)}
+                    style={{
+                      borderWidth: 1,
+                      borderColor: isSelected ? themeAccent : themeBorderStrong,
+                      backgroundColor: isSelected ? '#102235' : themeCardBg,
+                      borderRadius: 999,
+                      paddingVertical: 6,
+                      paddingHorizontal: 10,
+                    }}>
+                    <Text style={{ color: isSelected ? 'white' : themeTextPrimary, fontSize: 12 }}>
+                      {option.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            {mappedProfile.waterProfile === 'single_species' ? (
+              <View style={{ marginTop: 10 }}>
+                <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 6 }}>
+                  Wybierz gatunek dla profilu jednogatunkowego
+                </Text>
+                <TextInput
+                  placeholder="Wyszukaj gatunek..."
+                  placeholderTextColor={themePlaceholder}
+                  value={tankSingleSpeciesFishSearch}
+                  onChangeText={setTankSingleSpeciesFishSearch}
+                  style={{
+                    borderWidth: 1,
+                    borderColor: themeInputBorder,
+                    color: themeInputText,
+                    paddingHorizontal: 10,
+                    paddingVertical: 8,
+                    borderRadius: 8,
+                    backgroundColor: themeInputBg,
+                    marginBottom: 8,
+                  }}
+                />
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                  {filteredSingleSpeciesFishCatalog.map((fish) => {
+                    const isSelected = tankSingleSpeciesFishId === fish.id;
+                    return (
+                      <Pressable
+                        key={`${scopeKey}-wizard-single-species-fish-${fish.id}`}
+                        onPress={() => handleSelectSingleSpeciesFish(fish.id)}
+                        style={{
+                          borderWidth: 1,
+                          borderColor: isSelected ? themeAccent : themeBorderStrong,
+                          borderRadius: 999,
+                          paddingVertical: 5,
+                          paddingHorizontal: 10,
+                          backgroundColor: isSelected ? '#102235' : themeCardBg,
+                        }}>
+                        <Text style={{ color: isSelected ? 'white' : themeTextPrimary, fontSize: 11 }}>
+                          {getFishCatalogDisplayLabel(fish)}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </View>
+            ) : null}
+            <Pressable
+              onPress={() => setTankWaterProfileCustomized((prev) => !prev)}
+              style={{
+                marginTop: 10,
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 8,
+              }}>
+              <View
+                style={{
+                  width: 20,
+                  height: 20,
+                  borderRadius: 5,
+                  borderWidth: 1,
+                  borderColor: tankWaterProfileCustomized ? themeAccent : themeBorderStrong,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  backgroundColor: tankWaterProfileCustomized ? '#102235' : themeCardBg,
+                }}>
+                <Text
+                  style={{
+                    color: tankWaterProfileCustomized ? 'white' : 'transparent',
+                    fontSize: 12,
+                    fontWeight: '700',
+                  }}>
+                  X
+                </Text>
+              </View>
+              <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+                Chce wprowadzic parametry recznie
+              </Text>
+            </Pressable>
+          </>
+        ) : null}
+
+        {currentStepId === 'substrate' ? (
+          <>
+            <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
+              Dodaj warstwy podloza. Mozesz laczyc kilka typow.
+            </Text>
+            <View style={{ gap: 8 }}>
+              {tankSubstrateLayers.map((layer, index) => (
+                <View
+                  key={`${scopeKey}-substrate-layer-${layer.id}`}
+                  style={{
+                    borderWidth: 1,
+                    borderColor: themeBorder,
+                    borderRadius: 10,
+                    padding: 9,
+                    backgroundColor: themeCardBg,
+                  }}>
+                  <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+                    Warstwa {index + 1}
+                  </Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+                    {WIZARD_SUBSTRATE_LAYER_OPTIONS.map((option) => {
+                      const isSelected = layer.type === option.value;
+                      return (
+                        <Pressable
+                          key={`${scopeKey}-${layer.id}-${option.value}`}
+                          onPress={() => {
+                            setTankSubstrateLayers((prev) => {
+                              const next = prev.map((entry) =>
+                                entry.id === layer.id
+                                  ? { ...entry, type: option.value }
+                                  : entry
+                              );
+                              syncTankSubstratesFromLayers(next);
+                              return next;
+                            });
+                          }}
+                          style={{
+                            borderWidth: 1,
+                            borderColor: isSelected ? themeAccent : themeBorderStrong,
+                            borderRadius: 999,
+                            paddingVertical: 5,
+                            paddingHorizontal: 8,
+                            backgroundColor: isSelected ? '#102235' : themeCardBgAlt,
+                          }}>
+                          <Text style={{ color: isSelected ? 'white' : themeTextPrimary, fontSize: 11 }}>
+                            {option.label}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                  <TextInput
+                    placeholder="Wysokosc warstwy (cm) - opcjonalnie"
+                    placeholderTextColor={themePlaceholder}
+                    value={layer.heightCm ?? ''}
+                    onChangeText={(value) =>
+                      setTankSubstrateLayers((prev) =>
+                        prev.map((entry) =>
+                          entry.id === layer.id ? { ...entry, heightCm: value } : entry
+                        )
+                      )
+                    }
+                    keyboardType="numeric"
+                    style={{
+                      marginTop: 8,
+                      borderWidth: 1,
+                      borderColor: themeInputBorder,
+                      color: themeInputText,
+                      paddingHorizontal: 10,
+                      paddingVertical: 8,
+                      borderRadius: 8,
+                      backgroundColor: themeInputBg,
+                    }}
+                  />
+                  <Pressable
+                    onPress={() =>
+                      setTankSubstrateLayers((prev) =>
+                        prev.map((entry) =>
+                          entry.id === layer.id
+                            ? { ...entry, affectsWater: !entry.affectsWater }
+                            : entry
+                        )
+                      )
+                    }
+                    style={{ marginTop: 8 }}>
+                    <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
+                      {layer.affectsWater ? 'Wplywa na parametry wody: tak' : 'Wplywa na parametry wody: nie'}
+                    </Text>
+                  </Pressable>
+                  {tankSubstrateLayers.length > 1 ? (
+                    <Pressable
+                      onPress={() => {
+                        setTankSubstrateLayers((prev) => {
+                          const next = prev.filter((entry) => entry.id !== layer.id);
+                          syncTankSubstratesFromLayers(next);
+                          return next;
+                        });
+                      }}
+                      style={{ marginTop: 8 }}>
+                      <Text style={{ color: themeDangerText, fontSize: 12, fontWeight: '700' }}>
+                        Usun warstwe
+                      </Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              ))}
+            </View>
+            <Pressable
+              onPress={() =>
+                setTankSubstrateLayers((prev) => {
+                  const next = [...prev, createEmptySubstrateLayer()];
+                  syncTankSubstratesFromLayers(next);
+                  return next;
+                })
+              }
+              style={{
+                marginTop: 10,
+                borderWidth: 1,
+                borderColor: themeBorderStrong,
+                borderRadius: 8,
+                paddingVertical: 8,
+                paddingHorizontal: 10,
+                backgroundColor: themeCardBg,
+              }}>
+              <Text style={{ color: themeTextPrimary, fontWeight: '700', textAlign: 'center' }}>
+                Dodaj podloze
+              </Text>
+            </Pressable>
+          </>
+        ) : null}
+
+        {currentStepId === 'water' ? (
+          <>
+            <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
+              Mozesz zostawic wartosci domyslne albo dopasowac zakresy do swojej obsady, roslin
+              i sposobu prowadzenia akwarium.
+            </Text>
+            {renderTankWaterTargetsSection(`${scopeKey}-water`)}
+          </>
+        ) : null}
+
+        {currentStepId === 'temperature' ? (
+          <>
+            <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
+              Podaj docelowa temperature wody oraz typowa temperature w pomieszczeniu. Dla oceny
+              grzalki najwazniejsza jest roznica miedzy docelowa temperatura wody a najnizsza
+              temperatura pomieszczenia.
+            </Text>
+            <TextInput
+              placeholder="Docelowa temperatura wody (C)"
+              placeholderTextColor={themePlaceholder}
+              value={tankTargetTemperatureC}
+              onChangeText={setTankTargetTemperatureC}
+              keyboardType="numeric"
+              style={{
+                borderWidth: 1,
+                borderColor: themeInputBorder,
+                color: themeInputText,
+                padding: 10,
+                marginBottom: 8,
+                backgroundColor: themeInputBg,
+                borderRadius: 8,
+              }}
+            />
+            <TextInput
+              placeholder="Typowa temperatura pomieszczenia (C)"
+              placeholderTextColor={themePlaceholder}
+              value={tankRoomTempTypical}
+              onChangeText={setTankRoomTempTypical}
+              keyboardType="numeric"
+              style={{
+                borderWidth: 1,
+                borderColor: themeInputBorder,
+                color: themeInputText,
+                padding: 10,
+                marginBottom: 8,
+                backgroundColor: themeInputBg,
+                borderRadius: 8,
+              }}
+            />
+            <TextInput
+              placeholder="Minimalna temperatura pomieszczenia (C)"
+              placeholderTextColor={themePlaceholder}
+              value={tankRoomTempMin}
+              onChangeText={setTankRoomTempMin}
+              keyboardType="numeric"
+              style={{
+                borderWidth: 1,
+                borderColor: themeInputBorder,
+                color: themeInputText,
+                padding: 10,
+                marginBottom: 8,
+                backgroundColor: themeInputBg,
+                borderRadius: 8,
+              }}
+            />
+            <TextInput
+              placeholder="Maksymalna temperatura pomieszczenia (C) - opcjonalnie"
+              placeholderTextColor={themePlaceholder}
+              value={tankRoomTempMax}
+              onChangeText={setTankRoomTempMax}
+              keyboardType="numeric"
+              style={{
+                borderWidth: 1,
+                borderColor: themeInputBorder,
+                color: themeInputText,
+                padding: 10,
+                marginBottom: 8,
+                backgroundColor: themeInputBg,
+                borderRadius: 8,
+              }}
+            />
+            <Pressable
+              onPress={() => setTankHasLid((prev) => !prev)}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 8,
+              }}>
+              <View
+                style={{
+                  width: 20,
+                  height: 20,
+                  borderRadius: 5,
+                  borderWidth: 1,
+                  borderColor: tankHasLid ? themeAccent : themeBorderStrong,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  backgroundColor: tankHasLid ? '#102235' : themeCardBg,
+                }}>
+                <Text
+                  style={{
+                    color: tankHasLid ? 'white' : 'transparent',
+                    fontSize: 12,
+                    fontWeight: '700',
+                  }}>
+                  X
+                </Text>
+              </View>
+              <Text style={{ color: themeTextPrimary, fontWeight: '700' }}>
+                Akwarium ma pokrywe
+              </Text>
+            </Pressable>
+          </>
+        ) : null}
+
+        {isSummaryStep ? (
+          <>
+            <View
+              style={{
+                borderWidth: 1,
+                borderColor: themeBorder,
+                borderRadius: 10,
+                padding: 10,
+                backgroundColor: themeCardBg,
+                gap: 4,
+              }}>
+              <Text style={{ color: themeTextSecondary }}>
+                Nazwa: <Text style={{ color: themeTextPrimary }}>{tankName || '-'}</Text>
+              </Text>
+              <Text style={{ color: themeTextSecondary }}>
+                Litraz: <Text style={{ color: themeTextPrimary }}>{tankLiters || '-'} l</Text>
+              </Text>
+              <Text style={{ color: themeTextSecondary }}>
+                Sposob uruchomienia:{' '}
+                <Text style={{ color: themeTextPrimary }}>{wizardStartTypeLabel(tankStartType)}</Text>
+              </Text>
+              {tankStartType === 'based_on_existing' ? (
+                <Text style={{ color: themeTextSecondary }}>
+                  Akwarium bazowe:{' '}
+                  <Text style={{ color: themeTextPrimary }}>
+                    {selectedSourceTank?.name ?? 'nie wybrano'}
+                  </Text>
+                </Text>
+              ) : null}
+              <Text style={{ color: themeTextSecondary }}>
+                Onboarding:{' '}
+                <Text style={{ color: themeTextPrimary }}>{tankOnboardingEnabled ? 'tak' : 'nie'}</Text>
+              </Text>
+              <Text style={{ color: themeTextSecondary }}>
+                Profil: <Text style={{ color: themeTextPrimary }}>{wizardProfileLabel(tankWizardProfile)}</Text>
+              </Text>
+              <Text style={{ color: themeTextSecondary }}>
+                Podloze:{' '}
+                <Text style={{ color: themeTextPrimary }}>
+                  {tankSubstrateLayers.length > 0
+                    ? tankSubstrateLayers
+                        .map((layer) => {
+                          const label =
+                            WIZARD_SUBSTRATE_LAYER_OPTIONS.find(
+                              (item) => item.value === layer.type
+                            )?.label ?? 'Inne';
+                          return layer.heightCm ? `${label} (${layer.heightCm} cm)` : label;
+                        })
+                        .join(', ')
+                    : '-'}
+                </Text>
+              </Text>
+              <Text style={{ color: themeTextSecondary }}>
+                Docelowa temperatura:{' '}
+                <Text style={{ color: themeTextPrimary }}>{tankTargetTemperatureC || '-'} C</Text>
+              </Text>
+              <Text style={{ color: themeTextSecondary }}>
+                Temperatura pomieszczenia:{' '}
+                <Text style={{ color: themeTextPrimary }}>
+                  typowa {tankRoomTempTypical || '-'} C, min {tankRoomTempMin || '-'} C
+                  {tankRoomTempMax ? `, max ${tankRoomTempMax} C` : ''}
+                </Text>
+              </Text>
+              <Text style={{ color: themeTextSecondary }}>
+                Parametry wody:{' '}
+                <Text style={{ color: themeTextPrimary }}>
+                  {profileUsesManualParameters ? 'recznie dostosowane' : 'domyslne z profilu'}
+                </Text>
+              </Text>
+            </View>
+          </>
+        ) : null}
+
+        <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+          <Pressable
+            onPress={canGoBack ? handleAddTankWizardBack : handleCancelAddTank}
+            style={{
+              flex: 1,
+              borderWidth: 1,
+              borderColor: themeBorderStrong,
+              borderRadius: 8,
+              paddingVertical: 10,
+              alignItems: 'center',
+              justifyContent: 'center',
+              backgroundColor: themeCardBg,
+            }}>
+            <Text style={{ color: themeTextPrimary, fontWeight: '700' }}>
+              {canGoBack ? 'Wstecz' : t('cancel')}
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              if (isSummaryStep) {
+                handleSaveTank();
+                return;
+              }
+              handleAddTankWizardNext();
+            }}
+            style={{
+              flex: 1,
+              borderWidth: 1,
+              borderColor: themeSuccessBg,
+              borderRadius: 8,
+              paddingVertical: 10,
+              alignItems: 'center',
+              justifyContent: 'center',
+              backgroundColor: themeSuccessBg,
+              opacity: addTankBusy ? 0.7 : 1,
+            }}>
+            <Text style={{ color: 'white', fontWeight: '700' }}>
+              {isSummaryStep ? (addTankBusy ? t('adding') : 'Utworz akwarium') : 'Dalej'}
+            </Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  };
+
+  useEffect(() => {
     if (tankWaterProfileCustomized) {
+      return;
+    }
+    if (tankWizardProfile === 'species_only') {
       return;
     }
 
@@ -13150,7 +14572,7 @@ export default function HomeScreen() {
         autoProfile
       )
     );
-  }, [tankAquariumType, tankWaterProfileCustomized]);
+  }, [tankAquariumType, tankWaterProfileCustomized, tankWizardProfile]);
 
   const resetCustomEquipmentForm = useCallback(() => {
     setIsCustomEquipmentFormVisible(false);
@@ -13833,31 +15255,76 @@ export default function HomeScreen() {
       }
 
       const liters = parsePositiveNumberOrThrow('litraz', tankLiters);
-      const aquariumType = normalizeAquariumType(tankAquariumType);
+      const startType = normalizeAddTankStartType(tankStartType);
+      const profileMapping = mapWizardProfileToModel(tankWizardProfile);
+      const aquariumType = normalizeAquariumType(
+        tankAquariumType || profileMapping.aquariumType
+      );
       if (!aquariumType) {
         throw new Error('Wybierz typ akwarium przed zapisaniem onboardingu.');
       }
+      const lengthCm = parseOptionalNonNegativeNumberOrThrow(
+        'dlugosc akwarium',
+        tankLengthCm
+      );
+      const widthCm = parseOptionalNonNegativeNumberOrThrow(
+        'szerokosc akwarium',
+        tankWidthCm
+      );
+      const heightCm = parseOptionalNonNegativeNumberOrThrow(
+        'wysokosc akwarium',
+        tankHeightCm
+      );
       const targetTemperatureC = parsePositiveNumberOrThrow(
         'temperatura docelowa',
         tankTargetTemperatureC || '25'
       );
-      const ambientTemperatureC = String(tankAmbientTemperatureC ?? '').trim()
-        ? parseOptionalNonNegativeNumberOrThrow(
-            'temperatura pomieszczenia',
-            tankAmbientTemperatureC
-          )
-        : null;
-      const roomTemperatureMode = normalizeRoomTemperatureMode(
-        tankRoomTemperatureMode
+      const roomTempMin = parseOptionalNonNegativeNumberOrThrow(
+        'minimalna temperatura pomieszczenia',
+        tankRoomTempMin
       );
+      const roomTempTypical = parseOptionalNonNegativeNumberOrThrow(
+        'typowa temperatura pomieszczenia',
+        tankRoomTempTypical
+      );
+      if (String(tankRoomTempMax ?? '').trim()) {
+        parseOptionalNonNegativeNumberOrThrow(
+          'maksymalna temperatura pomieszczenia',
+          tankRoomTempMax
+        );
+      }
+      const ambientTemperatureRaw =
+        roomTempMin ??
+        roomTempTypical ??
+        (String(tankAmbientTemperatureC ?? '').trim()
+          ? parseOptionalNonNegativeNumberOrThrow(
+              'temperatura pomieszczenia',
+              tankAmbientTemperatureC
+            )
+          : null);
+      const ambientTemperatureC = ambientTemperatureRaw;
+      const roomTemperatureMode = ambientTemperatureC === null
+        ? normalizeRoomTemperatureMode(tankRoomTemperatureMode)
+        : 'custom';
+      const substrateTypesFromLayers =
+        tankSubstrateLayers.length > 0
+          ? tankSubstrateLayers
+              .map((layer) => getWizardSubstrateLayerModelValue(layer?.type))
+              .filter(Boolean)
+          : [];
       const substrateTypes = normalizeSubstrateTypes(
-        tankSubstrateTypes.length > 0 ? tankSubstrateTypes : tankSubstrateType
+        substrateTypesFromLayers.length > 0
+          ? substrateTypesFromLayers
+          : tankSubstrateTypes.length > 0
+            ? tankSubstrateTypes
+            : tankSubstrateType
       );
       const substrateType = substrateTypes[0] ?? '';
       const defaultWaterProfile = getDefaultWaterProfileForAquariumType(aquariumType);
-      const waterProfile = tankWaterProfileCustomized
-        ? normalizeWaterProfile(tankWaterProfile || defaultWaterProfile)
-        : defaultWaterProfile;
+      const resolvedWaterProfile = normalizeWaterProfile(
+        tankWaterProfile || profileMapping.waterProfile || defaultWaterProfile
+      );
+      const waterProfile = resolvedWaterProfile || defaultWaterProfile;
       const draftTargetRanges = tankWaterProfileCustomized
         ? parseTankTargetRangeDraftOrThrow(tankTargetRangeDraft, waterProfile)
         : getWaterTargetDefaults(waterProfile);
@@ -13887,7 +15354,10 @@ export default function HomeScreen() {
         }
       }
 
-      const onboardingMode = normalizeOnboardingMode(tankOnboardingMode);
+      const onboardingMode = normalizeOnboardingMode(
+        tankOnboardingMode || onboardingModeFromStartType(startType)
+      );
+      const onboardingEnabled = Boolean(tankOnboardingEnabled);
       const now = new Date();
       const tankSanitizationPatch = Object.entries(
         buildTankRuleSanitizationPatch(selectedTank)
@@ -13932,6 +15402,9 @@ export default function HomeScreen() {
           name,
           liters,
           aquariumType,
+          lengthCm: lengthCm === null ? deleteField() : lengthCm,
+          widthCm: widthCm === null ? deleteField() : widthCm,
+          heightCm: heightCm === null ? deleteField() : heightCm,
           substrateType,
           substrateTypes,
           waterProfile,
@@ -13944,6 +15417,7 @@ export default function HomeScreen() {
             waterProfile === 'single_species'
               ? singleSpeciesFishId
               : deleteField(),
+          onboardingEnabled,
           onboardingMode,
           onboardingStartAt: nextOnboardingStartAt,
           ...(shouldResetOnboardingPlan ? { onboardingTaskChecks: {} } : {}),
@@ -13979,6 +15453,9 @@ export default function HomeScreen() {
           name,
           liters,
           aquariumType,
+          ...(lengthCm === null ? {} : { lengthCm }),
+          ...(widthCm === null ? {} : { widthCm }),
+          ...(heightCm === null ? {} : { heightCm }),
           substrateType,
           substrateTypes,
           waterProfile,
@@ -13991,6 +15468,7 @@ export default function HomeScreen() {
           ...(waterProfile === 'single_species' && singleSpeciesFishId
             ? { singleSpeciesFishId }
             : {}),
+          onboardingEnabled,
           onboardingMode,
           onboardingStartAt: now,
           createdAt: now,
@@ -14023,9 +15501,22 @@ export default function HomeScreen() {
 
       setTankName('');
       setTankLiters('');
+      setTankLengthCm('');
+      setTankWidthCm('');
+      setTankHeightCm('');
+      setIsTankDimensionsExpanded(false);
+      setAddTankWizardStepId('basic');
+      setTankStartType('new_from_scratch');
+      setTankBasedOnExistingTankId('');
+      setTankWizardProfile('general');
+      setTankRoomTempTypical('');
+      setTankRoomTempMin('');
+      setTankRoomTempMax('');
+      setTankHasLid(false);
       setTankAquariumType('');
       setTankSubstrateType('');
       setTankSubstrateTypes([]);
+      setTankSubstrateLayers([createEmptySubstrateLayer()]);
       const resetProfile = getDefaultWaterProfileForAquariumType('');
       setTankWaterProfile(resetProfile);
       setTankSingleSpeciesFishId('');
@@ -14040,7 +15531,8 @@ export default function HomeScreen() {
       setTankTargetTemperatureC('25');
       setTankAmbientTemperatureC('');
       setTankRoomTemperatureMode('normal');
-      setTankOnboardingMode('existing_running');
+      setTankOnboardingEnabled(true);
+      setTankOnboardingMode('fresh_start');
       await fetchTanks(user.uid, preferredTankId ?? undefined);
       await fetchHomeData(user.uid);
 
@@ -14065,9 +15557,7 @@ export default function HomeScreen() {
               ? 'Akwarium dodane. Wlaczylismy onboarding fresh start (dzien 1/14).'
               : onboardingMode === 'restart'
                 ? 'Akwarium dodane. Wlaczylismy onboarding restartu (dzien 1/14).'
-                : onboardingMode === 'mature_media_start'
-                  ? 'Akwarium dodane. Wlaczylismy onboarding startu na dojrzalym medium (dzien 1/14).'
-                  : 'Akwarium dodane. Wlaczylismy onboarding dla dzialajacego zbiornika (dzien 1/14).'
+                : 'Akwarium dodane. Wlaczylismy onboarding startu na dojrzalym medium (dzien 1/14).'
           );
         }
       }
@@ -14680,6 +16170,8 @@ export default function HomeScreen() {
     activeSection,
     editingTankId,
     handleCloseEquipmentCatalog,
+    handleCancelAddTank,
+    handleCancelEditTank,
     handleCloseDeleteAccountReauthModal,
     handleCloseFishAddModal,
     handleCloseHomeScoreDetails,
@@ -14964,6 +16456,65 @@ export default function HomeScreen() {
       );
     } finally {
       setOnboardingTaskBusy(false);
+    }
+  };
+
+  const handleSetTankOnboardingEnabled = async (enabled) => {
+    if (!selectedTank?.id || !user?.uid || onboardingToggleBusy) {
+      return;
+    }
+    if (selectedTankLockedByPlan) {
+      alert('To akwarium jest w trybie tylko do odczytu w obecnym planie.');
+      return;
+    }
+
+    const nextEnabled = Boolean(enabled);
+    setOnboardingToggleBusy(true);
+    try {
+      const updatePayload = {
+        ...buildTankRuleSanitizationPatch(selectedTank),
+        onboardingEnabled: nextEnabled,
+        updatedAt: new Date(),
+      };
+      if (nextEnabled && !selectedTank?.onboardingStartAt) {
+        updatePayload.onboardingStartAt = new Date();
+        updatePayload.onboardingTaskChecks = {};
+      }
+
+      await updateDoc(doc(db, 'tanks', selectedTank.id), updatePayload);
+
+      setTanks((prev) =>
+        prev.map((tank) =>
+          tank.id === selectedTank.id
+            ? {
+                ...tank,
+                onboardingEnabled: nextEnabled,
+                ...(nextEnabled && !tank?.onboardingStartAt
+                  ? { onboardingStartAt: new Date(), onboardingTaskChecks: {} }
+                  : {}),
+              }
+            : tank
+        )
+      );
+      setSelectedTank((prev) =>
+        !prev
+          ? prev
+          : {
+              ...prev,
+              onboardingEnabled: nextEnabled,
+              ...(nextEnabled && !prev?.onboardingStartAt
+                ? { onboardingStartAt: new Date(), onboardingTaskChecks: {} }
+                : {}),
+            }
+      );
+      alert(nextEnabled ? 'Onboarding wlaczony.' : 'Onboarding wylaczony.');
+    } catch (error) {
+      alert(
+        'Blad zmiany statusu onboardingu: ' +
+          (error instanceof Error ? error.message : '')
+      );
+    } finally {
+      setOnboardingToggleBusy(false);
     }
   };
 
@@ -17991,7 +19542,7 @@ export default function HomeScreen() {
         .map((item) => {
           const issues = checkPlantCompatibility(
             item,
-            currentMeasurement,
+            currentMeasurementDisplay,
             selectedTankLiters,
             selectedTankEnvironmentProfile,
             { fishItems: selectedTankFishItems }
@@ -18004,7 +19555,13 @@ export default function HomeScreen() {
           };
         });
     },
-    [currentMeasurement, selectedTankEnvironmentProfile, selectedTankLiters, stockItems, t]
+    [
+      currentMeasurementDisplay,
+      selectedTankEnvironmentProfile,
+      selectedTankLiters,
+      stockItems,
+      t,
+    ]
   );
   const plantCompatibilitySummary = useMemo(
     () => summarizeCompatibilityResults(plantCompatibilityResults),
@@ -18020,9 +19577,16 @@ export default function HomeScreen() {
         return;
       }
 
+      const visibleIssues = item.issues.filter(
+        (issueText) => !isWaterParameterIssueText(issueText)
+      );
+      if (visibleIssues.length === 0) {
+        return;
+      }
+
       warningsMap.set(
         item.id,
-        item.issues.map((issueText) => ({
+        visibleIssues.map((issueText) => ({
           text: issueText,
           severity: 'warning',
         }))
@@ -18050,12 +19614,21 @@ export default function HomeScreen() {
   );
   const stockingCompatibilitySections = useMemo(() => {
     const assessment = stockingCompatibility?.stockingAssessment ?? null;
+    const biologicalLoad = assessment?.biologicalLoad ?? null;
     const categories = stockingCompatibility?.categories ?? {};
     const riskToUi = (risk) => {
       if (risk === 'critical') return 'Niezgodne';
       if (risk === 'high') return 'Ryzykowne';
       if (risk === 'medium') return 'Uwaga';
       return 'OK';
+    };
+    const formatBioloadValue = (value) => {
+      const numeric = Number(value);
+      return Number.isFinite(numeric) ? numeric.toFixed(2) : '0.00';
+    };
+    const formatPercentValue = (value) => {
+      const numeric = Number(value);
+      return Number.isFinite(numeric) ? `${Math.round(numeric)}%` : '0%';
     };
     const behaviorCategoryKeys = [
       'aggression',
@@ -18106,18 +19679,46 @@ export default function HomeScreen() {
     const spaceDetails = [
       ...new Set([...(categories?.tankSize?.problems ?? [])].filter(Boolean)),
     ].slice(0, 5);
-    const filtration = assessment?.filtration ?? {};
-    const filtrationStatusUi =
-      String(filtration?.status ?? '').toLowerCase() === 'za slaba'
-        ? 'Ryzykowne'
-        : String(filtration?.status ?? '').toLowerCase() === 'za silny nurt'
-          ? 'Ryzykowne'
-          : String(filtration?.status ?? '').toLowerCase() === 'mocna'
-            ? 'Uwaga'
-            : String(filtration?.status ?? '').toLowerCase() === 'nadfiltracja'
-              ? 'Uwaga'
-              : 'OK';
     return [
+      {
+        key: 'biologicalLoad',
+        label: 'Bioload',
+        data: {
+          uiStatus: riskToUi(
+            biologicalLoad?.adjustedRisk ?? biologicalLoad?.rawRisk ?? 'low'
+          ),
+          problems: [
+            biologicalLoad?.message,
+            `Bioload index (obsada): ${formatBioloadValue(
+              biologicalLoad?.bioloadIndexFromStocking
+            )}`,
+            `Bioload index (realny): ${formatBioloadValue(
+              biologicalLoad?.bioloadIndexReal
+            )}`,
+            `Kompensacja filtracji: ${formatPercentValue(
+              biologicalLoad?.filtrationCompensation
+            )} (-${formatBioloadValue(
+              biologicalLoad?.filtrationIndexReduction
+            )})`,
+            `Kompensacja roslin: ${formatPercentValue(
+              biologicalLoad?.plantCompensation
+            )} (-${formatBioloadValue(
+              biologicalLoad?.plantIndexReduction
+            )})`,
+            `Kompensacja laczna: ${formatPercentValue(
+              biologicalLoad?.totalCompensation
+            )} (-${formatBioloadValue(
+              biologicalLoad?.totalIndexReduction
+            )})`,
+          ].filter(Boolean),
+          details: [
+            `Progi: OK < ${BIOLOAD_RISK_THRESHOLDS.medium.toFixed(2)}, Uwaga ${BIOLOAD_RISK_THRESHOLDS.medium.toFixed(2)}-${(BIOLOAD_RISK_THRESHOLDS.high - 0.01).toFixed(2)}, Ryzykowne ${BIOLOAD_RISK_THRESHOLDS.high.toFixed(2)}-${(BIOLOAD_RISK_THRESHOLDS.critical - 0.01).toFixed(2)}, Niezgodne >= ${BIOLOAD_RISK_THRESHOLDS.critical.toFixed(2)}.`,
+            `Masa roslin/100 l: ${formatBioloadValue(
+              biologicalLoad?.plantMassPer100L
+            )}`,
+          ],
+        },
+      },
       {
         key: 'spaceLoad',
         label: 'Przestrzen',
@@ -18134,26 +19735,6 @@ export default function HomeScreen() {
           uiStatus: riskToUi(assessment?.behaviorLoad?.risk),
           problems: [assessment?.behaviorLoad?.message].filter(Boolean),
           details: uniqueBehaviorDetails,
-        },
-      },
-      {
-        key: 'filtration',
-        label: 'Filtracja',
-        data: {
-          uiStatus: filtrationStatusUi,
-          problems: [
-            `Deklarowany przeplyw: ${filtration?.declaredFlowTotalLph ?? 0} l/h`,
-            `Szacowany realny przeplyw: ${filtration?.estimatedRealFlowTotalLph ?? 0} l/h`,
-            `Wspolczynnik realnego przeplywu: ${Math.round(Number(filtration?.effectiveFlowFactor ?? 0) * 100)}%`,
-            `Obrot: ${filtration?.turnoverPerHour ?? 0}x/h`,
-            `Ocena: ${filtration?.status ?? 'brak danych'}`,
-          ].filter(Boolean),
-          details: [
-            ...(Array.isArray(filtration?.warnings) ? filtration.warnings : []),
-            filtration?.hasStrongCurrentWarning
-              ? 'Alert: wykryto potencjalnie zbyt silny nurt dla spokojnych gatunkow.'
-              : '',
-          ].filter(Boolean),
         },
       },
     ].map((item) => ({
@@ -18953,24 +20534,20 @@ export default function HomeScreen() {
       }
 
       const isOverdue = firstDueDayBucketMs < todayDayBucketMs;
-      let displayDayBucketMs = isOverdue ? todayDayBucketMs : firstDueDayBucketMs;
-      let iteration = 0;
-      while (displayDayBucketMs <= endDayBucketMs) {
+      const displayDayBucketMs = isOverdue ? todayDayBucketMs : firstDueDayBucketMs;
+      if (displayDayBucketMs <= endDayBucketMs) {
         addAction(displayDayBucketMs, {
           id: `${stateKey}-${displayDayBucketMs}`,
           stateKey,
           kind: stateKey,
-          level: isOverdue && iteration === 0 ? 'problem' : 'ok',
-          isOverdue: Boolean(isOverdue && iteration === 0),
+          level: isOverdue ? 'problem' : 'ok',
+          isOverdue: Boolean(isOverdue),
           dayBucketMs: displayDayBucketMs,
-          sourceDueDayBucketMs:
-            iteration === 0 ? firstDueDayBucketMs : firstDueDayBucketMs + iteration * intervalDays * dayMs,
+          sourceDueDayBucketMs: firstDueDayBucketMs,
           intervalDays,
           title,
           details,
         });
-        displayDayBucketMs += intervalDays * dayMs;
-        iteration += 1;
       }
     };
 
@@ -19022,9 +20599,8 @@ export default function HomeScreen() {
       }
 
       const isOverdue = nextDayBucketMs < todayDayBucketMs;
-      let displayDayBucketMs = isOverdue ? todayDayBucketMs : nextDayBucketMs;
-
-      while (displayDayBucketMs <= endDayBucketMs) {
+      const displayDayBucketMs = isOverdue ? todayDayBucketMs : nextDayBucketMs;
+      if (displayDayBucketMs <= endDayBucketMs) {
         const current = testsByDay.get(displayDayBucketMs) ?? [];
         current.push({
           ...plan,
@@ -19034,11 +20610,11 @@ export default function HomeScreen() {
           sourceDueDayBucketMs: nextDayBucketMs,
         });
         testsByDay.set(displayDayBucketMs, current);
-        displayDayBucketMs += cadenceDays * dayMs;
-        nextDayBucketMs += cadenceDays * dayMs;
       }
     });
-    testsByDay.forEach((dayPlans, dayBucketMs) => {
+    const nearestTestsDayBucketMs = [...testsByDay.keys()].sort((a, b) => a - b)[0];
+    if (Number.isFinite(nearestTestsDayBucketMs)) {
+      const dayPlans = testsByDay.get(nearestTestsDayBucketMs) ?? [];
       const labels = [...new Set(dayPlans.map((plan) => String(plan?.label ?? plan?.key ?? '').trim()).filter(Boolean))];
       const reasons = [...new Set(dayPlans.map((plan) => String(plan?.reason ?? '').trim()).filter(Boolean))];
       const highestLevel = dayPlans.reduce((level, plan) => {
@@ -19052,14 +20628,14 @@ export default function HomeScreen() {
         return level;
       }, 'ok');
       const hasOverduePlan = dayPlans.some((plan) => Boolean(plan?.isOverdue));
-      addAction(dayBucketMs, {
-        id: `water-tests-${dayBucketMs}`,
+      addAction(nearestTestsDayBucketMs, {
+        id: `water-tests-${nearestTestsDayBucketMs}`,
         stateKey: 'water_tests',
         kind: 'water_tests',
         level: hasOverduePlan ? 'problem' : highestLevel,
         isOverdue: hasOverduePlan,
-        dayBucketMs,
-        sourceDueDayBucketMs: dayPlans[0]?.sourceDueDayBucketMs ?? dayBucketMs,
+        dayBucketMs: nearestTestsDayBucketMs,
+        sourceDueDayBucketMs: dayPlans[0]?.sourceDueDayBucketMs ?? nearestTestsDayBucketMs,
         intervalDays: Math.max(
           1,
           ...dayPlans.map((plan) => Number(plan?.cadenceDays) || 1)
@@ -19070,7 +20646,7 @@ export default function HomeScreen() {
             ? reasons.slice(0, 2).join(' ')
             : 'Zakres testow dobrany do historii pomiarow i wymaganej czestotliwosci badan.',
       });
-    });
+    }
 
     const levelRank = (value) =>
       value === 'problem' ? 3 : value === 'warning' ? 2 : 1;
@@ -19818,10 +21394,75 @@ export default function HomeScreen() {
   const plantSuggestionItems = useMemo(
     () =>
       suggestionChangeItems.filter(
-        (item) => String(item?.area ?? '').toLowerCase() === 'rosliny'
+        (item) =>
+          String(item?.area ?? '').toLowerCase() === 'rosliny' &&
+          !isWaterParameterIssueText(item?.text)
       ),
     [suggestionChangeItems]
   );
+  const hasPlantMeasurements = useMemo(
+    () => Array.isArray(measurements) && measurements.length > 0,
+    [measurements]
+  );
+  const plantCareTips = useMemo(() => {
+    if (!selectedTank || plantsInTank.length === 0 || !hasPlantMeasurements) {
+      return [];
+    }
+
+    const tips = [];
+    const measurementForPlants = currentMeasurementDisplay ?? currentMeasurement ?? null;
+    const getMeasuredValue = (key) => {
+      if (!currentMeasurementValueSourceMsByKey.has(key)) {
+        return null;
+      }
+      const value = Number(getMeasurementNumericValue(measurementForPlants, key));
+      return Number.isFinite(value) ? value : null;
+    };
+    const getMinTarget = (key, fallbackValue) => {
+      const fromTank = Number(selectedTankTargetRanges?.[key]?.min);
+      return Number.isFinite(fromTank) ? fromTank : fallbackValue;
+    };
+
+    const lowNutrients = [];
+    [
+      { key: 'no3', label: 'NO3', min: getMinTarget('no3', 5), unit: 'mg/l' },
+      { key: 'po4', label: 'PO4', min: getMinTarget('po4', 0.1), unit: 'mg/l' },
+      { key: 'fe', label: 'Fe', min: getMinTarget('fe', 0.02), unit: 'mg/l' },
+      { key: 'k', label: 'K', min: getMinTarget('k', 5), unit: 'mg/l' },
+      { key: 'mg', label: 'Mg', min: getMinTarget('mg', 5), unit: 'mg/l' },
+    ].forEach((item) => {
+      const value = getMeasuredValue(item.key);
+      if (value !== null && value < Number(item.min)) {
+        lowNutrients.push(
+          `${item.label}: ${Math.round(value * 100) / 100} ${item.unit} (cel min ${item.min} ${item.unit})`
+        );
+      }
+    });
+
+    if (lowNutrients.length > 0) {
+      tips.push(
+        'Mozliwy niedobor skladnikow odzywczych. Jak to zrobic: startuj od ok. 1/3 dawki producenta 2-3 razy w tygodniu, po 7 dniach ocen rosliny i glony, potem zwiekszaj dawke o 10-20% tygodniowo az do stabilnego wzrostu.'
+      );
+    }
+
+    const co2 = getMeasuredValue('co2');
+    const co2Min = getMinTarget('co2', 10);
+    if (co2 !== null && co2 < co2Min) {
+      tips.push(
+        'CO2 jest za niskie dla stabilnego wzrostu roslin. Jak to zrobic: podnos podawanie bardzo stopniowo (ok. 10-15% co 2-3 dni), uruchamiaj CO2 1-2 h przed swiatlem i obserwuj ryby; przy oznakach dusznosci natychmiast zmniejsz dawke i zwieksz ruch tafli.'
+      );
+    }
+
+    return tips;
+  }, [
+    currentMeasurement,
+    currentMeasurementDisplay,
+    currentMeasurementValueSourceMsByKey,
+    hasPlantMeasurements,
+    plantsInTank,
+    selectedTank,
+    selectedTankTargetRanges,
+  ]);
   const equipmentSuggestionItems = useMemo(
     () =>
       suggestionChangeItems.filter(
@@ -22587,7 +24228,20 @@ export default function HomeScreen() {
                         )}
                       </View>
 
-                      <View style={{ marginTop: 10 }}>
+                    </View>
+                    <View
+                      style={{
+                        borderWidth: 1,
+                        borderColor: themeBorder,
+                        borderRadius: 14,
+                        padding: 14,
+                        marginBottom: 10,
+                        backgroundColor: themeCardBgAlt,
+                      }}>
+                      <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 14 }}>
+                        Ocena szczegolowa obsady
+                      </Text>
+                      <View style={{ marginTop: 8 }}>
                         {stockingCompatibilitySections.map((section) => (
                           <View
                             key={`stocking-category-${section.key}`}
@@ -22597,7 +24251,12 @@ export default function HomeScreen() {
                               paddingTop: 8,
                               marginTop: 8,
                             }}>
-                            <View
+                            <Pressable
+                              onPress={() =>
+                                setExpandedStockingSectionKey((prev) =>
+                                  prev === section.key ? '' : section.key
+                                )
+                              }
                               style={{
                                 flexDirection: 'row',
                                 alignItems: 'center',
@@ -22605,36 +24264,30 @@ export default function HomeScreen() {
                                 gap: 8,
                               }}>
                               <Text style={{ color: themeTextPrimary, fontSize: 12, fontWeight: '700' }}>
-                                {section.label}
+                                {section.label}: {section.data.uiStatus}
                               </Text>
-                              <Text
-                                style={{
-                                  color:
-                                    section.data.uiStatus === 'OK'
-                                      ? themeSuccessText
-                                      : section.data.uiStatus === 'Uwaga'
-                                        ? themeWarningText
-                                        : themeDangerText,
-                                  fontSize: 12,
-                                  fontWeight: '700',
-                                }}>
-                                {section.data.uiStatus}
+                              <Text style={{ color: themeTextSecondary, fontSize: 12, fontWeight: '700' }}>
+                                {expandedStockingSectionKey === section.key ? '^' : 'v'}
                               </Text>
-                            </View>
-                            {section.data.problems.slice(0, 2).map((problem, idx) => (
-                              <Text
-                                key={`stocking-category-problem-${section.key}-${idx}`}
-                                style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
-                                {problem}
-                              </Text>
-                            ))}
-                            {(section.data.details ?? []).map((detail, idx) => (
-                              <Text
-                                key={`stocking-category-detail-${section.key}-${idx}`}
-                                style={{ color: themeTextMuted, fontSize: 11, marginTop: 3 }}>
-                                {detail}
-                              </Text>
-                            ))}
+                            </Pressable>
+                            {expandedStockingSectionKey === section.key ? (
+                              <>
+                                {section.data.problems.slice(0, 4).map((problem, idx) => (
+                                  <Text
+                                    key={`stocking-category-problem-${section.key}-${idx}`}
+                                    style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
+                                    {problem}
+                                  </Text>
+                                ))}
+                                {(section.data.details ?? []).map((detail, idx) => (
+                                  <Text
+                                    key={`stocking-category-detail-${section.key}-${idx}`}
+                                    style={{ color: themeTextMuted, fontSize: 11, marginTop: 3 }}>
+                                    {detail}
+                                  </Text>
+                                ))}
+                              </>
+                            ) : null}
                           </View>
                         ))}
                       </View>
@@ -22991,6 +24644,34 @@ export default function HomeScreen() {
                   </>
                 ) : (
                   <>
+                    <View
+                      style={{
+                        borderWidth: 1,
+                        borderColor: themeBorder,
+                        borderRadius: 8,
+                        padding: 10,
+                        marginBottom: 10,
+                        backgroundColor: themeCardBgAlt,
+                      }}>
+                      <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 13 }}>
+                        Porady dla roslin
+                      </Text>
+                      {plantCareTips.length === 0 ? (
+                        <Text style={{ color: themeTextSecondary, marginTop: 6, fontSize: 12 }}>
+                          {hasPlantMeasurements
+                            ? 'Brak pilnych wskazowek nawozenia/CO2 na podstawie aktualnych pomiarow.'
+                            : 'Brak pomiarow. Dodaj pierwszy pomiar, aby uruchomic analize skladnikow i CO2.'}
+                        </Text>
+                      ) : (
+                        plantCareTips.map((tip, tipIndex) => (
+                          <Text
+                            key={`plant-care-tip-${tipIndex}`}
+                            style={{ color: themeTextSecondary, marginTop: 6, fontSize: 12 }}>
+                            - {tip}
+                          </Text>
+                        ))
+                      )}
+                    </View>
                     <View
                       style={{
                         borderWidth: 1,
@@ -24356,7 +26037,10 @@ export default function HomeScreen() {
                           const isSelectedCatalogPlant = selectedCatalogPlantIds.includes(
                             plant.id
                           );
-                          const plantIssues = plantCatalogCompatibilityById.get(plant.id) ?? [];
+                          const plantIssues =
+                            plantCatalogCompatibilityById
+                              .get(plant.id)
+                              ?.filter((issue) => !isWaterParameterIssueText(issue)) ?? [];
                           const nonMeasurementIssue = plantIssues.find(
                             (issue) => !issue.startsWith('Brak pomiaru -')
                           );
@@ -27991,164 +29675,7 @@ export default function HomeScreen() {
               <Text style={{ color: '#9da3af', marginBottom: 10 }}>
                 {t('noTankAddFirst')}
               </Text>
-
-              <TextInput
-                placeholder={t('tankNamePlaceholder')}
-                placeholderTextColor={themePlaceholder}
-                value={tankName}
-                onChangeText={setTankName}
-                style={{
-                  borderWidth: 1,
-                  borderColor: themeInputBorder,
-                  color: themeInputText,
-                  padding: 10,
-                  marginBottom: 10,
-                }}
-              />
-              <TextInput
-                placeholder={t('tankLitersPlaceholder')}
-                placeholderTextColor={themePlaceholder}
-                value={tankLiters}
-                onChangeText={setTankLiters}
-                keyboardType="numeric"
-                style={{
-                  borderWidth: 1,
-                  borderColor: themeInputBorder,
-                  color: themeInputText,
-                  padding: 10,
-                  marginBottom: 10,
-                }}
-              />
-              <Text
-                style={{
-                  color: '#9da3af',
-                  marginBottom: 6,
-                  fontSize: 12,
-                }}>
-                Start akwarium
-              </Text>
-              <Text
-                style={{
-                  color: '#9da3af',
-                  marginBottom: 8,
-                  fontSize: 11,
-                }}>
-                Wybierz tryb startu, a potem typ akwarium i cele parametrow w sekcji ponizej.
-              </Text>
-              <View
-                style={{
-                  flexDirection: 'row',
-                  flexWrap: 'wrap',
-                  gap: 8,
-                  marginBottom: 10,
-                }}>
-                {ONBOARDING_START_OPTIONS.map((option) => (
-                  <Pressable
-                    key={`add-onboarding-inline-${option.value}`}
-                    onPress={() => setTankOnboardingMode(option.value)}
-                    style={{
-                      borderWidth: 1,
-                      borderColor:
-                        tankOnboardingMode === option.value ? themeAccent : themeBorderStrong,
-                      backgroundColor:
-                        tankOnboardingMode === option.value
-                          ? '#102235'
-                          : isLightTheme
-                            ? '#ffffff'
-                            : '#111',
-                      borderRadius: 999,
-                      paddingVertical: 6,
-                      paddingHorizontal: 10,
-                    }}>
-                    <Text
-                      style={{
-                        color:
-                          tankOnboardingMode === option.value
-                            ? 'white'
-                            : themeTextPrimary,
-                        fontSize: 12,
-                      }}>
-                      {option.label}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-              <Text
-                style={{
-                  color: '#9da3af',
-                  marginBottom: 6,
-                  fontSize: 12,
-                }}>
-                {t('substrate')}
-              </Text>
-              <Text
-                style={{
-                  color: '#9da3af',
-                  marginBottom: 6,
-                  fontSize: 11,
-                }}>
-                Mozesz zaznaczyc wiecej niz jedno podloze.
-              </Text>
-              <View
-                style={{
-                  flexDirection: 'row',
-                  flexWrap: 'wrap',
-                  gap: 8,
-                  marginBottom: 10,
-                }}>
-                {SUBSTRATE_OPTIONS.map((option) => (
-                  <Pressable
-                    key={`add-substrate-${option.value}`}
-                    onPress={() => handleToggleTankSubstrate(option.value)}
-                    style={{
-                      borderWidth: 1,
-                      borderColor:
-                        isTankSubstrateSelected(option.value)
-                          ? themeAccent
-                          : themeBorderStrong,
-                      backgroundColor:
-                        isTankSubstrateSelected(option.value)
-                          ? '#102235'
-                          : isLightTheme
-                            ? '#ffffff'
-                            : '#111',
-                      borderRadius: 999,
-                      paddingVertical: 6,
-                      paddingHorizontal: 10,
-                    }}>
-                    <Text
-                      style={{
-                        color:
-                          isTankSubstrateSelected(option.value)
-                            ? 'white'
-                            : themeTextPrimary,
-                        fontSize: 12,
-                      }}>
-                      {option.labelKey ? t(option.labelKey) : option.label}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-
-              {renderTankWaterTargetsSection('inline-add')}
-              {renderTankHeaterContextSection('inline-add')}
-              <Pressable
-                onPress={handleSaveTank}
-                style={{
-                  backgroundColor: themeSuccessBg,
-                  padding: 12,
-                  borderRadius: 8,
-                  opacity: addTankBusy ? 0.7 : 1,
-                }}>
-                <Text
-                  style={{
-                    color: 'white',
-                    textAlign: 'center',
-                    fontWeight: '700',
-                  }}>
-                  {addTankBusy ? t('adding') : t('addTank')}
-                </Text>
-              </Pressable>
+              {renderAddTankWizard('inline-add')}
             </View>
           )}
 
@@ -28207,178 +29734,7 @@ export default function HomeScreen() {
                       alignItems: 'center',
                     }}>
                     <View style={{ width: '100%', maxWidth: formContentMaxWidth }}>
-                    <TextInput
-                      placeholder={t('tankNamePlaceholder')}
-                      placeholderTextColor={themePlaceholder}
-                      value={tankName}
-                      onChangeText={setTankName}
-                      style={{
-                        borderWidth: 1,
-                        borderColor: themeInputBorder,
-                        color: themeInputText,
-                        padding: 10,
-                        marginBottom: 10,
-                      }}
-                    />
-                    <TextInput
-                      placeholder={t('tankLitersPlaceholder')}
-                      placeholderTextColor={themePlaceholder}
-                      value={tankLiters}
-                      onChangeText={setTankLiters}
-                      keyboardType="numeric"
-                      style={{
-                        borderWidth: 1,
-                        borderColor: themeInputBorder,
-                        color: themeInputText,
-                        padding: 10,
-                        marginBottom: 10,
-                      }}
-                    />
-                    <Text
-                      style={{
-                        color: '#9da3af',
-                        marginBottom: 6,
-                        fontSize: 12,
-                      }}>
-                      Start akwarium
-                    </Text>
-                    <Text
-                      style={{
-                        color: '#9da3af',
-                        marginBottom: 8,
-                        fontSize: 11,
-                      }}>
-                      Wybierz tryb startu, a potem typ akwarium i cele parametrow w sekcji ponizej.
-                    </Text>
-                    <View
-                      style={{
-                        flexDirection: 'row',
-                        flexWrap: 'wrap',
-                        gap: 8,
-                        marginBottom: 10,
-                      }}>
-                      {ONBOARDING_START_OPTIONS.map((option) => (
-                        <Pressable
-                          key={`add-onboarding-modal-${option.value}`}
-                          onPress={() => setTankOnboardingMode(option.value)}
-                          style={{
-                            borderWidth: 1,
-                            borderColor:
-                              tankOnboardingMode === option.value ? themeAccent : themeBorderStrong,
-                            backgroundColor:
-                              tankOnboardingMode === option.value
-                                ? '#102235'
-                                : isLightTheme
-                                  ? '#ffffff'
-                                  : '#111',
-                            borderRadius: 999,
-                            paddingVertical: 6,
-                            paddingHorizontal: 10,
-                          }}>
-                          <Text
-                            style={{
-                              color:
-                                tankOnboardingMode === option.value
-                                  ? 'white'
-                                  : themeTextPrimary,
-                              fontSize: 12,
-                            }}>
-                            {option.label}
-                          </Text>
-                        </Pressable>
-                      ))}
-                    </View>
-                    <Text
-                      style={{
-                        color: '#9da3af',
-                        marginBottom: 6,
-                        fontSize: 12,
-                      }}>
-                      {t('substrate')}
-                    </Text>
-                    <Text
-                      style={{
-                        color: '#9da3af',
-                        marginBottom: 6,
-                        fontSize: 11,
-                      }}>
-                      Mozesz zaznaczyc wiecej niz jedno podloze.
-                    </Text>
-                    <View
-                      style={{
-                        flexDirection: 'row',
-                        flexWrap: 'wrap',
-                        gap: 8,
-                        marginBottom: 10,
-                      }}>
-                      {SUBSTRATE_OPTIONS.map((option) => (
-                        <Pressable
-                          key={`add-modal-substrate-${option.value}`}
-                          onPress={() => handleToggleTankSubstrate(option.value)}
-                          style={{
-                            borderWidth: 1,
-                            borderColor:
-                              isTankSubstrateSelected(option.value)
-                                ? themeAccent
-                                : themeBorderStrong,
-                            backgroundColor:
-                              isTankSubstrateSelected(option.value)
-                                ? '#102235'
-                                : isLightTheme
-                                  ? '#ffffff'
-                                  : '#111',
-                            borderRadius: 999,
-                            paddingVertical: 6,
-                            paddingHorizontal: 10,
-                          }}>
-                          <Text
-                            style={{
-                              color:
-                                isTankSubstrateSelected(option.value)
-                                  ? 'white'
-                                  : themeTextPrimary,
-                              fontSize: 12,
-                            }}>
-                            {option.labelKey ? t(option.labelKey) : option.label}
-                          </Text>
-                        </Pressable>
-                      ))}
-                    </View>
-
-                    {renderTankWaterTargetsSection('modal-add')}
-                    {renderTankHeaterContextSection('modal-add')}
-
-                    <Pressable
-                      onPress={handleSaveTank}
-                      style={{
-                        backgroundColor: themeSuccessBg,
-                        padding: 12,
-                        borderRadius: 8,
-                        opacity: addTankBusy ? 0.7 : 1,
-                      }}>
-                      <Text
-                        style={{
-                          color: 'white',
-                          textAlign: 'center',
-                          fontWeight: '700',
-                        }}>
-                        {addTankBusy ? t('adding') : t('addTank')}
-                      </Text>
-                    </Pressable>
-
-                    <Pressable
-                      onPress={handleCancelAddTank}
-                      style={{
-                        borderWidth: 1,
-                        borderColor: '#666',
-                        padding: 10,
-                        borderRadius: 8,
-                        marginTop: 8,
-                      }}>
-                      <Text style={{ color: themeTextPrimary, textAlign: 'center' }}>
-                        {t('cancel')}
-                      </Text>
-                    </Pressable>
+                      {renderAddTankWizard('modal-add')}
                     </View>
                   </ScrollView>
                 </KeyboardAvoidingView>
@@ -30237,6 +31593,7 @@ export default function HomeScreen() {
 
           {isReviewSection &&
             selectedTank &&
+            selectedTank.onboardingEnabled !== false &&
             tankOnboardingPlan.isActive && (
               <View
                 style={{
@@ -30251,275 +31608,397 @@ export default function HomeScreen() {
                   'Onboarding akwarium',
                   onboardingSectionSeverity
                 )}
-                <Text style={{ color: themeTextSecondary, marginTop: 6 }}>
-                  {tankOnboardingPlan.statusText}
-                </Text>
-                <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
-                  Tryb: {tankOnboardingPlan.modeLabel || tankOnboardingPlan.mode}
-                </Text>
-                {Array.isArray(tankOnboardingPlan.checklistStart) &&
-                tankOnboardingPlan.checklistStart.length > 0 ? (
-                  <View style={{ marginTop: 8 }}>
-                    <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
-                      Checklista startowa
-                    </Text>
-                    {tankOnboardingPlan.checklistStart.slice(0, 4).map((item, index) => (
-                      <Text
-                        key={`onboarding-checklist-${index}`}
-                        style={{ color: themeTextSecondary, marginTop: 3, fontSize: 12 }}>
-                        - {item}
-                      </Text>
-                    ))}
-                  </View>
-                ) : null}
-                {Array.isArray(tankOnboardingPlan.firstMeasurements) &&
-                tankOnboardingPlan.firstMeasurements.length > 0 ? (
-                  <View style={{ marginTop: 8 }}>
-                    <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
-                      Pierwsze pomiary
-                    </Text>
-                    {tankOnboardingPlan.firstMeasurements.slice(0, 4).map((item, index) => (
-                      <Text
-                        key={`onboarding-first-measure-${index}`}
-                        style={{ color: themeTextSecondary, marginTop: 3, fontSize: 12 }}>
-                        - {item}
-                      </Text>
-                    ))}
-                  </View>
-                ) : null}
-                {!hasTaskChecklistAccess ? (
-                  <Text style={{ color: themeTextSecondary, marginTop: 8, fontSize: 12 }}>
-                    {t('subscriptionTasksPlanLocked')}
-                  </Text>
-                ) : (
+                {selectedTank.onboardingEnabled === false ? (
                   <>
-                    <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
-                      Dzien {tankOnboardingPlan.dayNumber} / cel: dzien{' '}
-                      {tankOnboardingPlan.targetEndDay}
+                    <Text style={{ color: themeTextSecondary, marginTop: 6 }}>
+                      Onboarding jest recznie wylaczony dla tego akwarium.
+                    </Text>
+                    <Pressable
+                      onPress={() => handleSetTankOnboardingEnabled(true)}
+                      disabled={onboardingToggleBusy}
+                      style={{
+                        marginTop: 10,
+                        borderWidth: 1,
+                        borderColor: themeBorderStrong,
+                        borderRadius: 8,
+                        paddingVertical: 8,
+                        paddingHorizontal: 10,
+                        backgroundColor: themeCardBgAlt,
+                        opacity: onboardingToggleBusy ? 0.7 : 1,
+                      }}>
+                      <Text
+                        style={{
+                          color: themeTextPrimary,
+                          fontSize: 12,
+                          fontWeight: '700',
+                          textAlign: 'center',
+                        }}>
+                        {onboardingToggleBusy ? 'Zapisywanie...' : 'Wlacz onboarding'}
+                      </Text>
+                    </Pressable>
+                  </>
+                ) : null}
+                {selectedTank.onboardingEnabled === false ? null : (
+                  <>
+                    <Text style={{ color: themeTextSecondary, marginTop: 6 }}>
+                      {tankOnboardingPlan.statusText}
                     </Text>
                     <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
-                      Zadanie oznacza sie jako zrobione dopiero po zaznaczeniu checkboxa.
+                      Tryb: {tankOnboardingPlan.modeLabel || tankOnboardingPlan.mode}
                     </Text>
-
-                    <View style={{ marginTop: 10 }}>
-                      {visibleOnboardingRows.length === 0 ? (
-                        <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
-                          Na dzisiaj nie ma zadan. Wroc jutro po kolejne kroki.
+                    <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
+                      Aktualny dzien od startu: {tankOnboardingPlan.dayNumber}
+                    </Text>
+                    {tankOnboardingPlan.activeStep ? (
+                      <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
+                        Aktywny krok: {tankOnboardingPlan.activeStep.title} (
+                        {tankOnboardingPlan.activeStep.status})
+                      </Text>
+                    ) : null}
+                    {tankOnboardingPlan.nextStep ? (
+                      <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
+                        Nastepny krok: {tankOnboardingPlan.nextStep.title} (dzien{' '}
+                        {tankOnboardingPlan.nextStep.recommendedDay})
+                      </Text>
+                    ) : null}
+                    {tankOnboardingPlan.delayReason ? (
+                      <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
+                        Powod opoznienia: {tankOnboardingPlan.delayReason}
+                      </Text>
+                    ) : null}
+                    {Array.isArray(tankOnboardingPlan.requiredTestsNow) &&
+                    tankOnboardingPlan.requiredTestsNow.length > 0 ? (
+                      <View style={{ marginTop: 8 }}>
+                        <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+                          Wymagane testy teraz
                         </Text>
-                      ) : (
-                        visibleOnboardingRows.map((row) => {
-                        const isChecked = Boolean(selectedTankOnboardingTaskChecks[row.id]);
-                        const isOverdue = row.status === 'overdue' && !isChecked;
-                        const rowTimeLabel =
-                          row.status === 'current'
-                            ? 'teraz'
-                            : row.status === 'overdue'
-                              ? 'po terminie'
-                              : 'nastepne';
+                        {tankOnboardingPlan.requiredTestsNow.map((item, index) => (
+                          <Text
+                            key={`onboarding-required-test-${index}`}
+                            style={{ color: themeTextSecondary, marginTop: 3, fontSize: 12 }}>
+                            - {item}
+                          </Text>
+                        ))}
+                      </View>
+                    ) : null}
+                    {Array.isArray(tankOnboardingPlan.actionsToday) &&
+                    tankOnboardingPlan.actionsToday.length > 0 ? (
+                      <View style={{ marginTop: 8 }}>
+                        <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+                          Akcje na dzis
+                        </Text>
+                        {tankOnboardingPlan.actionsToday.map((item, index) => (
+                          <Text
+                            key={`onboarding-action-today-${index}`}
+                            style={{ color: themeTextSecondary, marginTop: 3, fontSize: 12 }}>
+                            - {item}
+                          </Text>
+                        ))}
+                      </View>
+                    ) : null}
+                    <Pressable
+                      onPress={() =>
+                        Alert.alert(
+                          'Wylaczyc onboarding?',
+                          'Ta opcja jest nieodwracalna. Po potwierdzeniu sekcja onboardingu zniknie dla tego akwarium.',
+                          [
+                            { text: 'Anuluj', style: 'cancel' },
+                            {
+                              text: 'Wylacz',
+                              style: 'destructive',
+                              onPress: () => {
+                                handleSetTankOnboardingEnabled(false);
+                              },
+                            },
+                          ]
+                        )
+                      }
+                      disabled={onboardingToggleBusy}
+                      style={{
+                        marginTop: 10,
+                        borderWidth: 1,
+                        borderColor: themeBorderStrong,
+                        borderRadius: 8,
+                        paddingVertical: 8,
+                        paddingHorizontal: 10,
+                        backgroundColor: themeCardBgAlt,
+                        opacity: onboardingToggleBusy ? 0.7 : 1,
+                      }}>
+                      <Text
+                        style={{
+                          color: themeTextPrimary,
+                          fontSize: 12,
+                          fontWeight: '700',
+                          textAlign: 'center',
+                        }}>
+                        {onboardingToggleBusy ? 'Zapisywanie...' : 'Wylacz onboarding'}
+                      </Text>
+                    </Pressable>
+                    {Array.isArray(tankOnboardingPlan.checklistStart) &&
+                    tankOnboardingPlan.checklistStart.length > 0 ? (
+                      <View style={{ marginTop: 8 }}>
+                        <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+                          Checklista startowa
+                        </Text>
+                        {tankOnboardingPlan.checklistStart.slice(0, 4).map((item, index) => (
+                          <Text
+                            key={`onboarding-checklist-${index}`}
+                            style={{ color: themeTextSecondary, marginTop: 3, fontSize: 12 }}>
+                            - {item}
+                          </Text>
+                        ))}
+                      </View>
+                    ) : null}
+                    {Array.isArray(tankOnboardingPlan.firstMeasurements) &&
+                    tankOnboardingPlan.firstMeasurements.length > 0 ? (
+                      <View style={{ marginTop: 8 }}>
+                        <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+                          Pierwsze pomiary
+                        </Text>
+                        {tankOnboardingPlan.firstMeasurements.slice(0, 4).map((item, index) => (
+                          <Text
+                            key={`onboarding-first-measure-${index}`}
+                            style={{ color: themeTextSecondary, marginTop: 3, fontSize: 12 }}>
+                            - {item}
+                          </Text>
+                        ))}
+                      </View>
+                    ) : null}
+                    {!hasTaskChecklistAccess ? (
+                      <Text style={{ color: themeTextSecondary, marginTop: 8, fontSize: 12 }}>
+                        {t('subscriptionTasksPlanLocked')}
+                      </Text>
+                    ) : (
+                      <>
+                        <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
+                          Dzien {tankOnboardingPlan.dayNumber} / cel: dzien{' '}
+                          {tankOnboardingPlan.targetEndDay}
+                        </Text>
+                        <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
+                          Zadanie oznacza sie jako zrobione dopiero po zaznaczeniu checkboxa.
+                        </Text>
 
-                        return (
-                          <View
-                            key={`onboarding-row-top-${row.id}`}
-                            style={{
-                              borderWidth: 1,
-                              borderColor: isChecked
-                                ? isLightTheme
-                                  ? '#86cf9d'
-                                  : '#2f9e44'
-                                : isOverdue
-                                  ? isLightTheme
-                                    ? '#e57373'
-                                    : '#b02a37'
-                                : row.level === 'warning'
-                                  ? isLightTheme
-                                    ? '#e8cb85'
-                                    : '#8a6a16'
-                                  : row.status === 'current'
-                                    ? isLightTheme
-                                      ? '#c9d9ef'
-                                      : '#335'
-                                    : themeBorder,
-                              backgroundColor: isChecked
-                                ? isLightTheme
-                                  ? '#eefaf0'
-                                  : '#102515'
-                                : isOverdue
-                                  ? isLightTheme
-                                    ? '#fff1f1'
-                                    : '#3a1518'
-                                : row.level === 'warning'
-                                  ? isLightTheme
-                                    ? '#fff9ec'
-                                    : '#2b2615'
-                                  : row.status === 'current'
-                                    ? isLightTheme
-                                      ? '#eef5ff'
-                                      : '#0f1e31'
-                                    : themeCardBgAlt,
-                              borderRadius: 8,
-                              padding: 8,
-                              marginTop: 8,
-                            }}>
-                            <View
-                              style={{
-                                flexDirection: 'row',
-                                alignItems: 'flex-start',
-                                gap: 8,
-                              }}>
-                              <Pressable
-                                onPress={(event) => {
-                                  event?.stopPropagation?.();
-                                  handleToggleOnboardingTaskCheck(row.id, !isChecked);
-                                }}
-                                disabled={onboardingTaskBusy}
+                        <View style={{ marginTop: 10 }}>
+                          {visibleOnboardingRows.length === 0 ? (
+                            <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
+                              Na dzisiaj nie ma zadan. Wroc jutro po kolejne kroki.
+                            </Text>
+                          ) : (
+                            visibleOnboardingRows.map((row) => {
+                            const isChecked = Boolean(selectedTankOnboardingTaskChecks[row.id]);
+                            const isOverdue = row.status === 'overdue' && !isChecked;
+                            const rowTimeLabel =
+                              row.status === 'current'
+                                ? 'teraz'
+                                : row.status === 'overdue'
+                                  ? 'po terminie'
+                                  : 'nastepne';
+
+                            return (
+                              <View
+                                key={`onboarding-row-top-${row.id}`}
                                 style={{
-                                  width: 22,
-                                  height: 22,
-                                  borderRadius: 6,
                                   borderWidth: 1,
                                   borderColor: isChecked
                                     ? isLightTheme
-                                      ? '#1f7a3a'
-                                      : '#9be7a3'
-                                    : themeBorderStrong,
+                                      ? '#86cf9d'
+                                      : '#2f9e44'
+                                    : isOverdue
+                                      ? isLightTheme
+                                        ? '#e57373'
+                                        : '#b02a37'
+                                    : row.level === 'warning'
+                                      ? isLightTheme
+                                        ? '#e8cb85'
+                                        : '#8a6a16'
+                                      : row.status === 'current'
+                                        ? isLightTheme
+                                          ? '#c9d9ef'
+                                          : '#335'
+                                        : themeBorder,
                                   backgroundColor: isChecked
                                     ? isLightTheme
-                                      ? '#e1f5e8'
-                                      : '#1a3521'
-                                    : themeCardBg,
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                  marginTop: 1,
-                                  opacity: onboardingTaskBusy ? 0.7 : 1,
-                                }}>
-                                <Text
-                                  style={{
-                                    color: isChecked
+                                      ? '#eefaf0'
+                                      : '#102515'
+                                    : isOverdue
                                       ? isLightTheme
-                                        ? '#1f7a3a'
-                                        : '#9be7a3'
-                                      : 'transparent',
-                                    fontWeight: '700',
-                                    fontSize: 13,
-                                  }}>
-                                  {isChecked ? 'X' : ''}
-                                </Text>
-                              </Pressable>
-
-                              <View style={{ flex: 1 }}>
-                                <Text
-                                  style={{
-                                    color: themeTextPrimary,
-                                    fontWeight: '700',
-                                    fontSize: 12,
-                                  }}>
-                                  Dzien {row.dayStart}
-                                  {row.dayEnd > row.dayStart ? `-${row.dayEnd}` : ''} |{' '}
-                                  {formatDateOnly(row.dueAtMs)} |{' '}
-                                  {isChecked ? 'zrobione' : rowTimeLabel}
-                                </Text>
-                                <Text style={{ color: themeTextSecondary, marginTop: 3 }}>
-                                  {row.text}
-                                </Text>
-                              </View>
-                            </View>
-                          </View>
-                        );
-                      })
-                      )}
-                    </View>
-
-                    {completedOnboardingRows.length > 0 && (
-                      <View style={{ marginTop: 10 }}>
-                        <Pressable
-                          onPress={() =>
-                            setIsCompletedOnboardingVisible((prev) => !prev)
-                          }
-                          style={{
-                            borderWidth: 1,
-                            borderColor: themeBorder,
-                            borderRadius: 8,
-                            paddingVertical: 8,
-                            paddingHorizontal: 10,
-                            backgroundColor: themeCardBgAlt,
-                          }}>
-                          <Text
-                            style={{
-                              color: themeTextPrimary,
-                              fontSize: 12,
-                              fontWeight: '700',
-                            }}>
-                            {isCompletedOnboardingVisible
-                              ? `Ukryj zrobione (${completedOnboardingRows.length})`
-                              : `Pokaz zrobione (${completedOnboardingRows.length})`}
-                          </Text>
-                        </Pressable>
-
-                        {isCompletedOnboardingVisible &&
-                          completedOnboardingRows.map((row) => (
-                            <View
-                              key={`onboarding-row-completed-${row.id}`}
-                              style={{
-                                borderWidth: 1,
-                                borderColor: isLightTheme ? '#86cf9d' : '#2f9e44',
-                                backgroundColor: isLightTheme ? '#eefaf0' : '#102515',
-                                borderRadius: 8,
-                                padding: 8,
-                                marginTop: 8,
-                              }}>
-                              <View
-                                style={{
-                                  flexDirection: 'row',
-                                  alignItems: 'flex-start',
-                                  gap: 8,
+                                        ? '#fff1f1'
+                                        : '#3a1518'
+                                    : row.level === 'warning'
+                                      ? isLightTheme
+                                        ? '#fff9ec'
+                                        : '#2b2615'
+                                      : row.status === 'current'
+                                        ? isLightTheme
+                                          ? '#eef5ff'
+                                          : '#0f1e31'
+                                        : themeCardBgAlt,
+                                  borderRadius: 8,
+                                  padding: 8,
+                                  marginTop: 8,
                                 }}>
-                                <Pressable
-                                  onPress={(event) => {
-                                    event?.stopPropagation?.();
-                                    handleToggleOnboardingTaskCheck(row.id, false);
-                                  }}
-                                  disabled={onboardingTaskBusy}
+                                <View
                                   style={{
-                                    width: 22,
-                                    height: 22,
-                                    borderRadius: 6,
-                                    borderWidth: 1,
-                                    borderColor: isLightTheme ? '#1f7a3a' : '#9be7a3',
-                                    backgroundColor: isLightTheme ? '#e1f5e8' : '#1a3521',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    marginTop: 1,
-                                    opacity: onboardingTaskBusy ? 0.7 : 1,
+                                    flexDirection: 'row',
+                                    alignItems: 'flex-start',
+                                    gap: 8,
                                   }}>
-                                  <Text
+                                  <Pressable
+                                    onPress={(event) => {
+                                      event?.stopPropagation?.();
+                                      handleToggleOnboardingTaskCheck(row.id, !isChecked);
+                                    }}
+                                    disabled={onboardingTaskBusy}
                                     style={{
-                                      color: isLightTheme ? '#1f7a3a' : '#9be7a3',
-                                      fontWeight: '700',
-                                      fontSize: 13,
+                                      width: 22,
+                                      height: 22,
+                                      borderRadius: 6,
+                                      borderWidth: 1,
+                                      borderColor: isChecked
+                                        ? isLightTheme
+                                          ? '#1f7a3a'
+                                          : '#9be7a3'
+                                        : themeBorderStrong,
+                                      backgroundColor: isChecked
+                                        ? isLightTheme
+                                          ? '#e1f5e8'
+                                          : '#1a3521'
+                                        : themeCardBg,
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      marginTop: 1,
+                                      opacity: onboardingTaskBusy ? 0.7 : 1,
                                     }}>
-                                  X
-                                  </Text>
-                                </Pressable>
+                                    <Text
+                                      style={{
+                                        color: isChecked
+                                          ? isLightTheme
+                                            ? '#1f7a3a'
+                                            : '#9be7a3'
+                                          : 'transparent',
+                                        fontWeight: '700',
+                                        fontSize: 13,
+                                      }}>
+                                      {isChecked ? 'X' : ''}
+                                    </Text>
+                                  </Pressable>
 
-                                <View style={{ flex: 1 }}>
-                                  <Text
-                                    style={{
-                                      color: themeTextPrimary,
-                                      fontWeight: '700',
-                                      fontSize: 12,
-                                    }}>
-                                    Dzien {row.dayStart}
-                                    {row.dayEnd > row.dayStart ? `-${row.dayEnd}` : ''} |{' '}
-                                    {formatDateOnly(row.dueAtMs)} | zrobione
-                                  </Text>
-                                  <Text style={{ color: themeTextSecondary, marginTop: 3 }}>
-                                    {row.text}
-                                  </Text>
+                                  <View style={{ flex: 1 }}>
+                                    <Text
+                                      style={{
+                                        color: themeTextPrimary,
+                                        fontWeight: '700',
+                                        fontSize: 12,
+                                      }}>
+                                      Dzien {row.dayStart}
+                                      {row.dayEnd > row.dayStart ? `-${row.dayEnd}` : ''} |{' '}
+                                      {formatDateOnly(row.dueAtMs)} |{' '}
+                                      {isChecked ? 'zrobione' : rowTimeLabel}
+                                    </Text>
+                                    <Text style={{ color: themeTextSecondary, marginTop: 3 }}>
+                                      {row.text}
+                                    </Text>
+                                  </View>
                                 </View>
                               </View>
-                            </View>
-                          ))}
-                      </View>
+                            );
+                          })
+                          )}
+                        </View>
+
+                        {completedOnboardingRows.length > 0 && (
+                          <View style={{ marginTop: 10 }}>
+                            <Pressable
+                              onPress={() =>
+                                setIsCompletedOnboardingVisible((prev) => !prev)
+                              }
+                              style={{
+                                borderWidth: 1,
+                                borderColor: themeBorder,
+                                borderRadius: 8,
+                                paddingVertical: 8,
+                                paddingHorizontal: 10,
+                                backgroundColor: themeCardBgAlt,
+                              }}>
+                              <Text
+                                style={{
+                                  color: themeTextPrimary,
+                                  fontSize: 12,
+                                  fontWeight: '700',
+                                }}>
+                                {isCompletedOnboardingVisible
+                                  ? `Ukryj zrobione (${completedOnboardingRows.length})`
+                                  : `Pokaz zrobione (${completedOnboardingRows.length})`}
+                              </Text>
+                            </Pressable>
+
+                            {isCompletedOnboardingVisible &&
+                              completedOnboardingRows.map((row) => (
+                                <View
+                                  key={`onboarding-row-completed-${row.id}`}
+                                  style={{
+                                    borderWidth: 1,
+                                    borderColor: isLightTheme ? '#86cf9d' : '#2f9e44',
+                                    backgroundColor: isLightTheme ? '#eefaf0' : '#102515',
+                                    borderRadius: 8,
+                                    padding: 8,
+                                    marginTop: 8,
+                                  }}>
+                                  <View
+                                    style={{
+                                      flexDirection: 'row',
+                                      alignItems: 'flex-start',
+                                      gap: 8,
+                                    }}>
+                                    <Pressable
+                                      onPress={(event) => {
+                                        event?.stopPropagation?.();
+                                        handleToggleOnboardingTaskCheck(row.id, false);
+                                      }}
+                                      disabled={onboardingTaskBusy}
+                                      style={{
+                                        width: 22,
+                                        height: 22,
+                                        borderRadius: 6,
+                                        borderWidth: 1,
+                                        borderColor: isLightTheme ? '#1f7a3a' : '#9be7a3',
+                                        backgroundColor: isLightTheme ? '#e1f5e8' : '#1a3521',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        marginTop: 1,
+                                        opacity: onboardingTaskBusy ? 0.7 : 1,
+                                      }}>
+                                      <Text
+                                        style={{
+                                          color: isLightTheme ? '#1f7a3a' : '#9be7a3',
+                                          fontWeight: '700',
+                                          fontSize: 13,
+                                        }}>
+                                      X
+                                      </Text>
+                                    </Pressable>
+
+                                    <View style={{ flex: 1 }}>
+                                      <Text
+                                        style={{
+                                          color: themeTextPrimary,
+                                          fontWeight: '700',
+                                          fontSize: 12,
+                                        }}>
+                                        Dzien {row.dayStart}
+                                        {row.dayEnd > row.dayStart ? `-${row.dayEnd}` : ''} |{' '}
+                                        {formatDateOnly(row.dueAtMs)} | zrobione
+                                      </Text>
+                                      <Text style={{ color: themeTextSecondary, marginTop: 3 }}>
+                                        {row.text}
+                                      </Text>
+                                    </View>
+                                  </View>
+                                </View>
+                              ))}
+                          </View>
+                        )}
+                      </>
                     )}
                   </>
                 )}

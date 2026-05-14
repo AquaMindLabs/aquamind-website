@@ -797,6 +797,786 @@ export function buildTodayActionPlanService(tank, context = {}) {
   };
 }
 
+const ONBOARDING_DELAY_MESSAGES = {
+  no2Detected:
+    'Ten krok zostal przesuniety, poniewaz NO2 jest nadal wykrywalne. Nie zwiekszaj obsady i wykonaj kolejny pomiar za 24-48 godzin.',
+  missingFreshNo2:
+    'Brakuje aktualnego pomiaru NO2. Przed przejsciem do kolejnego kroku wykonaj test. Bez tego aplikacja nie moze bezpiecznie ocenic gotowosci zbiornika.',
+  unstableTemperature:
+    'Temperatura nie jest jeszcze stabilna. Przed dodaniem obsady upewnij sie, ze akwarium utrzymuje docelowa temperature przez minimum 24-48 godzin.',
+  phSwing:
+    'pH zmienilo sie zauwazalnie wzgledem poprzedniego pomiaru. Przed kolejnym krokiem warto potwierdzic stabilnosc parametrow.',
+  highNo3:
+    'NO3 jest podwyzszone. Rozwaz podmiane wody i ponowny pomiar. Samo NO3 nie zawsze blokuje kolejny krok, ale przy wysokich wartosciach zwieksza ryzyko problemow.',
+};
+
+const NO2_FRESH_HOURS_BY_START_TYPE = {
+  new_from_scratch: 72,
+  restart: 36,
+  mature_media_start: 48,
+};
+
+const ONBOARDING_STEP_LIBRARY = {
+  new_from_scratch: [
+    {
+      id: 'nfs-day0-start',
+      title: 'Uruchomienie akwarium',
+      description:
+        'Akwarium zostalo zalozone. Najwazniejsze jest uruchomienie filtracji i stabilnych warunkow.',
+      startType: 'new_from_scratch',
+      earliestDay: 1,
+      recommendedDay: 1,
+      delayDays: 1,
+      actions: [
+        'Uruchom filtr 24/7.',
+        'Ustaw temperature docelowa.',
+        'Dodaj uzdatniacz i bakterie startowe (jesli uzywasz).',
+        'Nie wpuszczaj jeszcze ryb.',
+      ],
+      tests: ['temperatura', 'pH', 'KH', 'GH', 'opcjonalnie NO2/NO3'],
+      requiredMeasurements: ['temperature', 'ph', 'kh', 'gh'],
+    },
+    {
+      id: 'nfs-day1-equipment-stability',
+      title: 'Stabilizacja sprzetu',
+      description:
+        'Zbiornik stabilizuje temperature i prace sprzetu. Delikatne metnienie moze byc normalne.',
+      startType: 'new_from_scratch',
+      earliestDay: 2,
+      recommendedDay: 2,
+      delayDays: 1,
+      actions: [
+        'Sprawdz, czy filtr dziala poprawnie.',
+        'Kontroluj temperature.',
+        'Nie czysc filtra i unikaj duzych zmian.',
+      ],
+      tests: ['temperatura'],
+      requiredMeasurements: ['temperature'],
+    },
+    {
+      id: 'nfs-day3-first-no2',
+      title: 'Pierwsza kontrola NO2',
+      description:
+        'W akwarium moze zaczynac pojawiac sie NO2. To normalny etap dojrzewania biologicznego.',
+      startType: 'new_from_scratch',
+      earliestDay: 3,
+      recommendedDay: 3,
+      delayDays: 2,
+      actions: [
+        'Wykonaj pierwszy test NO2.',
+        'Nie wpuszczaj ryb, jesli NO2 jest wykrywalne.',
+      ],
+      tests: ['NO2', 'opcjonalnie NO3'],
+      requiredMeasurements: ['no2'],
+    },
+    {
+      id: 'nfs-day7-cycle-control',
+      title: 'Kontrola dojrzewania',
+      description:
+        'Zbiornik jest w trakcie dojrzewania. Najwazniejsza jest regularna obserwacja NO2.',
+      startType: 'new_from_scratch',
+      earliestDay: 7,
+      recommendedDay: 7,
+      delayDays: 2,
+      actions: [
+        'Kontynuuj pomiary NO2.',
+        'Nie dodawaj obsady.',
+        'Nie plucz mediow filtracyjnych pod kranem.',
+      ],
+      tests: ['NO2', 'NO3', 'pH/KH'],
+      requiredMeasurements: ['no2', 'no3'],
+    },
+    {
+      id: 'nfs-day14-readiness',
+      title: 'Ocena gotowosci',
+      description:
+        '14 dni to punkt kontrolny. O przejsciu dalej decyduja parametry, a nie sam uplyw czasu.',
+      startType: 'new_from_scratch',
+      earliestDay: 14,
+      recommendedDay: 14,
+      delayDays: 3,
+      actions: [
+        'Ocen, czy zbiornik moze przejsc dalej.',
+        'Jesli NO2 jest wykrywalne, przeloz kolejny krok o minimum 3 dni.',
+      ],
+      tests: ['NO2', 'NO3'],
+      requiredMeasurements: ['no2', 'no3', 'temperature'],
+      requiresNo2Zero: true,
+      requiresFreshNo2ForStocking: true,
+      blocksOnNo2: true,
+      blocksOnTemperature: true,
+    },
+    {
+      id: 'nfs-day21-first-stocking',
+      title: 'Pierwsza mala obsada',
+      description:
+        'Jesli NO2 utrzymuje sie na 0 i temperatura jest stabilna, mozna rozwazyc mala czesc obsady.',
+      startType: 'new_from_scratch',
+      earliestDay: 21,
+      recommendedDay: 21,
+      delayDays: 3,
+      actions: [
+        'Dodaj maksymalnie 20-30% planowanej obsady.',
+        'Karm oszczednie i obserwuj ryby.',
+      ],
+      tests: ['NO2 po dodaniu ryb', 'temperatura'],
+      requiredMeasurements: ['no2', 'temperature'],
+      requiresNo2Zero: true,
+      requiresNo2ZeroDays: 3,
+      requiresFreshNo2ForStocking: true,
+      requiresNoCriticalAlerts: true,
+      isStockingStep: true,
+      blocksOnNo2: true,
+      blocksOnTemperature: true,
+    },
+    {
+      id: 'nfs-day28-post-stocking',
+      title: 'Kontrola po pierwszej obsadzie',
+      description:
+        'Po dodaniu ryb filtr biologiczny dopasowuje sie do wiekszego obciazenia.',
+      startType: 'new_from_scratch',
+      earliestDay: 28,
+      recommendedDay: 28,
+      delayDays: 3,
+      actions: [
+        'Nie zwiekszaj obsady, jesli NO2 wzroslo.',
+        'Kontynuuj ostrozne karmienie.',
+      ],
+      tests: ['NO2', 'NO3'],
+      requiredMeasurements: ['no2', 'no3'],
+      requiresNo2Zero: true,
+      requiresFreshNo2ForStocking: true,
+      isStockingStep: true,
+      blocksOnNo2: true,
+    },
+    {
+      id: 'nfs-day35-gradual-stocking',
+      title: 'Stopniowe zwiekszenie obsady',
+      description:
+        'Jesli parametry pozostaly stabilne, mozna ostroznie dodac kolejna czesc obsady.',
+      startType: 'new_from_scratch',
+      earliestDay: 35,
+      recommendedDay: 35,
+      delayDays: 3,
+      actions: [
+        'Dodaj kolejna mala czesc obsady.',
+        'Unikaj duzego zwiekszenia obsady naraz.',
+      ],
+      tests: ['NO2', 'NO3'],
+      requiredMeasurements: ['no2', 'no3'],
+      requiresNo2Zero: true,
+      requiresFreshNo2ForStocking: true,
+      isStockingStep: true,
+      blocksOnNo2: true,
+    },
+    {
+      id: 'nfs-day42-finish',
+      title: 'Zakonczenie startu',
+      description:
+        'Akwarium wyglada na ustabilizowane i moze przejsc do standardowej rutyny.',
+      startType: 'new_from_scratch',
+      earliestDay: 42,
+      recommendedDay: 42,
+      delayDays: 3,
+      actions: [
+        'Zakoncz onboarding.',
+        'Przejdz do standardowego harmonogramu podmian i testow.',
+      ],
+      tests: ['NO2', 'NO3', 'temperatura'],
+      requiredMeasurements: ['no2', 'no3', 'temperature'],
+      requiresNo2Zero: true,
+      requiresFreshNo2ForStocking: true,
+      requiresNoCriticalAlerts: true,
+      isStockingStep: true,
+      blocksOnNo2: true,
+      blocksOnTemperature: true,
+    },
+  ],
+  restart: [
+    {
+      id: 'restart-day0',
+      title: 'Restart akwarium',
+      description:
+        'Po restarcie zbiornik moze reagowac niestabilnie, nawet gdy czesc biologii zostala zachowana.',
+      startType: 'restart',
+      earliestDay: 1,
+      recommendedDay: 1,
+      delayDays: 1,
+      actions: [
+        'Uruchom filtr jak najszybciej.',
+        'Nie plucz mediow biologicznych pod kranem.',
+        'Ustaw temperature i ogranicz karmienie przez 1-3 dni.',
+      ],
+      tests: ['NO2', 'NO3', 'temperatura', 'pH/KH'],
+      requiredMeasurements: ['no2', 'temperature'],
+    },
+    {
+      id: 'restart-day1',
+      title: 'Kontrola po restarcie',
+      description:
+        'Po restarcie NO2 moze wzrosnac z opoznieniem. Zachowaj ostroznosc przy obecnej obsadzie.',
+      startType: 'restart',
+      earliestDay: 2,
+      recommendedDay: 2,
+      delayDays: 1,
+      actions: [
+        'Karm oszczednie.',
+        'Nie dodawaj nowych ryb.',
+        'Obserwuj zachowanie ryb.',
+      ],
+      tests: ['NO2', 'temperatura'],
+      requiredMeasurements: ['no2', 'temperature'],
+    },
+    {
+      id: 'restart-day3',
+      title: 'Okres najwiekszego ryzyka',
+      description:
+        'To moment, gdy po restarcie najczesciej ujawniaja sie problemy z biologia.',
+      startType: 'restart',
+      earliestDay: 3,
+      recommendedDay: 3,
+      delayDays: 2,
+      actions: [
+        'Sprawdz NO2 i NO3.',
+        'Wstrzymaj dodawanie obsady przy wykrywalnym NO2.',
+      ],
+      tests: ['NO2', 'NO3'],
+      requiredMeasurements: ['no2'],
+      blocksOnNo2: true,
+    },
+    {
+      id: 'restart-day7',
+      title: 'Ocena stabilnosci po restarcie',
+      description:
+        'Jesli NO2 utrzymuje sie na 0 i temperatura jest stabilna, restart przebiega poprawnie.',
+      startType: 'restart',
+      earliestDay: 7,
+      recommendedDay: 7,
+      delayDays: 3,
+      actions: [
+        'Stopniowo wracaj do normalnego karmienia.',
+        'Nie dodawaj wielu ryb naraz.',
+      ],
+      tests: ['NO2', 'NO3', 'pH/KH'],
+      requiredMeasurements: ['no2', 'temperature', 'no3'],
+      requiresNo2Zero: true,
+      requiresFreshNo2ForStocking: true,
+      blocksOnNo2: true,
+      blocksOnTemperature: true,
+    },
+    {
+      id: 'restart-day14',
+      title: 'Powrot do normalnej rutyny',
+      description:
+        'Przy stabilnych parametrach mozna wracac do standardowej opieki.',
+      startType: 'restart',
+      earliestDay: 14,
+      recommendedDay: 14,
+      delayDays: 3,
+      actions: [
+        'Wroc do standardowego harmonogramu podmian.',
+        'Kontynuuj regularne testy.',
+      ],
+      tests: ['NO2', 'NO3'],
+      requiredMeasurements: ['no2', 'no3'],
+      requiresNo2Zero: true,
+      requiresNo2ZeroDays: 5,
+      requiresFreshNo2ForStocking: true,
+      requiresNoCriticalAlerts: true,
+      isStockingStep: true,
+      blocksOnNo2: true,
+    },
+    {
+      id: 'restart-day21',
+      title: 'Zakonczenie kontroli po restarcie',
+      description:
+        'Akwarium wyglada na stabilne po restarcie i onboarding moze zostac zakonczony.',
+      startType: 'restart',
+      earliestDay: 21,
+      recommendedDay: 21,
+      delayDays: 3,
+      actions: ['Zakoncz onboarding i przejdz na normalny tryb opieki.'],
+      tests: ['NO2', 'NO3', 'temperatura'],
+      requiredMeasurements: ['no2', 'no3', 'temperature'],
+      requiresNo2Zero: true,
+      requiresFreshNo2ForStocking: true,
+      requiresNoCriticalAlerts: true,
+      isStockingStep: true,
+      blocksOnNo2: true,
+      blocksOnTemperature: true,
+    },
+  ],
+  mature_media_start: [
+    {
+      id: 'mature-day0',
+      title: 'Start z dojrzalym medium',
+      description:
+        'Dojrzale medium moze przyspieszyc start, ale nie gwarantuje od razu pelnej stabilnosci.',
+      startType: 'mature_media_start',
+      earliestDay: 1,
+      recommendedDay: 1,
+      delayDays: 1,
+      actions: [
+        'Uruchom filtr jak najszybciej i nie dopusc do wyschniecia mediow.',
+        'Ustaw temperature.',
+        'Nie dodawaj od razu pelnej obsady.',
+      ],
+      tests: ['NO2', 'NO3', 'temperatura', 'pH/KH'],
+      requiredMeasurements: ['no2', 'temperature'],
+    },
+    {
+      id: 'mature-day1',
+      title: 'Pierwsza kontrola stabilnosci',
+      description:
+        'Aplikacja musi potwierdzic, czy zbiornik utrzymuje bezpieczne parametry.',
+      startType: 'mature_media_start',
+      earliestDay: 2,
+      recommendedDay: 2,
+      delayDays: 1,
+      actions: ['Wykonaj test NO2.', 'Przy obecnosci ryb karm oszczednie.'],
+      tests: ['NO2', 'temperatura'],
+      requiredMeasurements: ['no2', 'temperature'],
+    },
+    {
+      id: 'mature-day3',
+      title: 'Szybka ocena biologii',
+      description:
+        'Jesli NO2 pozostaje 0, medium dziala poprawnie. Przy wykrywalnym NO2 potrzeba wiecej czasu.',
+      startType: 'mature_media_start',
+      earliestDay: 3,
+      recommendedDay: 3,
+      delayDays: 2,
+      actions: [
+        'Kontynuuj obserwacje.',
+        'Nie zwiekszaj obsady przy wykrywalnym NO2.',
+      ],
+      tests: ['NO2', 'NO3'],
+      requiredMeasurements: ['no2'],
+      requiresNo2Zero: true,
+      requiresFreshNo2ForStocking: true,
+      blocksOnNo2: true,
+    },
+    {
+      id: 'mature-day7',
+      title: 'Ostrozne zwiekszenie obciazenia',
+      description:
+        'Przy stabilnych parametrach mozna delikatnie zwiekszyc obsade lub karmienie.',
+      startType: 'mature_media_start',
+      earliestDay: 7,
+      recommendedDay: 7,
+      delayDays: 3,
+      actions: [
+        'Dodaj maksymalnie 20-30% planowanej obsady.',
+        'Nie dodawaj pelnej obsady naraz.',
+        'Sprawdz NO2 po zwiekszeniu obciazenia.',
+      ],
+      tests: ['NO2', 'NO3'],
+      requiredMeasurements: ['no2', 'temperature'],
+      requiresNo2Zero: true,
+      requiresNo2ZeroDays: 3,
+      requiresFreshNo2ForStocking: true,
+      requiresNoCriticalAlerts: true,
+      isStockingStep: true,
+      blocksOnNo2: true,
+      blocksOnTemperature: true,
+    },
+    {
+      id: 'mature-day14',
+      title: 'Potwierdzenie stabilizacji',
+      description:
+        'Zbiornik prawdopodobnie przyjal biologie. Nadal zwiekszaj obsade stopniowo.',
+      startType: 'mature_media_start',
+      earliestDay: 14,
+      recommendedDay: 14,
+      delayDays: 3,
+      actions: [
+        'Kontynuuj normalizacje rutyny.',
+        'Nie wykonuj gwaltownych zmian w filtrze.',
+      ],
+      tests: ['NO2', 'NO3', 'pH/KH'],
+      requiredMeasurements: ['no2', 'no3'],
+      requiresNo2Zero: true,
+      requiresFreshNo2ForStocking: true,
+      isStockingStep: true,
+      blocksOnNo2: true,
+    },
+    {
+      id: 'mature-day21',
+      title: 'Zakonczenie startu',
+      description:
+        'Akwarium wyglada na ustabilizowane i onboarding moze zostac zakonczony.',
+      startType: 'mature_media_start',
+      earliestDay: 21,
+      recommendedDay: 21,
+      delayDays: 3,
+      actions: ['Zakoncz onboarding i przejdz na standardowy harmonogram.'],
+      tests: ['NO2', 'NO3', 'temperatura'],
+      requiredMeasurements: ['no2', 'no3', 'temperature'],
+      requiresNo2Zero: true,
+      requiresFreshNo2ForStocking: true,
+      requiresNoCriticalAlerts: true,
+      isStockingStep: true,
+      blocksOnNo2: true,
+      blocksOnTemperature: true,
+    },
+  ],
+};
+
+const ONBOARDING_GUIDE_BY_START_TYPE = {
+  new_from_scratch: {
+    modeLabel: 'Nowy zbiornik od zera',
+    checklistStart: [
+      'Uruchom filtr i grzalke od razu po zalaniu.',
+      'Nie wpuszczaj ryb przed stabilnym NO2=0.',
+      'Zapisuj regularnie pomiary i porownuj trendy.',
+      'Wprowadzaj obsade malymi krokami, nigdy skokowo.',
+    ],
+    firstMeasurements: [
+      'Dzien 1: temperatura, pH, KH, GH.',
+      'Dzien 3: NO2 (opcjonalnie NO3).',
+      'Dzien 7: NO2, NO3, pH/KH.',
+    ],
+  },
+  restart: {
+    modeLabel: 'Restart akwarium',
+    checklistStart: [
+      'Utrzymaj media biologiczne stale mokre.',
+      'W pierwszych dniach karm oszczednie.',
+      'Nie dodawaj nowych ryb do czasu stabilnego NO2.',
+      'Kontroluj NO2 czesciej niz w stabilnym zbiorniku.',
+    ],
+    firstMeasurements: [
+      'Dzien 1: NO2, NO3, temperatura, pH/KH.',
+      'Dzien 3: NO2 i NO3.',
+      'Dzien 7: NO2, NO3, pH/KH.',
+    ],
+  },
+  mature_media_start: {
+    modeLabel: 'Start na dojrzalym medium',
+    checklistStart: [
+      'Nie dopusc do wyschniecia dojrzalych mediow.',
+      'Nie wpuszczaj od razu pelnej obsady.',
+      'Kontroluj NO2 codziennie na poczatku.',
+      'Potwierdz stabilnosc po kazdym zwiekszeniu obciazenia.',
+    ],
+    firstMeasurements: [
+      'Dzien 1: NO2, NO3, temperatura, pH/KH.',
+      'Dzien 3: NO2 + NO3.',
+      'Dzien 7: NO2, NO3, temperatura.',
+    ],
+  },
+};
+
+function resolveOnboardingStartType(modeValue) {
+  const normalized = String(modeValue ?? '').trim().toLowerCase();
+  if (normalized === 'fresh_start' || normalized === 'new_from_scratch') {
+    return 'new_from_scratch';
+  }
+  if (normalized === 'restart') {
+    return 'restart';
+  }
+  return 'mature_media_start';
+}
+
+function getMeasurementRecordedAtMs(measurement) {
+  return toMillisTaskService(measurement?.measuredAt ?? measurement?.createdAt);
+}
+
+export function getAquariumAgeInDays(startDate, nowValue = new Date()) {
+  const dayMs = 24 * 60 * 60 * 1000;
+  const startMs = toMillisTaskService(startDate);
+  if (!startMs) {
+    return 0;
+  }
+  const startBucket = getDayBucketTaskService(startMs);
+  const nowBucket = getDayBucketTaskService(nowValue);
+  return Math.max(1, Math.floor((nowBucket - startBucket) / dayMs) + 1);
+}
+
+export function getLatestMeasurement(measurements, parameter) {
+  if (!Array.isArray(measurements) || measurements.length === 0 || !parameter) {
+    return null;
+  }
+  const key = String(parameter);
+  let latest = null;
+  let latestMs = 0;
+  measurements.forEach((measurement) => {
+    const value = toNumericTaskService(measurement?.[key]);
+    if (value === null) {
+      return;
+    }
+    const recordedAtMs = getMeasurementRecordedAtMs(measurement);
+    if (recordedAtMs > latestMs) {
+      latestMs = recordedAtMs;
+      latest = measurement;
+    }
+  });
+  return latest;
+}
+
+export function isMeasurementFresh(measurement, maxAgeHours, nowMs = Date.now()) {
+  if (!measurement) {
+    return false;
+  }
+  const ageLimitHours = Number(maxAgeHours);
+  if (!Number.isFinite(ageLimitHours) || ageLimitHours <= 0) {
+    return false;
+  }
+  const measurementMs = getMeasurementRecordedAtMs(measurement);
+  if (!measurementMs || measurementMs > nowMs) {
+    return false;
+  }
+  return nowMs - measurementMs <= ageLimitHours * 60 * 60 * 1000;
+}
+
+function getLastTwoNumericValues(measurements, key) {
+  const points = (Array.isArray(measurements) ? measurements : [])
+    .map((item) => ({
+      value: toNumericTaskService(item?.[key]),
+      recordedAtMs: getMeasurementRecordedAtMs(item),
+    }))
+    .filter((item) => item.value !== null && item.recordedAtMs > 0)
+    .sort((a, b) => b.recordedAtMs - a.recordedAtMs)
+    .slice(0, 2);
+  return points;
+}
+
+function isTemperatureWithinTarget(tank, temperatureValue) {
+  const value = toNumericTaskService(temperatureValue);
+  if (value === null) {
+    return true;
+  }
+  const targetMin = toNumericTaskService(tank?.targetRanges?.temperature?.min);
+  const targetMax = toNumericTaskService(tank?.targetRanges?.temperature?.max);
+  if (targetMin !== null && value < targetMin) {
+    return false;
+  }
+  if (targetMax !== null && value > targetMax) {
+    return false;
+  }
+  const targetSingle = toNumericTaskService(tank?.targetTemperatureC);
+  if (targetSingle !== null) {
+    if (value < targetSingle - 1 || value > targetSingle + 1) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function evaluateNo2ZeroWindow(measurements, requiredDays, nowMs, freshnessHours) {
+  const dayMs = 24 * 60 * 60 * 1000;
+  const points = (Array.isArray(measurements) ? measurements : [])
+    .map((item) => ({
+      value: toNumericTaskService(item?.no2),
+      recordedAtMs: getMeasurementRecordedAtMs(item),
+    }))
+    .filter((item) => item.value !== null && item.recordedAtMs > 0)
+    .sort((a, b) => b.recordedAtMs - a.recordedAtMs);
+  if (points.length === 0) {
+    return { ok: false, missing: true, detected: false };
+  }
+  const latest = points[0];
+  if (!isMeasurementFresh({ measuredAt: latest.recordedAtMs }, freshnessHours, nowMs)) {
+    return { ok: false, missing: true, detected: false };
+  }
+  if (latest.value > 0) {
+    return { ok: false, missing: false, detected: true };
+  }
+  if (!requiredDays || requiredDays <= 0) {
+    return { ok: true, missing: false, detected: false };
+  }
+  const windowStartMs = nowMs - requiredDays * dayMs;
+  const windowPoints = points.filter((item) => item.recordedAtMs >= windowStartMs);
+  if (windowPoints.length < 2) {
+    return { ok: false, missing: true, detected: false };
+  }
+  const hasDetectedNo2 = windowPoints.some((item) => item.value > 0);
+  if (hasDetectedNo2) {
+    return { ok: false, missing: false, detected: true };
+  }
+  return { ok: true, missing: false, detected: false };
+}
+
+export function evaluateOnboardingStep(step, aquarium, measurements, context = {}) {
+  const nowMs = Number(context.nowMs) > 0 ? Number(context.nowMs) : Date.now();
+  const startType = context.startType ?? resolveOnboardingStartType(aquarium?.onboardingMode);
+  const ageDays =
+    Number(context.ageDays) > 0
+      ? Number(context.ageDays)
+      : getAquariumAgeInDays(aquarium?.onboardingStartAt ?? aquarium?.createdAt, nowMs);
+  const no2FreshHours =
+    NO2_FRESH_HOURS_BY_START_TYPE[startType] ??
+    NO2_FRESH_HOURS_BY_START_TYPE.new_from_scratch;
+
+  const latestNo2Measurement = getLatestMeasurement(measurements, 'no2');
+  const latestNo2 = toNumericTaskService(latestNo2Measurement?.no2);
+  const latestNo3Measurement = getLatestMeasurement(measurements, 'no3');
+  const latestNo3 = toNumericTaskService(latestNo3Measurement?.no3);
+  const latestTemperatureMeasurement = getLatestMeasurement(measurements, 'temperature');
+  const latestTemperature = toNumericTaskService(latestTemperatureMeasurement?.temperature);
+
+  const hasFreshNo2 =
+    latestNo2Measurement !== null &&
+    isMeasurementFresh(latestNo2Measurement, no2FreshHours, nowMs);
+  const hasNo2Detected = latestNo2 !== null && latestNo2 > 0;
+  const hasTemperatureOutOfRange = !isTemperatureWithinTarget(
+    aquarium,
+    latestTemperature
+  );
+  const phPoints = getLastTwoNumericValues(measurements, 'ph');
+  const hasPhSwing =
+    phPoints.length >= 2 && Math.abs(phPoints[0].value - phPoints[1].value) >= 0.4;
+  const hasHighNo3 = latestNo3 !== null && latestNo3 >= 40;
+
+  const warnings = [];
+  if (hasTemperatureOutOfRange) {
+    warnings.push(ONBOARDING_DELAY_MESSAGES.unstableTemperature);
+  }
+  if (hasPhSwing) {
+    warnings.push(ONBOARDING_DELAY_MESSAGES.phSwing);
+  }
+  if (hasHighNo3) {
+    warnings.push(ONBOARDING_DELAY_MESSAGES.highNo3);
+  }
+
+  const missingRequiredTests = [];
+  (step.requiredMeasurements ?? []).forEach((parameter) => {
+    const latestForParameter = getLatestMeasurement(measurements, parameter);
+    const freshnessHours =
+      parameter === 'no2'
+        ? no2FreshHours
+        : parameter === 'temperature'
+          ? 48
+          : 96;
+    if (!latestForParameter || !isMeasurementFresh(latestForParameter, freshnessHours, nowMs)) {
+      missingRequiredTests.push(String(parameter).toUpperCase());
+    }
+  });
+
+  const reasons = [];
+  let status = 'active';
+
+  if (ageDays < step.earliestDay) {
+    status = 'planned';
+  } else {
+    if (step.requiresFreshNo2ForStocking && !hasFreshNo2) {
+      status = 'waiting_for_parameters';
+      reasons.push(ONBOARDING_DELAY_MESSAGES.missingFreshNo2);
+    }
+    if (step.blocksOnNo2 && hasNo2Detected) {
+      status = step.isStockingStep ? 'blocked' : 'delayed';
+      reasons.push(ONBOARDING_DELAY_MESSAGES.no2Detected);
+    }
+    if (step.blocksOnTemperature && hasTemperatureOutOfRange) {
+      if (status !== 'waiting_for_parameters') {
+        status = 'delayed';
+      }
+      reasons.push(ONBOARDING_DELAY_MESSAGES.unstableTemperature);
+    }
+    if (step.requiresNo2Zero && (latestNo2 === null || latestNo2 > 0)) {
+      if (latestNo2 === null) {
+        status = 'waiting_for_parameters';
+        reasons.push(ONBOARDING_DELAY_MESSAGES.missingFreshNo2);
+      } else {
+        if (status !== 'waiting_for_parameters') {
+          status = step.isStockingStep ? 'blocked' : 'delayed';
+        }
+        reasons.push(ONBOARDING_DELAY_MESSAGES.no2Detected);
+      }
+    }
+    if (Number(step.requiresNo2ZeroDays) > 0) {
+      const windowCheck = evaluateNo2ZeroWindow(
+        measurements,
+        Number(step.requiresNo2ZeroDays),
+        nowMs,
+        no2FreshHours
+      );
+      if (!windowCheck.ok) {
+        if (windowCheck.missing) {
+          status = 'waiting_for_parameters';
+          reasons.push(ONBOARDING_DELAY_MESSAGES.missingFreshNo2);
+        } else if (windowCheck.detected) {
+          if (status !== 'waiting_for_parameters') {
+            status = step.isStockingStep ? 'blocked' : 'delayed';
+          }
+          reasons.push(ONBOARDING_DELAY_MESSAGES.no2Detected);
+        }
+      }
+    }
+    const analysisStatus = String(context.latestAnalysisStatus ?? '').toLowerCase();
+    if (step.requiresNoCriticalAlerts && analysisStatus === 'critical') {
+      if (status === 'active') {
+        status = 'delayed';
+      }
+      reasons.push('Wykryto krytyczne alerty parametrow. Najpierw ustabilizuj warunki.');
+    }
+    if (status === 'active' && missingRequiredTests.length > 0) {
+      status = 'waiting_for_parameters';
+      reasons.push(
+        `Brakuje aktualnych pomiarow: ${missingRequiredTests.join(', ')}.`
+      );
+    }
+  }
+
+  const delayDays = Number(step.delayDays) > 0 ? Number(step.delayDays) : 2;
+  const recommendedNextDay =
+    status === 'planned'
+      ? step.recommendedDay
+      : status === 'active'
+        ? Math.max(ageDays, step.recommendedDay)
+        : Math.max(ageDays + delayDays, step.recommendedDay + delayDays);
+  const shouldPauseStocking =
+    Boolean(step.isStockingStep) &&
+    (status === 'waiting_for_parameters' ||
+      status === 'blocked' ||
+      status === 'delayed') &&
+    (reasons.includes(ONBOARDING_DELAY_MESSAGES.no2Detected) ||
+      reasons.includes(ONBOARDING_DELAY_MESSAGES.missingFreshNo2));
+  const actionsForToday = shouldPauseStocking
+    ? [
+        'Nie dodawaj teraz ryb ani nowej obsady.',
+        'Wykonaj kolejny pomiar NO2 za 24-48 godzin.',
+        'Utrzymuj oszczedne karmienie do stabilizacji NO2.',
+      ]
+    : [...(step.actions ?? [])];
+
+  return {
+    ...step,
+    status,
+    reason: reasons[0] ?? '',
+    reasons: [...new Set(reasons)],
+    warnings: [...new Set(warnings)],
+    missingRequiredTests: [...new Set(missingRequiredTests)],
+    recommendedNextDay,
+    nextReviewAtMs: nowMs + delayDays * 24 * 60 * 60 * 1000,
+    actionsForToday,
+  };
+}
+
+function mapStepStatusToRowStatus(stepStatus, dayNumber, recommendedDay) {
+  if (stepStatus === 'planned') {
+    return 'upcoming';
+  }
+  if (dayNumber > recommendedDay && stepStatus !== 'completed') {
+    return 'overdue';
+  }
+  return 'current';
+}
+
+function mapStepStatusToRowLevel(stepStatus, warningsCount) {
+  if (
+    stepStatus === 'waiting_for_parameters' ||
+    stepStatus === 'blocked' ||
+    stepStatus === 'delayed'
+  ) {
+    return 'warning';
+  }
+  if (warningsCount > 0) {
+    return 'info';
+  }
+  return 'task';
+}
+
 export function buildTankOnboardingPlanService(
   tank,
   measurements,
@@ -813,11 +1593,19 @@ export function buildTankOnboardingPlanService(
     getRecommendationDueAtMsLogic,
   } = deps;
 
+  const safeGetDayBucketMs = typeof getDayBucketMs === 'function'
+    ? getDayBucketMs
+    : getDayBucketTaskService;
+  const safeGetCreatedAtMs = typeof getCreatedAtMs === 'function'
+    ? getCreatedAtMs
+    : toMillisTaskService;
+
   if (!tank) {
     return {
       isActive: false,
-      mode: 'existing_running',
-      modeLabel: 'Istniejace akwarium',
+      mode: 'fresh_start',
+      modeLabel: 'Nowy zbiornik od zera',
+      startType: 'new_from_scratch',
       rows: [],
       dueItems: [],
       todayItems: [],
@@ -825,479 +1613,250 @@ export function buildTankOnboardingPlanService(
       firstMeasurements: [],
       statusText: '',
       dayNumber: 0,
-      targetEndDay: 14,
+      targetEndDay: 42,
       isStabilized: false,
+      activeStep: null,
+      nextStep: null,
+      delayReason: '',
+      requiredTestsNow: [],
+      actionsToday: [],
     };
   }
 
-  const mode = normalizeOnboardingMode(tank.onboardingMode);
-  const dayMs = 24 * 60 * 60 * 1000;
-  const targetEndDay = 14;
-  const startMs = getCreatedAtMs(tank.onboardingStartAt ?? tank.createdAt);
-  if (!startMs) {
+  const normalizedMode = normalizeOnboardingMode(tank?.onboardingMode);
+  const startType = resolveOnboardingStartType(normalizedMode);
+  const guide = ONBOARDING_GUIDE_BY_START_TYPE[startType];
+
+  if (tank?.onboardingEnabled === false) {
     return {
-      isActive: true,
-      mode,
-      modeLabel: 'Onboarding',
+      isActive: false,
+      mode: normalizedMode,
+      modeLabel: 'Wylaczony recznie',
+      startType,
       rows: [],
       dueItems: [],
       todayItems: [],
       checklistStart: [],
       firstMeasurements: [],
-      statusText:
-        'Brak daty startu onboardingu. Ustaw tryb, cele parametrow i dodaj pierwszy pomiar.',
-      dayNumber: 1,
-      targetEndDay,
+      statusText: 'Onboarding jest recznie wylaczony dla tego akwarium.',
+      dayNumber: 0,
+      targetEndDay: ONBOARDING_STEP_LIBRARY[startType].slice(-1)[0]?.recommendedDay ?? 21,
       isStabilized: false,
+      activeStep: null,
+      nextStep: null,
+      delayReason: '',
+      requiredTestsNow: [],
+      actionsToday: [],
     };
   }
 
-  const startDayMs = getDayBucketMs(startMs);
-  const todayDayMs = getDayBucketMs(new Date());
-  const dayNumber = Math.max(1, Math.floor((todayDayMs - startDayMs) / dayMs) + 1);
-
-  const latestMeasurement = measurements[0] ?? null;
-  const latestAnalysis = latestMeasurement
-    ? analyzeMeasurementLogic(
-        latestMeasurement,
-        enabledTests,
-        getWaterAnalysisOptionsForTank(tank)
-      )
-    : null;
-
-  const toNumeric = (value) => {
-    const numeric = Number(value);
-    return Number.isFinite(numeric) ? numeric : null;
-  };
-
-  const no2Series = getRecentNumericSeries(measurements, 'no2', 3);
-  const no3Value = toNumeric(latestMeasurement?.no3);
-  const nh3Value = toNumeric(latestMeasurement?.nh3nh4);
-  const no2Value = toNumeric(latestMeasurement?.no2);
-  const cycleModes = new Set(['fresh_start', 'restart', 'mature_media_start']);
-  const cycleState = cycleModes.has(mode)
-    ? evaluateCycleDrift({
-        latestAnalysisStatus: latestAnalysis?.status,
-        no2Value,
-        nh3Value,
-        no2Series,
-        no3Value,
-        dayNumber,
-      })
-    : {
-        hasCriticalDrift: false,
-        hasWarningDrift: false,
-        targetEndDay,
-        isStabilized: false,
-      };
-
-  const buildDueAtMs = (startDay) => startDayMs + (Math.max(1, startDay) - 1) * dayMs;
-  const rows = [];
-  const dueItems = [];
-  const todayItems = [];
-  const addRow = ({
-    id,
-    dayStart,
-    dayEnd = dayStart,
-    level = 'task',
-    text,
-    addToDueList = true,
-  }) => {
-    const status =
-      dayNumber < dayStart
-        ? 'upcoming'
-        : dayNumber > dayEnd
-          ? 'overdue'
-          : 'current';
-    const dueAtMs = buildDueAtMs(dayStart);
-    rows.push({
-      id,
-      dayStart,
-      dayEnd,
-      level,
-      text,
-      status,
-      dueAtMs,
-    });
-
-    if (status === 'current') {
-      todayItems.push(text);
-    }
-
-    if (addToDueList) {
-      dueItems.push({
-        id: `onboarding-${id}`,
-        source: 'Onboarding',
-        text,
-        dueAtMs,
-        dayBucketMs: getDayBucketMs(dueAtMs),
-      });
-    }
-  };
-  const addDailyRows = ({
-    id,
-    dayStart,
-    dayEnd,
-    level = 'task',
-    text,
-    textByDay,
-    addToDueList = true,
-  }) => {
-    for (let day = dayStart; day <= dayEnd; day += 1) {
-      const resolvedText =
-        typeof textByDay === 'function' ? textByDay(day) : text;
-      addRow({
-        id: `${id}-day-${day}`,
-        dayStart: day,
-        dayEnd: day,
-        level,
-        text: resolvedText,
-        addToDueList,
-      });
-    }
-  };
-
-  const modeBlueprints = {
-    fresh_start: {
-      modeLabel: 'Fresh start',
-      checklistStart: [
-        'Potwierdz typ akwarium i profil docelowy parametrow.',
-        'Uruchom filtr i grzalke 24/7, ustaw swiatlo 6-8h.',
-        'Dodaj uzdatniacz i bakterie startowe zgodnie z etykieta.',
-        'Posadz rosliny szybko rosnace od pierwszego dnia.',
-      ],
-      firstMeasurements: [
-        'Dzien 1: pH, KH, GH, temperatura (wartosci bazowe).',
-        'Dzien 3: NO2 + NH3/NH4.',
-        'Dzien 7: NO2, NH3/NH4, NO3.',
-      ],
-      applyPlan: () => {
-        addRow({
-          id: 'fresh-day1-mode-goal',
-          dayStart: 1,
-          text:
-            'Dzien 1: wybierz typ akwarium i zatwierdz cele parametrow (target ranges).',
-        });
-        addRow({
-          id: 'fresh-day1-setup',
-          dayStart: 1,
-          text:
-            'Dzien 1: zalej zbiornik, uruchom filtr i grzalke, dodaj uzdatniacz oraz bakterie.',
-        });
-        addRow({
-          id: 'fresh-day1-baseline-measure',
-          dayStart: 1,
-          text:
-            'Dzien 1: zapisz pierwszy pomiar bazowy pH, KH, GH i temperatury.',
-        });
-        addDailyRows({
-          id: 'fresh-day2-6-observe',
-          dayStart: 2,
-          dayEnd: 6,
-          level: 'info',
-          textByDay: (day) =>
-            `Dzien ${day}: obserwuj klarownosc, prace filtra i zachowanie zbiornika bez gwaltownych zmian.`,
-        });
-        addDailyRows({
-          id: 'fresh-day3-10-toxic-tests',
-          dayStart: 3,
-          dayEnd: 10,
-          textByDay: (day) =>
-            `Dzien ${day}: wykonaj test NO2${enabledTests?.nh3nh4 ? ' + NH3/NH4' : ''} i zapisz wynik.`,
-        });
-        addRow({
-          id: 'fresh-day7-no3',
-          dayStart: 7,
-          text: 'Dzien 7: wykonaj NO3 i porownaj trend z poprzednimi dniami.',
-        });
-        addRow({
-          id: 'fresh-day11-14-check',
-          dayStart: 11,
-          dayEnd: 14,
-          level: 'warning',
-          text:
-            'Dni 11-14: potwierdz dwa kolejne pomiary NO2=0 przed rozbudowa obsady.',
-        });
-        addRow({
-          id: 'fresh-day14-water-change',
-          dayStart: 14,
-          text:
-            'Dzien 14: jesli NO2 stabilnie 0, wykonaj podmiane 25-35% i utrzymaj ostrozne karmienie.',
-        });
-      },
-    },
-    existing_running: {
-      modeLabel: 'Istniejace akwarium',
-      checklistStart: [
-        'Potwierdz typ akwarium i profil docelowy parametrow.',
-        'Sprawdz aktualna obsade, rosliny i sprzet.',
-        'Ustaw harmonogram: podmiany, testy, serwis filtra.',
-        'Ustal priorytety: co jest krytyczne, wazne i rutynowe.',
-      ],
-      firstMeasurements: [
-        'Dzien 1: pelny zestaw pomiarow (NO2, NO3, NH3/NH4, pH, GH, KH, temperatura).',
-        'Dzien 4-5: pomiar kontrolny parametrow odstajacych od celu.',
-        'Dzien 10-14: pomiar porownawczy trendu.',
-      ],
-      applyPlan: () => {
-        addRow({
-          id: 'existing-day1-audit',
-          dayStart: 1,
-          text:
-            'Dzien 1: audit zbiornika - potwierdz typ akwarium, cele parametrow i komplet danych sprzetu.',
-        });
-        addRow({
-          id: 'existing-day1-measure',
-          dayStart: 1,
-          text:
-            'Dzien 1: wykonaj pelny zestaw pomiarow i zapisz punkt odniesienia.',
-        });
-        addRow({
-          id: 'existing-day2-plan',
-          dayStart: 2,
-          dayEnd: 3,
-          text:
-            'Dni 2-3: skoryguj tylko najwieksze odchylenia od celu (bez gwaltownych zmian).',
-        });
-        addRow({
-          id: 'existing-day4-equipment',
-          dayStart: 4,
-          dayEnd: 7,
-          text:
-            'Dni 4-7: sprawdz przeplyw filtra, temperature i realny harmonogram podmian.',
-        });
-        addRow({
-          id: 'existing-day8-10-stocking',
-          dayStart: 8,
-          dayEnd: 10,
-          text:
-            'Dni 8-10: ocen kompatybilnosc obsady (grupy, agresja, strefy plywania).',
-        });
-        addRow({
-          id: 'existing-day11-14-trend',
-          dayStart: 11,
-          dayEnd: 14,
-          level: 'info',
-          text:
-            'Dni 11-14: potwierdz trend parametrow i dopracuj plan rutynowy na kolejne tygodnie.',
-        });
-      },
-    },
-    restart: {
-      modeLabel: 'Restart',
-      checklistStart: [
-        'Potwierdz typ akwarium i cele parametrow po restarcie.',
-        'Zabezpiecz media biologiczne i nie dopusc do ich wyschniecia.',
-        'Zaplanuj etapowy powrot obsady oraz oswietlenia.',
-        'Ustaw codzienny monitoring NO2/NH3 w 1 tygodniu.',
-      ],
-      firstMeasurements: [
-        'Dzien 1: pH, KH, GH, temperatura, NO2, NH3/NH4.',
-        'Dzien 2-4: codziennie NO2/NH3/NH4.',
-        'Dzien 7 i 14: NO3 + kontrola trendu.',
-      ],
-      applyPlan: () => {
-        addRow({
-          id: 'restart-day1-mode-goal',
-          dayStart: 1,
-          text:
-            'Dzien 1: zatwierdz typ akwarium i nowe cele parametrow po restarcie.',
-        });
-        addRow({
-          id: 'restart-day1-media',
-          dayStart: 1,
-          text:
-            'Dzien 1: utrzymaj media filtracyjne stale mokre i uruchom filtr natychmiast po restarcie.',
-        });
-        addDailyRows({
-          id: 'restart-day1-7-toxic-tests',
-          dayStart: 1,
-          dayEnd: 7,
-          textByDay: (day) =>
-            `Dzien ${day}: kontrola NO2${enabledTests?.nh3nh4 ? ' + NH3/NH4' : ''} po zmianach w zbiorniku.`,
-        });
-        addRow({
-          id: 'restart-day3-5-light',
-          dayStart: 3,
-          dayEnd: 5,
-          text:
-            'Dni 3-5: utrzymuj krotsze swiecenie (6-7h), aby ograniczyc presje glonow.',
-        });
-        addRow({
-          id: 'restart-day6-10-water-change',
-          dayStart: 6,
-          dayEnd: 10,
-          text:
-            'Dni 6-10: dostosuj podmiany do trendu NO2/NO3 i nie zwiekszaj obsady skokowo.',
-        });
-        addRow({
-          id: 'restart-day11-14-stability',
-          dayStart: 11,
-          dayEnd: 14,
-          text:
-            'Dni 11-14: potwierdz stabilnosc parametrow w co najmniej 2 kolejnych pomiarach.',
-        });
-      },
-    },
-    mature_media_start: {
-      modeLabel: 'Start na dojrzalym medium',
-      checklistStart: [
-        'Potwierdz typ akwarium i cele parametrow przed wpuszczeniem obsady.',
-        'Przenies dojrzale media filtracyjne bez przestojow i bez plukania w kranowce.',
-        'Startuj od ograniczonej obsady (ok. 30-40% docelowej).',
-        'Prowadz intensywny monitoring NO2/NH3 przez 10 dni.',
-      ],
-      firstMeasurements: [
-        'Dzien 1: pelny zestaw pomiarow startowych.',
-        'Dzien 2-5: NO2 + NH3/NH4 codziennie.',
-        'Dzien 7 i 14: NO3 + pH + temperatura.',
-      ],
-      applyPlan: () => {
-        addRow({
-          id: 'mature-day1-goal',
-          dayStart: 1,
-          text:
-            'Dzien 1: ustaw tryb zbiornika, cele parametrow i potwierdz plan ostroznego zarybiania.',
-        });
-        addRow({
-          id: 'mature-day1-media',
-          dayStart: 1,
-          text:
-            'Dzien 1: uruchom filtr z dojrzalym medium bez przerw i bez agresywnego czyszczenia mediow.',
-        });
-        addDailyRows({
-          id: 'mature-day2-10-toxic-tests',
-          dayStart: 2,
-          dayEnd: 10,
-          textByDay: (day) =>
-            `Dzien ${day}: monitoruj NO2${enabledTests?.nh3nh4 ? ' + NH3/NH4' : ''} po starcie na dojrzalym medium.`,
-        });
-        addRow({
-          id: 'mature-day4-7-stock',
-          dayStart: 4,
-          dayEnd: 7,
-          text:
-            'Dni 4-7: nie dokladaj obsady, dopoki trendy NO2/NH3 nie sa stabilne.',
-        });
-        addRow({
-          id: 'mature-day8-12-increase',
-          dayStart: 8,
-          dayEnd: 12,
-          text:
-            'Dni 8-12: ewentualne zwiekszanie obsady tylko etapowo i z codzienna obserwacja.',
-        });
-        addRow({
-          id: 'mature-day14-review',
-          dayStart: 14,
-          text:
-            'Dzien 14: podsumuj trendy i utrwal docelowy harmonogram testow/podmian.',
-        });
-      },
-    },
-  };
-
-  const resolvedBlueprint =
-    modeBlueprints[mode] ?? modeBlueprints.existing_running;
-  resolvedBlueprint.applyPlan();
-
-  if (!enabledTests?.no2) {
-    addRow({
-      id: 'no2-required',
-      dayStart: dayNumber,
-      level: 'warning',
-      text: 'Wlacz test NO2 w ustawieniach - bez niego onboarding nie bedzie wiarygodny.',
-      addToDueList: false,
-    });
-  }
-  if (!enabledTests?.no3) {
-    addRow({
-      id: 'no3-required',
-      dayStart: dayNumber,
-      level: 'warning',
-      text: 'Wlacz test NO3 w ustawieniach - to kluczowy wskaznik stabilizacji zbiornika.',
-      addToDueList: false,
-    });
+  const startMs = safeGetCreatedAtMs(tank?.onboardingStartAt ?? tank?.createdAt);
+  if (!startMs) {
+    return {
+      isActive: true,
+      mode: normalizedMode,
+      modeLabel: guide?.modeLabel ?? 'Onboarding',
+      startType,
+      rows: [],
+      dueItems: [],
+      todayItems: [],
+      checklistStart: guide?.checklistStart ?? [],
+      firstMeasurements: guide?.firstMeasurements ?? [],
+      statusText:
+        'Brak daty startu onboardingu. Ustaw tryb, cele parametrow i dodaj pierwszy pomiar.',
+      dayNumber: 1,
+      targetEndDay: ONBOARDING_STEP_LIBRARY[startType].slice(-1)[0]?.recommendedDay ?? 21,
+      isStabilized: false,
+      activeStep: null,
+      nextStep: null,
+      delayReason: '',
+      requiredTestsNow: [],
+      actionsToday: [],
+    };
   }
 
-  if (cycleState.hasCriticalDrift) {
-    addRow({
-      id: 'critical-drift',
-      dayStart: dayNumber,
-      level: 'warning',
-      text:
-        'Parametry sa mocno odchylone - wstrzymaj rozbudowe obsady i mierz codziennie do stabilizacji.',
-      addToDueList: false,
-    });
-  } else if (cycleState.hasWarningDrift) {
-    addRow({
-      id: 'warning-drift',
-      dayStart: dayNumber,
-      level: 'info',
-      text:
-        'Widoczne odchylenia parametrow - utrzymuj ostrozne tempo zmian i monitoruj trendy.',
-      addToDueList: false,
-    });
-  }
+  const dayNumber = getAquariumAgeInDays(startMs, Date.now());
+  const latestMeasurement = Array.isArray(measurements) ? measurements[0] ?? null : null;
+  const latestAnalysis =
+    latestMeasurement && typeof analyzeMeasurementLogic === 'function'
+      ? analyzeMeasurementLogic(
+          latestMeasurement,
+          enabledTests,
+          getWaterAnalysisOptionsForTank?.(tank)
+        )
+      : null;
 
-  (latestAnalysis?.recommendations ?? []).slice(0, 3).forEach((item, index) => {
-    const dueAtMs = getRecommendationDueAtMsLogic(item);
-    const actionableText = `${item.parameter}: ${item.action}`;
-    rows.push({
-      id: `dynamic-${index}`,
-      dayStart: dayNumber,
-      dayEnd: dayNumber,
-      level: item.severity === 'critical' ? 'warning' : 'info',
-      text: `Korekta parametru: ${actionableText}`,
-      status: 'current',
-      dueAtMs,
-    });
-    dueItems.push({
-      id: `onboarding-dynamic-${index}`,
-      source: 'Onboarding',
-      text: actionableText,
-      dueAtMs,
-      dayBucketMs: getDayBucketMs(dueAtMs),
-    });
-    todayItems.push(actionableText);
+  const no2Series = typeof getRecentNumericSeries === 'function'
+    ? getRecentNumericSeries(measurements, 'no2', 3)
+    : [];
+  const cycleState = evaluateCycleDrift({
+    latestAnalysisStatus: latestAnalysis?.status,
+    no2Value: toNumericTaskService(latestMeasurement?.no2),
+    nh3Value: toNumericTaskService(latestMeasurement?.nh3nh4),
+    no2Series,
+    no3Value: toNumericTaskService(latestMeasurement?.no3),
+    dayNumber,
   });
 
-  if (cycleModes.has(mode) && dayNumber > targetEndDay && !cycleState.isStabilized) {
-    addRow({
-      id: 'cycle-post-plan-warning',
-      dayStart: dayNumber,
-      level: 'warning',
-      text:
-        'Plan 14 dni zakonczony, ale zbiornik nadal niestabilny. Kontynuuj testy codzienne i ostrozne karmienie.',
-      addToDueList: false,
+  const baseSteps = ONBOARDING_STEP_LIBRARY[startType] ?? ONBOARDING_STEP_LIBRARY.new_from_scratch;
+  const evaluatedSteps = [];
+  let accumulatedDelay = 0;
+  let delayAlreadyAppliedForToday = false;
+
+  baseSteps.forEach((baseStep) => {
+    const shiftedStep = {
+      ...baseStep,
+      earliestDay: baseStep.earliestDay + accumulatedDelay,
+      recommendedDay: baseStep.recommendedDay + accumulatedDelay,
+    };
+    const evaluated = evaluateOnboardingStep(shiftedStep, tank, measurements, {
+      startType,
+      ageDays: dayNumber,
+      nowMs: Date.now(),
+      latestAnalysisStatus: latestAnalysis?.status,
     });
-  }
+    const shouldDelayFutureSteps =
+      !delayAlreadyAppliedForToday &&
+      ['waiting_for_parameters', 'delayed', 'blocked'].includes(evaluated.status) &&
+      dayNumber >= shiftedStep.recommendedDay;
+    if (shouldDelayFutureSteps) {
+      const delayDays = Number(baseStep.delayDays) > 0 ? Number(baseStep.delayDays) : 2;
+      accumulatedDelay += delayDays;
+      delayAlreadyAppliedForToday = true;
+    }
+    evaluatedSteps.push(evaluated);
+  });
 
-  const onboardingWindowDays = targetEndDay;
-  const cycleExtendedWindowEndDay = 21;
+  const actionableStatuses = new Set([
+    'active',
+    'waiting_for_parameters',
+    'delayed',
+    'blocked',
+  ]);
+  const activeStep =
+    evaluatedSteps.find(
+      (step) => actionableStatuses.has(step.status) && dayNumber >= step.earliestDay
+    ) ??
+    evaluatedSteps.find((step) => step.status === 'planned') ??
+    null;
+  const activeStepIndex = activeStep
+    ? evaluatedSteps.findIndex((item) => item.id === activeStep.id)
+    : -1;
+  const nextStep =
+    activeStepIndex >= 0
+      ? evaluatedSteps
+          .slice(activeStepIndex + 1)
+          .find((step) => step.status === 'planned') ?? null
+      : evaluatedSteps.find((step) => step.status === 'planned') ?? null;
+
+  const dayMs = 24 * 60 * 60 * 1000;
+  const startDayBucketMs = safeGetDayBucketMs(startMs);
+  const rows = evaluatedSteps.map((step) => {
+    const dueAtMs =
+      startDayBucketMs + (Math.max(1, Number(step.recommendedDay)) - 1) * dayMs;
+    const rowStatus = mapStepStatusToRowStatus(
+      step.status,
+      dayNumber,
+      step.recommendedDay
+    );
+    const rowLevel = mapStepStatusToRowLevel(step.status, step.warnings.length);
+    const detailParts = [
+      step.title,
+      step.description,
+      step.reason ? `Powod opoznienia: ${step.reason}` : null,
+    ]
+      .filter(Boolean)
+      .join(' ');
+
+    return {
+      id: `onboarding-step-${step.id}`,
+      sourceStepId: step.id,
+      dayStart: step.recommendedDay,
+      dayEnd: step.recommendedDay,
+      level: rowLevel,
+      text: detailParts,
+      status: rowStatus,
+      dueAtMs,
+      stepStatus: step.status,
+      requiredTests: step.tests,
+      actions: step.actions,
+      actionsForToday: step.actionsForToday,
+      reason: step.reason,
+    };
+  });
+
+  const dueItems = rows
+    .filter((row) => row.status === 'current' || row.status === 'overdue')
+    .map((row) => ({
+      id: row.id,
+      source: 'Onboarding',
+      text: row.text,
+      dueAtMs: row.dueAtMs,
+      dayBucketMs: safeGetDayBucketMs(row.dueAtMs),
+    }));
+
+  const recommendationRows = (latestAnalysis?.recommendations ?? [])
+    .slice(0, 2)
+    .map((item, index) => {
+      const dueAtMs = typeof getRecommendationDueAtMsLogic === 'function'
+        ? getRecommendationDueAtMsLogic(item)
+        : Date.now();
+      const text = `Korekta parametru: ${item.parameter} - ${item.action}`;
+      return {
+        id: `onboarding-dynamic-${index}`,
+        dayStart: dayNumber,
+        dayEnd: dayNumber,
+        level: item.severity === 'critical' ? 'warning' : 'info',
+        text,
+        status: 'current',
+        dueAtMs,
+      };
+    });
+
+  const todayItems = [
+    ...(activeStep?.actionsForToday ?? activeStep?.actions ?? []),
+    ...(activeStep?.tests?.map((test) => `Wymagany test: ${test}`) ?? []),
+    ...(activeStep?.reason ? [activeStep.reason] : []),
+    ...(activeStep?.warnings ?? []),
+  ];
+
+  const onboardingRows = [...rows, ...recommendationRows];
+  const finalStep = evaluatedSteps[evaluatedSteps.length - 1] ?? null;
+  const targetEndDay = finalStep?.recommendedDay ?? 21;
+  const isStabilized = Boolean(
+    finalStep &&
+      dayNumber >= finalStep.recommendedDay &&
+      finalStep.status === 'active' &&
+      !cycleState.hasCriticalDrift
+  );
   const isActive =
-    dayNumber <= onboardingWindowDays ||
-    (cycleModes.has(mode) &&
-      !cycleState.isStabilized &&
-      dayNumber <= cycleExtendedWindowEndDay);
+    dayNumber <= targetEndDay + 21 ||
+    !isStabilized ||
+    recommendationRows.length > 0;
 
-  const statusText = !isActive
-    ? `Plan onboardingu (${resolvedBlueprint.modeLabel}) zakonczony po ${onboardingWindowDays} dniach.`
-    : dayNumber <= onboardingWindowDays
-      ? `Onboarding ${resolvedBlueprint.modeLabel}: dzien ${dayNumber}/${onboardingWindowDays}.`
-      : `Onboarding ${resolvedBlueprint.modeLabel}: przedluzony monitoring po 14 dniach (dzien ${dayNumber}).`;
+  const delayReason = activeStep?.reason ?? '';
+  const statusText = activeStep
+    ? `Dzien ${dayNumber}. Aktywny krok: ${activeStep.title}. Status: ${activeStep.status}.`
+    : `Dzien ${dayNumber}. Oczekiwanie na pierwszy krok onboardingu.`;
 
   return {
     isActive,
-    mode,
-    modeLabel: resolvedBlueprint.modeLabel,
-    rows,
+    mode: normalizedMode,
+    modeLabel: guide?.modeLabel ?? 'Onboarding',
+    startType,
+    rows: onboardingRows,
     dueItems,
     todayItems: [...new Set(todayItems)],
-    checklistStart: [...resolvedBlueprint.checklistStart],
-    firstMeasurements: [...resolvedBlueprint.firstMeasurements],
+    checklistStart: [...(guide?.checklistStart ?? [])],
+    firstMeasurements: [...(guide?.firstMeasurements ?? [])],
     statusText,
     dayNumber,
-    targetEndDay: onboardingWindowDays,
-    isStabilized: Boolean(cycleState.isStabilized),
+    targetEndDay,
+    isStabilized,
+    activeStep,
+    nextStep,
+    delayReason,
+    requiredTestsNow: [...new Set(activeStep?.tests ?? [])],
+    actionsToday: [...new Set(activeStep?.actionsForToday ?? activeStep?.actions ?? [])],
   };
 }
