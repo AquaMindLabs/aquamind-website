@@ -1,4 +1,18 @@
 export type EquipmentType = 'heater' | 'filter';
+export type FilterType =
+  | 'internal'
+  | 'cascade'
+  | 'canister'
+  | 'sponge'
+  | 'sump_panel';
+
+export const FILTER_REAL_FLOW_FACTOR_BY_TYPE: Record<FilterType, number> = {
+  internal: 0.7,
+  cascade: 0.65,
+  canister: 0.55,
+  sponge: 0.5,
+  sump_panel: 0.7,
+};
 
 export type EquipmentCatalogItem = {
   id: string;
@@ -7,6 +21,9 @@ export type EquipmentCatalogItem = {
   model?: string;
   powerW?: number | string | null;
   flowLh?: number | string | null;
+  filterType?: FilterType | string;
+  effectiveFlowFactor?: number | string | null;
+  filterEfficiencyFactor?: number | string | null;
   tankMinLiters?: number | string | null;
   tankMaxLiters?: number | string | null;
 };
@@ -18,6 +35,9 @@ export type TankEquipment = {
   model?: string;
   powerW?: number | string | null;
   flowLh?: number | string | null;
+  filterType?: FilterType | string;
+  effectiveFlowFactor?: number | string | null;
+  filterEfficiencyFactor?: number | string | null;
   tankMinLiters?: number | string | null;
   tankMaxLiters?: number | string | null;
   source?: string;
@@ -26,10 +46,41 @@ export type TankEquipment = {
 
 export type TankInput = {
   liters?: number | string | null;
+  targetTemperatureC?: number | string | null;
+  ambientTemperatureC?: number | string | null;
+  defaultAmbientTemperatureC?: number | string | null;
+  roomTemperatureMode?: string | null;
   heaterEquipments?: TankEquipment[] | null;
   filterEquipments?: TankEquipment[] | null;
   heaterEquipment?: TankEquipment | null;
   filterEquipment?: TankEquipment | null;
+};
+
+export type RoomTemperatureMode =
+  | 'cold'
+  | 'normal'
+  | 'warm'
+  | 'very_warm'
+  | 'custom';
+
+export type HeaterStatus =
+  | 'no_heater_needed'
+  | 'underpowered'
+  | 'slightly_underpowered'
+  | 'adequate'
+  | 'strong'
+  | 'oversized';
+
+export type HeaterRequirementResult = {
+  targetTemperatureC: number;
+  ambientTemperatureC: number;
+  temperatureDeltaC: number;
+  totalHeaterPowerW: number;
+  requiredHeaterPowerW: number;
+  heaterStatus: HeaterStatus;
+  warnings: string[];
+  recommendations: string[];
+  usedDefaultAmbientTemperature: boolean;
 };
 
 export function normalizeEquipmentType(value: unknown): EquipmentType | '' {
@@ -45,6 +96,180 @@ export function toFiniteNumber(value: unknown): number | null {
   return Number.isFinite(numeric) ? numeric : null;
 }
 
+export function normalizeFilterType(value: unknown): FilterType | '' {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized === 'internal') {
+    return 'internal';
+  }
+  if (normalized === 'cascade') {
+    return 'cascade';
+  }
+  if (normalized === 'canister') {
+    return 'canister';
+  }
+  if (normalized === 'sponge') {
+    return 'sponge';
+  }
+  if (normalized === 'sump_panel') {
+    return 'sump_panel';
+  }
+  return '';
+}
+
+export function getFilterRealFlowFactor(
+  filterType: unknown,
+  explicitFactor?: unknown
+): number {
+  const explicit = toFiniteNumber(explicitFactor);
+  if (explicit !== null && explicit > 0 && explicit <= 1) {
+    return explicit;
+  }
+
+  const normalizedType = normalizeFilterType(filterType);
+  if (!normalizedType) {
+    return 1;
+  }
+
+  return FILTER_REAL_FLOW_FACTOR_BY_TYPE[normalizedType];
+}
+
+function resolveAmbientTemperatureC(tank: TankInput | null | undefined) {
+  const defaultAmbientTemperatureC =
+    toFiniteNumber(tank?.defaultAmbientTemperatureC) ?? 20;
+  const explicitAmbient = toFiniteNumber(tank?.ambientTemperatureC);
+  const mode = String(tank?.roomTemperatureMode ?? '').trim().toLowerCase();
+  if (explicitAmbient !== null) {
+    return {
+      ambientTemperatureC: explicitAmbient,
+      usedDefault: false,
+      mode: mode || 'custom',
+    };
+  }
+  if (mode === 'cold') {
+    return { ambientTemperatureC: 18, usedDefault: false, mode };
+  }
+  if (mode === 'warm') {
+    return { ambientTemperatureC: 22, usedDefault: false, mode };
+  }
+  if (mode === 'very_warm') {
+    return { ambientTemperatureC: 24, usedDefault: false, mode };
+  }
+  if (mode === 'normal') {
+    return { ambientTemperatureC: 20, usedDefault: false, mode };
+  }
+  return {
+    ambientTemperatureC: defaultAmbientTemperatureC,
+    usedDefault: true,
+    mode: mode || 'normal',
+  };
+}
+
+function getWattsPerLiterByDelta(deltaC: number): number {
+  if (deltaC <= 2) return 0.5;
+  if (deltaC <= 5) return 1.0;
+  if (deltaC <= 8) return 1.5;
+  if (deltaC <= 12) return 2.0;
+  return 2.5;
+}
+
+export function calculateHeaterRequirement(
+  aquarium: TankInput | null | undefined,
+  heaters: TankEquipment[] | null | undefined
+): HeaterRequirementResult {
+  const volumeLiters = toFiniteNumber(aquarium?.liters) ?? 0;
+  const targetTemperatureC = toFiniteNumber(aquarium?.targetTemperatureC) ?? 25;
+  const ambientResolved = resolveAmbientTemperatureC(aquarium);
+  const ambientTemperatureC = ambientResolved.ambientTemperatureC;
+  const temperatureDeltaC = Math.round((targetTemperatureC - ambientTemperatureC) * 10) / 10;
+  const powerValues = (heaters ?? [])
+    .map((item) => toFiniteNumber(item?.powerW))
+    .filter((value): value is number => value !== null && value > 0);
+  const totalHeaterPowerW = powerValues.reduce((sum, value) => sum + value, 0);
+  const requiredHeaterPowerW =
+    volumeLiters > 0 && temperatureDeltaC > 0
+      ? volumeLiters * getWattsPerLiterByDelta(temperatureDeltaC)
+      : 0;
+  const warnings: string[] = [];
+  const recommendations: string[] = [];
+
+  if (ambientResolved.usedDefault) {
+    warnings.push(
+      'Przyjeto domyslna temperature pomieszczenia 20 C. W cieplejszym pomieszczeniu slabsza grzalka moze wystarczyc, a w chlodniejszym moze byc za slaba.'
+    );
+  }
+
+  let heaterStatus: HeaterStatus = 'adequate';
+
+  if (temperatureDeltaC <= 0 || requiredHeaterPowerW <= 0) {
+    heaterStatus = 'no_heater_needed';
+    recommendations.push(
+      'Przy tej temperaturze otoczenia grzalka nie jest potrzebna do osiagniecia temperatury docelowej, ale moze pomagac w stabilizacji temperatury.'
+    );
+    if (totalHeaterPowerW > 0) {
+      recommendations.push(
+        'Jesli pomieszczenie ma wahania temperatury, zostaw grzalke z termostatem dla stabilnosci.'
+      );
+    }
+    return {
+      targetTemperatureC,
+      ambientTemperatureC,
+      temperatureDeltaC,
+      totalHeaterPowerW: Math.round(totalHeaterPowerW),
+      requiredHeaterPowerW: Math.round(requiredHeaterPowerW),
+      heaterStatus,
+      warnings,
+      recommendations,
+      usedDefaultAmbientTemperature: ambientResolved.usedDefault,
+    };
+  }
+
+  const ratio = totalHeaterPowerW / Math.max(1, requiredHeaterPowerW);
+  if (ratio < 0.7) {
+    heaterStatus = 'underpowered';
+    warnings.push(
+      'Grzalka jest prawdopodobnie za slaba dla tej roznicy temperatur. Rozwaz mocniejsza grzalke lub druga grzalke.'
+    );
+  } else if (ratio < 0.9) {
+    heaterStatus = 'slightly_underpowered';
+    warnings.push(
+      'Grzalka moze wystarczyc w cieplym pomieszczeniu, ale w chlodniejszym moze miec problem z utrzymaniem temperatury.'
+    );
+  } else if (ratio <= 1.5) {
+    heaterStatus = 'adequate';
+    recommendations.push(
+      'Moc grzalki jest wystarczajaca dla akwarium przy zalozonej temperaturze otoczenia.'
+    );
+  } else if (ratio <= 2.5) {
+    heaterStatus = 'strong';
+    recommendations.push(
+      'Moc grzalki jest duza i powinna zapewnic rezerwe cieplna przy spadkach temperatury otoczenia.'
+    );
+  } else {
+    heaterStatus = 'oversized';
+    warnings.push(
+      'Grzalka ma duza moc wzgledem potrzeb. Przy sprawnym termostacie zwykle nie jest to problem, ale awaria moze szybciej przegrzac wode.'
+    );
+  }
+
+  if (volumeLiters >= 150 && (heaters?.length ?? 0) <= 1) {
+    recommendations.push(
+      'W wiekszych akwariach dwie grzalki moga lepiej rozkladac cieplo i zmniejszac ryzyko gwaltownych zmian temperatury.'
+    );
+  }
+
+  return {
+    targetTemperatureC,
+    ambientTemperatureC,
+    temperatureDeltaC,
+    totalHeaterPowerW: Math.round(totalHeaterPowerW),
+    requiredHeaterPowerW: Math.round(requiredHeaterPowerW),
+    heaterStatus,
+    warnings,
+    recommendations,
+    usedDefaultAmbientTemperature: ambientResolved.usedDefault,
+  };
+}
+
 export type EquipmentSuggestion = {
   id: string;
   label: string;
@@ -58,6 +283,7 @@ export type EquipmentAssessmentEntry = {
   suggestions: EquipmentSuggestion[];
   equipments: TankEquipment[];
   equipment: TankEquipment | null;
+  analysis?: Record<string, unknown> | null;
 };
 
 export type EquipmentAssessmentResult = {
@@ -69,6 +295,12 @@ export function buildTankEquipmentAssessment(
   tank: TankInput | null | undefined,
   equipmentCatalog: EquipmentCatalogItem[]
 ): EquipmentAssessmentResult {
+  const equipmentCatalogById = new Map(
+    equipmentCatalog.map((item) => [
+      String(item?.id ?? '').trim().toLowerCase(),
+      item,
+    ])
+  );
   const STATUS_PRIORITY: Record<
     EquipmentAssessmentEntry['status'],
     number
@@ -84,6 +316,30 @@ export function buildTankEquipmentAssessment(
   ): EquipmentAssessmentEntry['status'] =>
     STATUS_PRIORITY[candidate] > STATUS_PRIORITY[current] ? candidate : current;
   const liters = toFiniteNumber(tank?.liters);
+  const resolveFilterMetadata = (item: TankEquipment | EquipmentCatalogItem) => {
+    const itemId = String(item?.id ?? '').trim().toLowerCase();
+    const catalogEntry = itemId ? equipmentCatalogById.get(itemId) : null;
+    const filterType =
+      normalizeFilterType(item?.filterType) ||
+      normalizeFilterType(catalogEntry?.filterType);
+    const directFactor =
+      toFiniteNumber(item?.effectiveFlowFactor) ??
+      toFiniteNumber(item?.filterEfficiencyFactor);
+    const catalogFactor =
+      toFiniteNumber(catalogEntry?.effectiveFlowFactor) ??
+      toFiniteNumber(catalogEntry?.filterEfficiencyFactor);
+    const factor =
+      directFactor !== null && directFactor > 0 && directFactor <= 1
+        ? directFactor
+        : catalogFactor !== null && catalogFactor > 0 && catalogFactor <= 1
+          ? catalogFactor
+          : getFilterRealFlowFactor(filterType);
+
+    return {
+      filterType,
+      factor,
+    };
+  };
   const normalizeEquipmentList = (
     list: TankEquipment[] | null | undefined,
     fallbackItem: TankEquipment | null | undefined,
@@ -188,12 +444,14 @@ export function buildTankEquipmentAssessment(
         : equipmentCatalog.filter((item) => item.type === type)
     )
       .map((item) => {
-        const metric = type === 'heater'
-          ? toFiniteNumber(item.powerW) ?? 0
-          : toFiniteNumber(item.flowLh) ?? 0;
+        const metric =
+          type === 'heater'
+            ? toFiniteNumber(item.powerW) ?? 0
+            : (toFiniteNumber(item.flowLh) ?? 0) * resolveFilterMetadata(item).factor;
         return {
           ...item,
           score: Math.abs(metric - targetValue),
+          metric,
         };
       })
       .sort((a, b) => a.score - b.score);
@@ -203,7 +461,9 @@ export function buildTankEquipmentAssessment(
       label:
         type === 'heater'
           ? `${item.brand} ${item.model} (${item.powerW} W)`
-          : `${item.brand} ${item.model} (${item.flowLh} l/h)`,
+          : `${item.brand} ${item.model} (realnie ${Math.round(
+              Number(item.metric ?? 0)
+            )} l/h, nominalnie ${item.flowLh} l/h)`,
     }));
   };
 
@@ -214,19 +474,19 @@ export function buildTankEquipmentAssessment(
   }
 
   if (heaterEquipments.length > 0) {
+    const heaterRequirement = calculateHeaterRequirement(tank, heaterEquipments);
     const powerValues = heaterEquipments
       .map((item) => toFiniteNumber(item.powerW))
-      .filter((value): value is number => value !== null);
+      .filter((value): value is number => value !== null && value > 0);
     const declaredMaxLitersValues = heaterEquipments
       .map((item) => toFiniteNumber(item.tankMaxLiters))
       .filter((value): value is number => value !== null && value > 0);
-    const totalPowerW =
-      powerValues.length > 0 ? powerValues.reduce((sum, value) => sum + value, 0) : null;
+    const totalPowerW = heaterRequirement.totalHeaterPowerW;
     const totalDeclaredMaxLiters =
       declaredMaxLitersValues.length > 0
         ? declaredMaxLitersValues.reduce((sum, value) => sum + value, 0)
         : null;
-    const ratio = totalPowerW !== null ? totalPowerW / liters : null;
+    const ratio = totalPowerW > 0 ? totalPowerW / liters : null;
     const declaredCoverage =
       totalDeclaredMaxLiters !== null ? totalDeclaredMaxLiters / liters : null;
     const missingPowerCount = heaterEquipments.length - powerValues.length;
@@ -234,38 +494,50 @@ export function buildTankEquipmentAssessment(
     const result: EquipmentAssessmentEntry = {
       status: 'warning',
       title: 'Grzalka',
-      details:
-        totalPowerW === null
-          ? 'Brak mocy grzalek w danych.'
-          : `${equipmentLabel || 'Grzalka'} - razem ${Math.round(totalPowerW)} W (${(ratio ?? 0).toFixed(2)} W/l).`,
+      details: `${equipmentLabel || 'Grzalka'} - moc ${Math.round(totalPowerW)} W, cel ${heaterRequirement.targetTemperatureC} C, otoczenie ${heaterRequirement.ambientTemperatureC} C, delta ${heaterRequirement.temperatureDeltaC} C, wymagane ok. ${heaterRequirement.requiredHeaterPowerW} W.`,
       actions: [],
       suggestions: [],
       equipments: heaterEquipments,
       equipment: heaterEquipments[0] ?? null,
+      analysis: {
+        ...heaterRequirement,
+        ratioWPerLiter: ratio,
+      },
     };
 
-    if (totalPowerW === null || ratio === null) {
+    if (ratio === null) {
       result.status = 'warning';
       result.actions.push('Uzupelnij moce grzalek albo wybierz modele z katalogu.');
-    } else if (ratio < 0.6) {
-      result.status = ratio < 0.45 ? 'critical' : 'warning';
-      result.actions.push('Laczna moc grzalek jest zbyt niska - dogrzewanie moze byc niestabilne.');
-      if (ratio >= 0.5) {
-        result.actions.push('Mozesz ograniczyc straty ciepla (pokrywa, mniejszy ruch tafli), ale warto rozwazyc mocniejszy zestaw.');
-      } else {
-        result.actions.push('Zalecane dolozenie lub wymiana na mocniejszy zestaw.');
-      }
-    } else if (ratio > 1.5) {
-      result.status = ratio > 2.2 ? 'critical' : 'warning';
-      result.actions.push('Laczna moc grzalek jest wysoka wzgledem litrazu.');
-      if (ratio <= 2.2) {
-        result.actions.push('Jesli termostat trzyma stabilnie temperature, moze dzialac poprawnie.');
-      } else {
-        result.actions.push('Zalecane odjecie jednej grzalki lub slabszy zestaw dla bezpieczniejszej pracy.');
-      }
+    } else if (heaterRequirement.heaterStatus === 'underpowered') {
+      result.status = 'critical';
+      result.actions.push(
+        'Grzalka jest prawdopodobnie za slaba dla tej roznicy temperatur. Rozwaz mocniejsza grzalke lub druga grzalke.'
+      );
+    } else if (heaterRequirement.heaterStatus === 'slightly_underpowered') {
+      result.status = 'warning';
+      result.actions.push(
+        'Grzalka moze wystarczyc w cieplym pomieszczeniu, ale w chlodniejszym moze miec problem z utrzymaniem temperatury.'
+      );
+    } else if (heaterRequirement.heaterStatus === 'oversized') {
+      result.status = 'warning';
+      result.actions.push(
+        'Grzalka ma duza moc wzgledem potrzeb. Przy sprawnym termostacie zwykle nie jest to problem, ale awaria moze szybciej przegrzac wode.'
+      );
+    } else if (heaterRequirement.heaterStatus === 'strong') {
+      result.status = 'ok';
+      result.actions.push(
+        'Moc grzalki jest wieksza od minimum i daje rezerwe przy spadkach temperatury pomieszczenia.'
+      );
+    } else if (heaterRequirement.heaterStatus === 'no_heater_needed') {
+      result.status = 'ok';
+      result.actions.push(
+        'Przy tej temperaturze otoczenia grzalka nie jest potrzebna do osiagniecia temperatury docelowej, ale moze pomagac w stabilizacji temperatury.'
+      );
     } else {
       result.status = 'ok';
-      result.actions.push('Laczna moc grzalek jest dobrze dopasowana do litrazu.');
+      result.actions.push(
+        'Moc grzalki jest wystarczajaca dla akwarium przy zalozonej temperaturze otoczenia.'
+      );
     }
 
     if (missingPowerCount > 0) {
@@ -286,26 +558,82 @@ export function buildTankEquipmentAssessment(
       }
     }
 
-    result.suggestions = pickSuggestions('heater', liters);
+    heaterRequirement.warnings.forEach((warning) => {
+      if (!result.actions.includes(warning)) {
+        result.actions.push(warning);
+      }
+    });
+    heaterRequirement.recommendations.forEach((recommendation) => {
+      if (!result.actions.includes(recommendation)) {
+        result.actions.push(recommendation);
+      }
+    });
+
+    result.suggestions = pickSuggestions(
+      'heater',
+      Math.max(heaterRequirement.requiredHeaterPowerW, liters)
+    );
     baseResult.heater = result;
   } else {
-    baseResult.heater.suggestions = pickSuggestions('heater', liters);
+    const heaterRequirement = calculateHeaterRequirement(tank, []);
+    baseResult.heater.details = `Brak przypisanej grzalki. Cel ${heaterRequirement.targetTemperatureC} C, otoczenie ${heaterRequirement.ambientTemperatureC} C, delta ${heaterRequirement.temperatureDeltaC} C, wymagane ok. ${heaterRequirement.requiredHeaterPowerW} W.`;
+    baseResult.heater.analysis = heaterRequirement;
+    baseResult.heater.actions = [
+      ...heaterRequirement.warnings,
+      ...heaterRequirement.recommendations,
+      ...baseResult.heater.actions,
+    ];
+    baseResult.heater.suggestions = pickSuggestions(
+      'heater',
+      Math.max(heaterRequirement.requiredHeaterPowerW, liters)
+    );
   }
 
   if (filterEquipments.length > 0) {
-    const flowValues = filterEquipments
-      .map((item) => toFiniteNumber(item.flowLh))
-      .filter((value): value is number => value !== null);
+    const flowPairs = filterEquipments
+      .map((item) => {
+        const nominalFlow = toFiniteNumber(item.flowLh);
+        if (nominalFlow === null) {
+          return null;
+        }
+        const { factor } = resolveFilterMetadata(item);
+        return {
+          nominalFlow,
+          effectiveFlow: nominalFlow * factor,
+          effectiveFlowFactor: factor,
+        };
+      })
+      .filter(
+        (
+          value
+        ): value is {
+          nominalFlow: number;
+          effectiveFlow: number;
+          effectiveFlowFactor: number;
+        } =>
+          value !== null
+      );
+    const flowValues = flowPairs.map((item) => item.nominalFlow);
+    const effectiveFlowValues = flowPairs.map((item) => item.effectiveFlow);
     const declaredMaxLitersValues = filterEquipments
       .map((item) => toFiniteNumber(item.tankMaxLiters))
       .filter((value): value is number => value !== null && value > 0);
     const totalFlowLh =
       flowValues.length > 0 ? flowValues.reduce((sum, value) => sum + value, 0) : null;
+    const totalEffectiveFlowLh =
+      effectiveFlowValues.length > 0
+        ? effectiveFlowValues.reduce((sum, value) => sum + value, 0)
+        : null;
     const totalDeclaredMaxLiters =
       declaredMaxLitersValues.length > 0
         ? declaredMaxLitersValues.reduce((sum, value) => sum + value, 0)
         : null;
-    const turnover = totalFlowLh !== null ? totalFlowLh / liters : null;
+    const turnover =
+      totalEffectiveFlowLh !== null ? totalEffectiveFlowLh / liters : null;
+    const weightedEffectiveFlowFactor =
+      totalFlowLh !== null && totalFlowLh > 0 && totalEffectiveFlowLh !== null
+        ? totalEffectiveFlowLh / totalFlowLh
+        : null;
     const declaredCoverage =
       totalDeclaredMaxLiters !== null ? totalDeclaredMaxLiters / liters : null;
     const missingFlowCount = filterEquipments.length - flowValues.length;
@@ -314,16 +642,29 @@ export function buildTankEquipmentAssessment(
       status: 'warning',
       title: 'Filtr',
       details:
-        totalFlowLh === null
+        totalEffectiveFlowLh === null
           ? 'Brak wydajnosci filtra w danych.'
-          : `${equipmentLabel || 'Filtr'} - razem ${Math.round(totalFlowLh)} l/h (${(turnover ?? 0).toFixed(1)}x/h).`,
+          : `${equipmentLabel || 'Filtr'} - realnie ${Math.round(totalEffectiveFlowLh)} l/h (${(turnover ?? 0).toFixed(1)}x/h)${
+              totalFlowLh !== null ? `, nominalnie ${Math.round(totalFlowLh)} l/h` : ''
+            }.`,
       actions: [],
       suggestions: [],
       equipments: filterEquipments,
       equipment: filterEquipments[0] ?? null,
+      analysis:
+        turnover === null
+          ? null
+          : {
+              turnoverPerHour: Math.round(turnover * 10) / 10,
+              effectiveFlowFactor:
+                weightedEffectiveFlowFactor === null
+                  ? null
+                  : Math.round(weightedEffectiveFlowFactor * 100) / 100,
+              hasStrongCurrentWarning: turnover > 10,
+            },
     };
 
-    if (totalFlowLh === null || turnover === null) {
+    if (totalEffectiveFlowLh === null || turnover === null) {
       result.status = 'warning';
       result.actions.push('Uzupelnij wydajnosci filtrow albo wybierz modele z katalogu.');
     } else if (turnover < 5) {

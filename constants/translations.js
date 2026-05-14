@@ -95,11 +95,11 @@ const TRANSLATIONS = {
     settingsSubscriptionTierPremium: 'Premium',
     settingsSubscriptionTierPro: 'Pro',
     settingsSubscriptionTierFreeDescription:
-      '1 akwarium, podstawowe parametry i historia do 5 wpisow.',
+      'Podstawowe prowadzenie jednego akwarium.',
     settingsSubscriptionTierPremiumDescription:
-      '3 akwaria, pelna historia, wykresy podstawowe i przypomnienia.',
+      'Pelna analiza akwarium, obsady, sprzetu i problemow.',
     settingsSubscriptionTierProDescription:
-      'Bez limitu akwariow, trendy, AI, Vision i najbardziej zaawansowana analiza.',
+      'Zaawansowany asystent z planem dzialania krok po kroku.',
     settingsSubscriptionCurrentBadge: 'Aktualny',
     trendDirectionUp: 'Trend rosnacy',
     trendDirectionDown: 'Trend spadkowy',
@@ -144,7 +144,7 @@ const TRANSLATIONS = {
       'Parametr {parameter} jest dostepny od planu {plan}.',
     subscriptionParameterLockedShort: 'Dostepne od planu {plan}.',
     subscriptionParameterAnalysisLocked:
-      'Szczegolowa analiza parametrow jest dostepna w planie Pro.',
+      'Szczegolowa analiza parametrow jest dostepna od planu Premium.',
     subscriptionHistoryLimitUsage:
       'Historia w planie {plan}: pokazujemy ostatnie {limit} wpisow z {current}.',
     subscriptionHistoryLimitUsageUnlimited:
@@ -579,11 +579,11 @@ const TRANSLATIONS = {
     settingsSubscriptionTierPremium: 'Premium',
     settingsSubscriptionTierPro: 'Pro',
     settingsSubscriptionTierFreeDescription:
-      '1 tank, basic parameters, and history limited to 5 entries.',
+      'Basic care for one aquarium.',
     settingsSubscriptionTierPremiumDescription:
-      '3 tanks, full history, basic charts, and reminders.',
+      'Full aquarium, stocking, equipment, and issue analysis.',
     settingsSubscriptionTierProDescription:
-      'Unlimited tanks, trends, AI, Vision, and the most advanced analysis.',
+      'Advanced assistant with a step-by-step action plan.',
     settingsSubscriptionCurrentBadge: 'Current',
     trendDirectionUp: 'Rising trend',
     trendDirectionDown: 'Falling trend',
@@ -628,7 +628,7 @@ const TRANSLATIONS = {
       'The {parameter} parameter is available from the {plan} plan.',
     subscriptionParameterLockedShort: 'Available from the {plan} plan.',
     subscriptionParameterAnalysisLocked:
-      'Detailed parameter analysis is available in the Pro plan.',
+      'Detailed parameter analysis is available from the Premium plan.',
     subscriptionHistoryLimitUsage:
       'History in the {plan} plan: showing the latest {limit} of {current} entries.',
     subscriptionHistoryLimitUsageUnlimited:
@@ -1061,11 +1061,11 @@ const TRANSLATIONS = {
     settingsSubscriptionTierPremium: 'Premium',
     settingsSubscriptionTierPro: 'Pro',
     settingsSubscriptionTierFreeDescription:
-      '1 Aquarium, Basisparameter und Verlauf mit bis zu 5 Eintragen.',
+      'Grundlegende Pflege fur ein Aquarium.',
     settingsSubscriptionTierPremiumDescription:
-      '3 Aquarien, voller Verlauf, Basisdiagramme und Erinnerungen.',
+      'Vollstandige Analyse von Aquarium, Besatz, Technik und Problemen.',
     settingsSubscriptionTierProDescription:
-      'Unbegrenzte Aquarien, Trends, KI, Vision und die fortgeschrittenste Analyse.',
+      'Fortgeschrittener Assistent mit Schritt-fur-Schritt-Plan.',
     settingsSubscriptionCurrentBadge: 'Aktiv',
     trendDirectionUp: 'Steigender Trend',
     trendDirectionDown: 'Fallender Trend',
@@ -1113,7 +1113,7 @@ const TRANSLATIONS = {
       'Der Parameter {parameter} ist ab dem Plan {plan} verfugbar.',
     subscriptionParameterLockedShort: 'Verfugbar ab Plan {plan}.',
     subscriptionParameterAnalysisLocked:
-      'Die detaillierte Parameteranalyse ist im Pro-Plan verfugbar.',
+      'Die detaillierte Parameteranalyse ist ab dem Premium-Plan verfugbar.',
     subscriptionHistoryLimitUsage:
       'Verlauf im Plan {plan}: Die letzten {limit} von {current} Eintragen werden angezeigt.',
     subscriptionHistoryLimitUsageUnlimited:

@@ -1,4 +1,4 @@
-export const PLANT_CATALOG_STARTER = [
+const RAW_PLANT_CATALOG_STARTER = [
   {
     commonName: 'Anubias nana',
     latinName: 'Anubias barteri var. nana',
@@ -324,3 +324,267 @@ export const PLANT_CATALOG_STARTER = [
     notes: 'Drobna roslina plywajaca, szybko sie mnozy.',
   },
 ];
+
+function normalizeLatinCatalogKey(value) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ');
+}
+
+function buildCatalogId(prefix, latinName) {
+  const normalized = normalizeLatinCatalogKey(latinName)
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return `${prefix}_${normalized || 'unknown'}`;
+}
+
+const MVP_PLANT_PROFILE_OVERRIDES = Object.freeze({
+  'anubias barteri var. nana': {
+    lightDemand: 'low',
+    co2Demand: 'low',
+    growthRate: 'low',
+    difficulty: 'easy',
+    fertilizationDemand: 'low',
+    plantType: 'epiphyte',
+    placementZone: 'midground',
+    carboSensitivity: 'medium',
+    parameterStabilitySensitivity: 'medium',
+    minTankHeightCm: 18,
+  },
+  'microsorum pteropus': {
+    lightDemand: 'low',
+    co2Demand: 'low',
+    growthRate: 'low',
+    difficulty: 'easy',
+    fertilizationDemand: 'low',
+    plantType: 'epiphyte',
+    placementZone: 'background',
+    carboSensitivity: 'medium',
+    parameterStabilitySensitivity: 'medium',
+    minTankHeightCm: 24,
+  },
+  'cryptocoryne wendtii': {
+    lightDemand: 'low',
+    co2Demand: 'low',
+    growthRate: 'medium',
+    difficulty: 'easy',
+    fertilizationDemand: 'medium',
+    plantType: 'rooted',
+    placementZone: 'midground',
+    carboSensitivity: 'medium',
+    parameterStabilitySensitivity: 'high',
+    minTankHeightCm: 25,
+  },
+  'vallisneria spiralis': {
+    lightDemand: 'medium',
+    co2Demand: 'low',
+    growthRate: 'high',
+    difficulty: 'easy',
+    fertilizationDemand: 'medium',
+    plantType: 'rooted',
+    placementZone: 'background',
+    carboSensitivity: 'low',
+    parameterStabilitySensitivity: 'medium',
+    minTankHeightCm: 35,
+  },
+  'egeria densa': {
+    lightDemand: 'medium',
+    co2Demand: 'low',
+    growthRate: 'high',
+    difficulty: 'easy',
+    fertilizationDemand: 'low',
+    plantType: 'stem',
+    placementZone: 'background',
+    carboSensitivity: 'low',
+    parameterStabilitySensitivity: 'low',
+    minTankHeightCm: 25,
+  },
+  'hygrophila polysperma': {
+    lightDemand: 'medium',
+    co2Demand: 'low',
+    growthRate: 'high',
+    difficulty: 'easy',
+    fertilizationDemand: 'medium',
+    plantType: 'stem',
+    placementZone: 'background',
+    carboSensitivity: 'low',
+    parameterStabilitySensitivity: 'medium',
+    minTankHeightCm: 28,
+  },
+  'ludwigia repens': {
+    lightDemand: 'medium',
+    co2Demand: 'medium',
+    growthRate: 'medium',
+    difficulty: 'medium',
+    fertilizationDemand: 'medium',
+    plantType: 'stem',
+    placementZone: 'midground',
+    carboSensitivity: 'medium',
+    parameterStabilitySensitivity: 'medium',
+    minTankHeightCm: 25,
+  },
+  'rotala rotundifolia': {
+    lightDemand: 'high',
+    co2Demand: 'medium',
+    growthRate: 'high',
+    difficulty: 'medium',
+    fertilizationDemand: 'high',
+    plantType: 'stem',
+    placementZone: 'background',
+    carboSensitivity: 'medium',
+    parameterStabilitySensitivity: 'high',
+    minTankHeightCm: 30,
+  },
+  'pogostemon stellatus': {
+    lightDemand: 'high',
+    co2Demand: 'high',
+    growthRate: 'high',
+    difficulty: 'hard',
+    fertilizationDemand: 'high',
+    plantType: 'stem',
+    placementZone: 'background',
+    carboSensitivity: 'high',
+    parameterStabilitySensitivity: 'high',
+    minTankHeightCm: 35,
+  },
+  'micranthemum tweediei': {
+    lightDemand: 'high',
+    co2Demand: 'high',
+    growthRate: 'medium',
+    difficulty: 'medium',
+    fertilizationDemand: 'high',
+    plantType: 'carpet',
+    placementZone: 'foreground',
+    carboSensitivity: 'high',
+    parameterStabilitySensitivity: 'high',
+    minTankHeightCm: 20,
+  },
+  'glossostigma elatinoides': {
+    lightDemand: 'high',
+    co2Demand: 'high',
+    growthRate: 'medium',
+    difficulty: 'hard',
+    fertilizationDemand: 'high',
+    plantType: 'carpet',
+    placementZone: 'foreground',
+    carboSensitivity: 'high',
+    parameterStabilitySensitivity: 'high',
+    minTankHeightCm: 20,
+  },
+  'eleocharis acicularis mini': {
+    lightDemand: 'high',
+    co2Demand: 'medium',
+    growthRate: 'medium',
+    difficulty: 'medium',
+    fertilizationDemand: 'medium',
+    plantType: 'carpet',
+    placementZone: 'foreground',
+    carboSensitivity: 'medium',
+    parameterStabilitySensitivity: 'medium',
+    minTankHeightCm: 18,
+  },
+  'taxiphyllum barbieri': {
+    lightDemand: 'low',
+    co2Demand: 'low',
+    growthRate: 'medium',
+    difficulty: 'easy',
+    fertilizationDemand: 'low',
+    plantType: 'moss',
+    placementZone: 'hardscape',
+    carboSensitivity: 'medium',
+    parameterStabilitySensitivity: 'low',
+    minTankHeightCm: 10,
+  },
+  'pistia stratiotes': {
+    lightDemand: 'medium',
+    co2Demand: 'low',
+    growthRate: 'high',
+    difficulty: 'easy',
+    fertilizationDemand: 'medium',
+    plantType: 'floating',
+    placementZone: 'floating',
+    carboSensitivity: 'low',
+    parameterStabilitySensitivity: 'low',
+    minTankHeightCm: 20,
+  },
+  'limnobium laevigatum': {
+    lightDemand: 'medium',
+    co2Demand: 'low',
+    growthRate: 'high',
+    difficulty: 'easy',
+    fertilizationDemand: 'medium',
+    plantType: 'floating',
+    placementZone: 'floating',
+    carboSensitivity: 'low',
+    parameterStabilitySensitivity: 'low',
+    minTankHeightCm: 20,
+  },
+});
+
+const DEFAULT_PLANT_ANALYTICS = Object.freeze({
+  lightDemand: 'medium',
+  co2Demand: 'medium',
+  growthRate: 'medium',
+  difficulty: 'medium',
+  fertilizationDemand: 'medium',
+  plantType: 'stem',
+  placementZone: 'midground',
+  carboSensitivity: 'medium',
+  parameterStabilitySensitivity: 'medium',
+  minTankHeightCm: 20,
+  compatibleWithDiggers: false,
+  lightHoursMin: 6,
+  lightHoursMax: 9,
+});
+
+const LIGHT_LUMEN_RANGE_BY_DEMAND = Object.freeze({
+  low: { min: 10, max: 22 },
+  medium: { min: 20, max: 35 },
+  high: { min: 32, max: 55 },
+});
+
+function buildPlantAnalytics(item) {
+  const latinKey = normalizeLatinCatalogKey(item?.latinName);
+  const override = MVP_PLANT_PROFILE_OVERRIDES[latinKey] ?? {};
+  const merged = {
+    ...DEFAULT_PLANT_ANALYTICS,
+    ...override,
+  };
+  const lightRange = LIGHT_LUMEN_RANGE_BY_DEMAND[merged.lightDemand] ??
+    LIGHT_LUMEN_RANGE_BY_DEMAND.medium;
+
+  return {
+    ...merged,
+    lightLumenMinPerLiter: lightRange.min,
+    lightLumenMaxPerLiter: lightRange.max,
+    minTankVolumeL: Math.max(10, Number(item?.minLiters) || 20),
+  };
+}
+
+function enrichPlantRecord(item) {
+  const latinName = String(item?.latinName ?? '').trim();
+  return {
+    ...item,
+    id: buildCatalogId('plant', latinName),
+    ...buildPlantAnalytics(item),
+  };
+}
+
+function dedupeByLatinName(items) {
+  const byLatin = new Map();
+  items.forEach((item) => {
+    const latinKey = normalizeLatinCatalogKey(item?.latinName);
+    if (!latinKey || byLatin.has(latinKey)) {
+      return;
+    }
+    byLatin.set(latinKey, item);
+  });
+  return [...byLatin.values()];
+}
+
+export const PLANT_CATALOG_STARTER = dedupeByLatinName(
+  RAW_PLANT_CATALOG_STARTER.map((item) => enrichPlantRecord(item))
+);

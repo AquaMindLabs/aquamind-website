@@ -6,15 +6,22 @@ import { doc, onSnapshot } from 'firebase/firestore';
 import { Platform } from 'react-native';
 import {
   DEFAULT_SUBSCRIPTION_STATE,
+  canCreateTank as canCreateTankForPlan,
   canAccessMeasurementKey,
+  canUseFeature as canUseFeatureByPlan,
+  getCapability as getCapabilityByPlan,
   getAllowedMeasurementKeys,
+  getPlanLimits,
   getSubscriptionEntitlements,
   getSubscriptionLimitValue,
   getSubscriptionPlanDefinition,
   getSubscriptionStoreProductId,
   hasSubscriptionFeature,
+  isPaidPlan,
   isSubscriptionActive,
   normalizeSubscriptionState,
+  type SubscriptionCapabilityKey,
+  type SubscriptionCapabilities,
   type SubscriptionEntitlements,
   type SubscriptionFeatureKey,
   type SubscriptionLimitKey,
@@ -102,6 +109,9 @@ type TankContextValue = {
   sectionEntrySource: SectionEntrySource;
   appSettings: AppSettings;
   subscription: SubscriptionState;
+  currentPlan: SubscriptionTier;
+  planLimits: { maxTanks: number | null; historyDays: number | null };
+  isPaidPlan: boolean;
   subscriptionPlan: SubscriptionPlanDefinition;
   subscriptionEntitlements: SubscriptionEntitlements;
   subscriptionActive: boolean;
@@ -111,6 +121,12 @@ type TankContextValue = {
   applyAdminSubscriptionTier: (tier: SubscriptionTier) => boolean;
   canManageSubscriptionManually: boolean;
   getStoreProductIdForTier: (tier: SubscriptionTier) => string | null;
+  canUseFeature: (featureKey: SubscriptionFeatureKey) => boolean;
+  isFeatureLocked: (featureKey: SubscriptionFeatureKey) => boolean;
+  canCreateTank: (currentTankCount: number) => boolean;
+  getCapability: (
+    capabilityKey: SubscriptionCapabilityKey
+  ) => SubscriptionCapabilities[SubscriptionCapabilityKey];
   hasSubscriptionFeature: (featureKey: SubscriptionFeatureKey) => boolean;
   getSubscriptionLimit: (limitKey: SubscriptionLimitKey) => number | null;
   getAllowedMeasurementKeys: () => SubscriptionMeasurementParameterKey[];
@@ -467,6 +483,9 @@ export function TankProvider({ children }: TankProviderProps) {
   }, []);
 
   const subscription = appSettings.subscription;
+  const currentPlan = subscription.tier;
+  const planLimits = getPlanLimits(currentPlan);
+  const paidPlan = isPaidPlan(currentPlan);
   const subscriptionPlan = getSubscriptionPlanDefinition(subscription.tier);
   const subscriptionEntitlements = getSubscriptionEntitlements(subscription);
   const subscriptionActive = isSubscriptionActive(subscription);
@@ -579,6 +598,29 @@ export function TankProvider({ children }: TankProviderProps) {
     []
   );
 
+  const canUseFeature = useCallback(
+    (featureKey: SubscriptionFeatureKey) =>
+      canUseFeatureByPlan(currentPlan, featureKey),
+    [currentPlan]
+  );
+
+  const isFeatureLocked = useCallback(
+    (featureKey: SubscriptionFeatureKey) => !canUseFeature(featureKey),
+    [canUseFeature]
+  );
+
+  const canCreateTank = useCallback(
+    (currentTankCount: number) =>
+      canCreateTankForPlan(currentPlan, currentTankCount),
+    [currentPlan]
+  );
+
+  const getCapability = useCallback(
+    (capabilityKey: SubscriptionCapabilityKey) =>
+      getCapabilityByPlan(currentPlan, capabilityKey),
+    [currentPlan]
+  );
+
   useEffect(() => {
     if (!settingsLoaded) {
       previousSubscriptionRef.current = subscription;
@@ -645,6 +687,9 @@ export function TankProvider({ children }: TankProviderProps) {
         sectionEntrySource,
         appSettings,
         subscription,
+        currentPlan,
+        planLimits,
+        isPaidPlan: paidPlan,
         subscriptionPlan,
         subscriptionEntitlements,
         subscriptionActive,
@@ -654,6 +699,10 @@ export function TankProvider({ children }: TankProviderProps) {
         applyAdminSubscriptionTier,
         canManageSubscriptionManually,
         getStoreProductIdForTier,
+        canUseFeature,
+        isFeatureLocked,
+        canCreateTank,
+        getCapability,
         hasSubscriptionFeature: hasFeatureAccess,
         getSubscriptionLimit,
         getAllowedMeasurementKeys:

@@ -8,8 +8,15 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "expo lint",
+    "postinstall": "node scripts/patch-expo-keep-awake.cjs",
     "test:firestore": "firebase emulators:exec --only firestore --project demo-aquarium-mobile \"node --test tests/firestore.rules.test.cjs\"",
-    "firestore:deploy:rules": "firebase deploy --only firestore:rules --project my-aquarium-assistant"
+    "firestore:deploy:rules": "firebase deploy --only firestore:rules --project my-aquarium-assistant",
+    "sync:catalog:dry-run": "node scripts/sync-fish-plant-catalog.cjs --dry-run",
+    "sync:catalog": "node scripts/sync-fish-plant-catalog.cjs --prune",
+    "sanitize:legacy:dry-run": "node scripts/sanitize-legacy-firestore-docs.cjs --dry-run",
+    "sanitize:legacy": "node scripts/sanitize-legacy-firestore-docs.cjs",
+    "sync:equipment:filter-types": "node scripts/sync-equipment-filter-types.cjs",
+    "sync:equipment:catalog": "node scripts/sync-equipment-catalog.cjs"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",

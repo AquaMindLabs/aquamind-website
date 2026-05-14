@@ -638,7 +638,453 @@ function buildFishImageUrls(latinName) {
   };
 }
 
-export const FISH_CATALOG_STARTER = RAW_FISH_CATALOG_STARTER.map((item) => ({
-  ...item,
-  ...buildFishImageUrls(item.latinName),
-}));
+function buildCatalogId(prefix, latinName) {
+  const normalized = normalizeLatinCatalogKey(latinName)
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return `${prefix}_${normalized || 'unknown'}`;
+}
+
+const MVP_FISH_DEFAULT_ANALYTICS = Object.freeze({
+  waterZone: 'middle',
+  territoryZone: 'middle',
+  socialStructure: 'group',
+  temperament: 'peaceful',
+  diet: 'omnivore',
+  activity: 'medium',
+  aggressionLevelNumeric: 1,
+  territorialityLevel: 1,
+  aggressionType: 'none',
+  predatorRisk: false,
+  eatsShrimp: 'no',
+  eatsSmallFish: false,
+  shrimpSafe: 'yes',
+  finNipper: false,
+  longFinRiskTarget: false,
+  needsShelter: false,
+  needsLineOfSightBreaks: false,
+  needsLargeFootprint: false,
+  territorySizeLiters: 0,
+  flowPreference: 'medium',
+  sensitiveToStrongCurrent: false,
+  wasteProductionLevel: 2,
+});
+
+const MVP_FISH_ANALYTICS_OVERRIDES = Object.freeze({
+  'poecilia reticulata': {
+    adultSizeCm: 4.5,
+    socialStructure: 'harem',
+    recommendedGroupSize: 6,
+    minTankLengthCm: 60,
+    preferredTankLengthCm: 80,
+  },
+  'poecilia sphenops': {
+    adultSizeCm: 9,
+    socialStructure: 'group',
+    recommendedGroupSize: 5,
+    minTankLengthCm: 90,
+    preferredTankLengthCm: 100,
+    wasteProductionLevel: 3,
+  },
+  'xiphophorus maculatus': {
+    adultSizeCm: 6,
+    socialStructure: 'group',
+    recommendedGroupSize: 6,
+    minTankLengthCm: 70,
+    preferredTankLengthCm: 80,
+  },
+  'xiphophorus hellerii': {
+    adultSizeCm: 10,
+    socialStructure: 'group',
+    recommendedGroupSize: 5,
+    minTankLengthCm: 100,
+    preferredTankLengthCm: 120,
+    activity: 'high',
+    wasteProductionLevel: 3,
+  },
+  'paracheirodon innesi': {
+    adultSizeCm: 3.5,
+    waterZone: 'middle',
+    socialStructure: 'school',
+    recommendedGroupSize: 10,
+    minTankLengthCm: 60,
+    preferredTankLengthCm: 80,
+  },
+  'paracheirodon axelrodi': {
+    adultSizeCm: 4,
+    waterZone: 'middle',
+    socialStructure: 'school',
+    recommendedGroupSize: 10,
+    minTankLengthCm: 70,
+    preferredTankLengthCm: 90,
+  },
+  'hyphessobrycon herbertaxelrodi': {
+    adultSizeCm: 4,
+    waterZone: 'middle',
+    socialStructure: 'school',
+    recommendedGroupSize: 10,
+    minTankLengthCm: 70,
+    preferredTankLengthCm: 90,
+  },
+  'trigonostigma heteromorpha': {
+    adultSizeCm: 4.5,
+    waterZone: 'middle',
+    socialStructure: 'school',
+    recommendedGroupSize: 10,
+    minTankLengthCm: 70,
+    preferredTankLengthCm: 90,
+  },
+  'danio rerio': {
+    adultSizeCm: 5,
+    waterZone: 'top',
+    socialStructure: 'school',
+    recommendedGroupSize: 10,
+    minTankLengthCm: 80,
+    preferredTankLengthCm: 100,
+    activity: 'high',
+    flowPreference: 'high',
+  },
+  'corydoras panda': {
+    adultSizeCm: 5,
+    waterZone: 'bottom',
+    territoryZone: 'bottom',
+    socialStructure: 'school',
+    recommendedGroupSize: 8,
+    minTankLengthCm: 75,
+    preferredTankLengthCm: 90,
+    needsShelter: true,
+  },
+  'corydoras aeneus': {
+    adultSizeCm: 6.5,
+    waterZone: 'bottom',
+    territoryZone: 'bottom',
+    socialStructure: 'school',
+    recommendedGroupSize: 8,
+    minTankLengthCm: 80,
+    preferredTankLengthCm: 100,
+    needsShelter: true,
+  },
+  'otocinclus affinis': {
+    adultSizeCm: 4.5,
+    waterZone: 'bottom',
+    territoryZone: 'bottom',
+    socialStructure: 'group',
+    recommendedGroupSize: 6,
+    minTankLengthCm: 70,
+    preferredTankLengthCm: 90,
+    diet: 'herbivore',
+    sensitiveToStrongCurrent: true,
+  },
+  'ancistrus cf. cirrhosus': {
+    adultSizeCm: 12,
+    waterZone: 'bottom',
+    territoryZone: 'bottom',
+    socialStructure: 'pair',
+    recommendedGroupSize: 1,
+    minTankLengthCm: 90,
+    preferredTankLengthCm: 100,
+    territorialityLevel: 2,
+    aggressionType: 'territorial',
+    needsShelter: true,
+    wasteProductionLevel: 3,
+  },
+  'pangio kuhlii': {
+    adultSizeCm: 9,
+    waterZone: 'bottom',
+    territoryZone: 'bottom',
+    socialStructure: 'group',
+    recommendedGroupSize: 8,
+    minTankLengthCm: 80,
+    preferredTankLengthCm: 100,
+    temperament: 'timid',
+    needsShelter: true,
+  },
+  'betta splendens': {
+    adultSizeCm: 6.5,
+    waterZone: 'top',
+    territoryZone: 'whole_tank',
+    socialStructure: 'solo',
+    recommendedGroupSize: 1,
+    minTankLengthCm: 45,
+    preferredTankLengthCm: 60,
+    temperament: 'semi_aggressive',
+    aggressionLevelNumeric: 3,
+    territorialityLevel: 3,
+    aggressionType: 'territorial',
+    longFinRiskTarget: true,
+    sensitiveToStrongCurrent: true,
+    flowPreference: 'low',
+  },
+  'mikrogeophagus ramirezi': {
+    adultSizeCm: 6,
+    waterZone: 'bottom',
+    territoryZone: 'bottom',
+    socialStructure: 'pair',
+    recommendedGroupSize: 2,
+    minTankLengthCm: 80,
+    preferredTankLengthCm: 100,
+    temperament: 'semi_aggressive',
+    aggressionLevelNumeric: 2,
+    territorialityLevel: 2,
+    needsShelter: true,
+  },
+  'pterophyllum scalare': {
+    adultSizeCm: 15,
+    waterZone: 'middle',
+    territoryZone: 'middle',
+    socialStructure: 'group',
+    recommendedGroupSize: 5,
+    minTankLengthCm: 120,
+    preferredTankLengthCm: 140,
+    predatorRisk: true,
+    eatsSmallFish: true,
+    eatsShrimp: 'yes',
+    shrimpSafe: 'no',
+    aggressionType: 'predatory',
+    wasteProductionLevel: 4,
+    needsLargeFootprint: true,
+  },
+  'chindongo saulosi': {
+    adultSizeCm: 9,
+    waterZone: 'middle',
+    territoryZone: 'whole_tank',
+    socialStructure: 'harem',
+    recommendedGroupSize: 10,
+    minTankLengthCm: 120,
+    preferredTankLengthCm: 140,
+    temperament: 'aggressive',
+    aggressionLevelNumeric: 4,
+    territorialityLevel: 4,
+    aggressionType: 'territorial',
+    needsShelter: true,
+    needsLineOfSightBreaks: true,
+    needsLargeFootprint: true,
+    territorySizeLiters: 35,
+  },
+  'caridina multidentata': {
+    adultSizeCm: 5,
+    waterZone: 'bottom',
+    territoryZone: 'bottom',
+    socialStructure: 'colony',
+    recommendedGroupSize: 6,
+    minTankLengthCm: 60,
+    preferredTankLengthCm: 80,
+    diet: 'omnivore',
+    shrimpSafe: 'yes',
+    eatsShrimp: 'no',
+    maxGroupDensityPer100L: 30,
+  },
+  'neocaridina davidi': {
+    adultSizeCm: 3,
+    waterZone: 'bottom',
+    territoryZone: 'bottom',
+    socialStructure: 'colony',
+    recommendedGroupSize: 10,
+    minTankLengthCm: 40,
+    preferredTankLengthCm: 60,
+    shrimpSafe: 'yes',
+    eatsShrimp: 'no',
+    maxGroupDensityPer100L: 50,
+  },
+  'caridina cf. cantonensis': {
+    adultSizeCm: 3,
+    waterZone: 'bottom',
+    territoryZone: 'bottom',
+    socialStructure: 'colony',
+    recommendedGroupSize: 10,
+    minTankLengthCm: 45,
+    preferredTankLengthCm: 60,
+    shrimpSafe: 'yes',
+    eatsShrimp: 'no',
+    maxGroupDensityPer100L: 45,
+  },
+  'neritina pulligera': {
+    adultSizeCm: 2.5,
+    waterZone: 'bottom',
+    territoryZone: 'bottom',
+    socialStructure: 'solo',
+    recommendedGroupSize: 1,
+    minTankLengthCm: 35,
+    preferredTankLengthCm: 45,
+    diet: 'herbivore',
+    wasteProductionLevel: 1,
+  },
+  'pomacea diffusa': {
+    adultSizeCm: 6,
+    waterZone: 'bottom',
+    territoryZone: 'bottom',
+    socialStructure: 'solo',
+    recommendedGroupSize: 1,
+    minTankLengthCm: 40,
+    preferredTankLengthCm: 60,
+    diet: 'omnivore',
+    wasteProductionLevel: 3,
+  },
+  'anentome helena': {
+    adultSizeCm: 2.5,
+    waterZone: 'bottom',
+    territoryZone: 'bottom',
+    socialStructure: 'group',
+    recommendedGroupSize: 3,
+    minTankLengthCm: 40,
+    preferredTankLengthCm: 60,
+    temperament: 'semi_aggressive',
+    aggressionLevelNumeric: 2,
+    territorialityLevel: 2,
+    aggressionType: 'predatory',
+    predatorRisk: true,
+    eatsShrimp: 'maybe',
+    shrimpSafe: 'maybe',
+    diet: 'carnivore',
+  },
+});
+
+const MVP_FISH_WASTE_PRODUCTION_BY_LATIN = Object.freeze({
+  'poecilia reticulata': 1.10,
+  'poecilia sphenops': 2.25,
+  'xiphophorus maculatus': 1.25,
+  'xiphophorus hellerii': 2.35,
+  'paracheirodon innesi': 0.85,
+  'paracheirodon axelrodi': 0.90,
+  'hyphessobrycon herbertaxelrodi': 0.95,
+  'trigonostigma heteromorpha': 0.95,
+  'hyphessobrycon amandae': 0.75,
+  'inpaichthys kerri': 0.95,
+  'danio rerio': 1.10,
+  'tanichthys albonubes': 0.80,
+  'corydoras panda': 1.20,
+  'corydoras aeneus': 1.45,
+  'otocinclus affinis': 0.90,
+  'ancistrus cf. cirrhosus': 3.20,
+  'pangio kuhlii': 1.50,
+  'betta splendens': 1.80,
+  'trichogaster lalius': 1.70,
+  'trichopodus leerii': 2.10,
+  'pterophyllum scalare': 3.90,
+  'mikrogeophagus ramirezi': 1.65,
+  'chindongo saulosi': 3.40,
+  'epalzeorhynchos frenatum': 3.20,
+  'andinoacara pulcher': 3.50,
+  'neocaridina davidi': 0.00,
+  'caridina multidentata': 0.00,
+  'caridina cf. cantonensis': 0.00,
+  'neocaridina davidi var. blue dream': 0.00,
+  'neocaridina davidi var. yellow': 0.00,
+  'caridina cf. babaulti': 0.00,
+  'atyopsis moluccensis': 0.00,
+  'neritina pulligera': 0.60,
+  'vittina natalensis': 0.65,
+  'pomacea diffusa': 3.10,
+  'melanoides tuberculata': 0.55,
+  'brotia herculea': 1.40,
+  'physella acuta': 0.45,
+  'planorbella duryi': 0.50,
+  'lymnaea stagnalis': 1.35,
+  'anentome helena': 2.30,
+});
+
+function buildMvpFishAnalytics(item) {
+  const latinKey = normalizeLatinCatalogKey(item?.latinName);
+  const isShrimp =
+    latinKey.startsWith('caridina ') ||
+    latinKey.startsWith('neocaridina ') ||
+    latinKey.startsWith('atyopsis ');
+  const isSnail =
+    latinKey.startsWith('neritina ') ||
+    latinKey.startsWith('vittina ') ||
+    latinKey.startsWith('pomacea ') ||
+    latinKey.startsWith('melanoides ') ||
+    latinKey.startsWith('brotia ') ||
+    latinKey.startsWith('physella ') ||
+    latinKey.startsWith('planorbella ') ||
+    latinKey.startsWith('lymnaea ') ||
+    latinKey.startsWith('anentome ');
+  const baseAdultSize = isSnail ? 3 : isShrimp ? 3 : 5.5;
+
+  const base = {
+    ...MVP_FISH_DEFAULT_ANALYTICS,
+    adultSizeCm: baseAdultSize,
+    socialStructure: Boolean(item?.isSchooling) ? 'school' : 'group',
+    recommendedGroupSize: Boolean(item?.isSchooling)
+      ? Math.max(6, Number(item?.minGroupSize) || 6)
+      : isShrimp
+        ? 10
+        : isSnail
+          ? 1
+          : 3,
+    minTankLengthCm: Math.max(40, Math.round(baseAdultSize * 5.5)),
+    preferredTankLengthCm: Math.max(50, Math.round(baseAdultSize * 7)),
+    maxGroupDensityPer100L: Math.max(
+      2,
+      Math.round(100 / Math.max(1, baseAdultSize))
+    ),
+  };
+
+  if (isShrimp) {
+    Object.assign(base, {
+      waterZone: 'bottom',
+      territoryZone: 'bottom',
+      diet: 'omnivore',
+      socialStructure: 'colony',
+      shrimpSafe: 'yes',
+      eatsShrimp: 'no',
+      wasteProductionLevel: 0,
+      flowPreference: 'low',
+      sensitiveToStrongCurrent: true,
+    });
+  }
+
+  if (isSnail) {
+    Object.assign(base, {
+      waterZone: 'bottom',
+      territoryZone: 'bottom',
+      socialStructure: 'solo',
+      recommendedGroupSize: 1,
+      diet: 'herbivore',
+      wasteProductionLevel: 1,
+      flowPreference: 'low',
+      sensitiveToStrongCurrent: false,
+    });
+  }
+
+  const mergedAnalytics = {
+    ...base,
+    ...(MVP_FISH_ANALYTICS_OVERRIDES[latinKey] ?? {}),
+  };
+
+  const explicitWasteProductionLevel = Number(
+    MVP_FISH_WASTE_PRODUCTION_BY_LATIN[latinKey]
+  );
+  if (Number.isFinite(explicitWasteProductionLevel)) {
+    mergedAnalytics.wasteProductionLevel = explicitWasteProductionLevel;
+  }
+
+  return mergedAnalytics;
+}
+
+function enrichFishRecord(item) {
+  const latinName = String(item?.latinName ?? '').trim();
+  const id = buildCatalogId('fish', latinName);
+  return {
+    ...item,
+    id,
+    ...buildMvpFishAnalytics(item),
+    ...buildFishImageUrls(latinName),
+  };
+}
+
+function dedupeByLatinName(items) {
+  const byLatin = new Map();
+  items.forEach((item) => {
+    const latinKey = normalizeLatinCatalogKey(item?.latinName);
+    if (!latinKey || byLatin.has(latinKey)) {
+      return;
+    }
+    byLatin.set(latinKey, item);
+  });
+  return [...byLatin.values()];
+}
+
+export const FISH_CATALOG_STARTER = dedupeByLatinName(
+  RAW_FISH_CATALOG_STARTER.map((item) => enrichFishRecord(item))
+);

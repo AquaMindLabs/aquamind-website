@@ -1,4 +1,5 @@
-export type SubscriptionTier = 'free' | 'premium' | 'pro';
+﻿export type SubscriptionTier = 'free' | 'premium' | 'pro';
+export type PlanId = SubscriptionTier;
 
 export type SubscriptionStatus =
   | 'active'
@@ -39,30 +40,75 @@ export type SubscriptionMeasurementParameterKey =
   | 'po4'
   | 'fe'
   | 'ca'
-  | 'mg';
+  | 'mg'
+  | 'co2';
+
+export type MeasurementSetKind = 'basic' | 'full';
+export type DiagnosisAccess =
+  | 'catalog_only'
+  | 'diagnosis'
+  | 'diagnosis_with_action_plan';
+export type CompatibilityAccess =
+  | 'basic'
+  | 'advanced'
+  | 'advanced_with_recommendations';
+export type TrendAnalysisAccess = false | 'basic' | 'advanced';
+export type SmartActionPlanAccess = false | 'advanced' | 'smart';
+
+export type SubscriptionCapabilityKey =
+  | 'maxTanks'
+  | 'measurementSet'
+  | 'historyDays'
+  | 'advancedWaterAnalysis'
+  | 'trendAnalysis'
+  | 'stockingCompatibility'
+  | 'equipmentAnalysis'
+  | 'algaeDiagnosis'
+  | 'fishDiseaseDiagnosis'
+  | 'plantDiseaseDiagnosis'
+  | 'automaticTasks'
+  | 'smartActionPlan'
+  | 'aiAssistant'
+  | 'exportData';
+
+export type SubscriptionCapabilities = {
+  maxTanks: number | null;
+  measurementSet: MeasurementSetKind;
+  historyDays: number | null;
+  advancedWaterAnalysis: boolean;
+  trendAnalysis: TrendAnalysisAccess;
+  stockingCompatibility: CompatibilityAccess;
+  equipmentAnalysis: CompatibilityAccess;
+  algaeDiagnosis: DiagnosisAccess;
+  fishDiseaseDiagnosis: DiagnosisAccess;
+  plantDiseaseDiagnosis: DiagnosisAccess;
+  automaticTasks: boolean;
+  smartActionPlan: SmartActionPlanAccess;
+  aiAssistant: boolean;
+  exportData: boolean;
+};
 
 export type SubscriptionFeatureKey =
   | 'core_access'
-  | 'premium_parameters'
-  | 'parameter_analysis'
+  | 'multiple_tanks'
+  | 'full_measurements'
   | 'full_history'
-  | 'history_trends'
-  | 'basic_charts'
-  | 'advanced_charts'
-  | 'extended_alerts'
-  | 'smart_alerts'
-  | 'task_reminders'
-  | 'task_checklists'
-  | 'equipment_save'
+  | 'advanced_water_analysis'
+  | 'trend_analysis'
+  | 'stocking_compatibility'
   | 'equipment_analysis'
-  | 'general_recommendations'
-  | 'guided_recommendations'
-  | 'ai_diagnosis'
-  | 'advanced_analysis'
-  | 'vision';
+  | 'algae_diagnosis'
+  | 'fish_disease_diagnosis'
+  | 'plant_disease_diagnosis'
+  | 'automatic_tasks'
+  | 'smart_action_plan'
+  | 'ai_assistant'
+  | 'export_data'
+  | 'critical_alerts';
 
 export type SubscriptionLimitKey =
   | 'maxTanks'
+  | 'historyDays'
   | 'maxSavedMeasurementsPerTank'
   | 'maxScheduledReminders';
 
@@ -98,14 +144,16 @@ export type SubscriptionCapabilityRow = {
     | 'aquariums'
     | 'parameters'
     | 'history'
-    | 'charts'
     | 'alerts'
-    | 'tasks'
+    | 'catalogs'
+    | 'stocking'
     | 'equipment'
-    | 'recommendations'
-    | 'aiDiagnosis'
-    | 'analysis'
-    | 'vision';
+    | 'algae'
+    | 'diseases'
+    | 'tasks'
+    | 'trends'
+    | 'actionPlan'
+    | 'ai';
   label: string;
   values: Record<SubscriptionTier, string>;
 };
@@ -131,6 +179,7 @@ export type SubscriptionPlanDefinition = {
   description: string;
   featureKeys: SubscriptionFeatureKey[];
   limits: Partial<Record<SubscriptionLimitKey, number | null>>;
+  capabilities: SubscriptionCapabilities;
   entitlements: SubscriptionEntitlements;
   isRecommended?: boolean;
 };
@@ -148,172 +197,211 @@ export type SubscriptionState = {
   limitOverrides: Partial<Record<SubscriptionLimitKey, number | null>>;
 };
 
-const FREE_MEASUREMENT_KEYS: SubscriptionMeasurementParameterKey[] = [
+const BASIC_MEASUREMENT_KEYS: SubscriptionMeasurementParameterKey[] = [
+  'ph',
+  'gh',
+  'kh',
   'no2',
   'no3',
-  'ph',
   'temperature',
 ];
 
-const PREMIUM_MEASUREMENT_KEYS: SubscriptionMeasurementParameterKey[] = [
-  ...FREE_MEASUREMENT_KEYS,
+const FULL_MEASUREMENT_KEYS: SubscriptionMeasurementParameterKey[] = [
+  'ph',
   'gh',
   'kh',
-  'k',
-  'tds',
-  'po4',
+  'no2',
+  'no3',
   'nh3nh4',
-  'fe',
+  'po4',
+  'k',
   'ca',
   'mg',
+  'fe',
+  'tds',
+  'co2',
+  'temperature',
 ];
 
-const PRO_MEASUREMENT_KEYS: SubscriptionMeasurementParameterKey[] = [
-  ...PREMIUM_MEASUREMENT_KEYS,
-];
+const ALL_MEASUREMENT_KEYS = Array.from(new Set([...FULL_MEASUREMENT_KEYS]));
 
 export const SUBSCRIPTION_FEATURE_CATALOG: SubscriptionFeatureDefinition[] = [
   {
     key: 'core_access',
     label: 'Core access',
-    description: 'Podstawowy dostep do prowadzenia akwarium i zapisu danych.',
+    description: 'Podstawowe prowadzenie akwarium.',
   },
   {
-    key: 'premium_parameters',
-    label: 'Premium parameters',
-    description: 'Dodatkowe parametry w formularzach i analizach.',
+    key: 'multiple_tanks',
+    label: 'Multiple tanks',
+    description: 'Prowadzenie wiecej niz jednego akwarium.',
   },
   {
-    key: 'parameter_analysis',
-    label: 'Parameter analysis',
-    description: 'Rozszerzona interpretacja parametrow wody.',
+    key: 'full_measurements',
+    label: 'Full measurements',
+    description: 'Pelny zestaw parametrow wody.',
   },
   {
     key: 'full_history',
     label: 'Full history',
-    description: 'Pelny dostep do zapisanej historii pomiarow.',
+    description: 'Pelna historia pomiarow bez limitu dni.',
   },
   {
-    key: 'history_trends',
-    label: 'History trends',
-    description: 'Trendy i bardziej rozbudowane wnioski z historii.',
+    key: 'advanced_water_analysis',
+    label: 'Advanced water analysis',
+    description: 'Rozszerzona analiza parametrow i zaleznosci.',
   },
   {
-    key: 'basic_charts',
-    label: 'Basic charts',
-    description: 'Podstawowe wykresy i podglad zmian parametrow.',
+    key: 'trend_analysis',
+    label: 'Trend analysis',
+    description: 'Analiza trendow i zmian w czasie.',
   },
   {
-    key: 'advanced_charts',
-    label: 'Advanced charts',
-    description: 'Zaawansowane wykresy i dodatkowe warstwy analizy.',
-  },
-  {
-    key: 'extended_alerts',
-    label: 'Extended alerts',
-    description: 'Rozszerzone alerty i stany ostrzegawcze.',
-  },
-  {
-    key: 'smart_alerts',
-    label: 'Smart alerts',
-    description: 'Inteligentne alerty i szersza interpretacja ryzyk.',
-  },
-  {
-    key: 'task_reminders',
-    label: 'Task reminders',
-    description: 'Przypomnienia i podstawowe zadania cykliczne.',
-  },
-  {
-    key: 'task_checklists',
-    label: 'Task checklists',
-    description: 'Checklisty, plan dzialan i bardziej rozbudowane taski.',
-  },
-  {
-    key: 'equipment_save',
-    label: 'Equipment save',
-    description: 'Mozliwosc zapisu i organizacji sprzetu.',
+    key: 'stocking_compatibility',
+    label: 'Stocking compatibility',
+    description: 'Zaawansowana ocena kompatybilnosci obsady.',
   },
   {
     key: 'equipment_analysis',
     label: 'Equipment analysis',
-    description: 'Analiza sprzetu i rekomendacje doboru.',
+    description: 'Zaawansowana ocena sprzetu i rekomendacje.',
   },
   {
-    key: 'general_recommendations',
-    label: 'General recommendations',
-    description: 'Ogolne wskazowki i podpowiedzi do dalszych dzialan.',
+    key: 'algae_diagnosis',
+    label: 'Algae diagnosis',
+    description: 'Diagnoza glonow.',
   },
   {
-    key: 'guided_recommendations',
-    label: 'Guided recommendations',
-    description: 'Rekomendacje krok po kroku i pelniejsze prowadzenie.',
+    key: 'fish_disease_diagnosis',
+    label: 'Fish disease diagnosis',
+    description: 'Diagnoza chorob ryb.',
   },
   {
-    key: 'ai_diagnosis',
-    label: 'AI diagnosis',
-    description: 'Warstwa pod przyszla diagnoze wspierana przez AI.',
+    key: 'plant_disease_diagnosis',
+    label: 'Plant disease diagnosis',
+    description: 'Diagnoza chorob roslin.',
   },
   {
-    key: 'advanced_analysis',
-    label: 'Advanced analysis',
-    description: 'Warstwa pod przyszla bardziej zaawansowana analize.',
+    key: 'automatic_tasks',
+    label: 'Automatic tasks',
+    description: 'Automatyczny harmonogram i przypomnienia.',
   },
   {
-    key: 'vision',
-    label: 'Vision',
-    description: 'Warstwa pod przyszla analize obrazu i rozpoznawanie.',
+    key: 'smart_action_plan',
+    label: 'Smart action plan',
+    description: 'Plan co robic dzisiaj i plan naprawczy.',
+  },
+  {
+    key: 'ai_assistant',
+    label: 'AI assistant',
+    description: 'Asystent AI.',
+  },
+  {
+    key: 'export_data',
+    label: 'Export data',
+    description: 'Eksport danych.',
+  },
+  {
+    key: 'critical_alerts',
+    label: 'Critical alerts',
+    description: 'Krytyczne alerty bez paywalla.',
   },
 ];
-
-export const SUBSCRIPTION_LIMIT_CATALOG: Record<
-  SubscriptionLimitKey,
-  { label: string; description: string }
-> = {
-  maxTanks: {
-    label: 'Max tanks',
-    description: 'Ile akwariow mozna prowadzic w ramach planu.',
-  },
-  maxSavedMeasurementsPerTank: {
-    label: 'Max measurements per tank',
-    description: 'Ile wpisow historii pomiarow plan przechowuje dla zbiornika.',
-  },
-  maxScheduledReminders: {
-    label: 'Max scheduled reminders',
-    description: 'Ile przypomnien i taskow moze byc aktywnych jednoczesnie.',
-  },
-};
 
 export const SUBSCRIPTION_CAPABILITY_ROWS: SubscriptionCapabilityRow[] = [
   {
     key: 'aquariums',
-    label: 'Akwaria',
+    label: 'Liczba akwariow',
     values: {
-      free: '1',
-      premium: '3',
+      free: '1 aktywne',
+      premium: '3 aktywne',
       pro: 'bez limitu',
     },
   },
   {
     key: 'parameters',
-    label: 'Parametry',
+    label: 'Parametry wody',
     values: {
       free: 'podstawowe',
       premium: 'pelne',
-      pro: 'pelne + analiza',
+      pro: 'pelne',
     },
   },
   {
     key: 'history',
     label: 'Historia',
     values: {
-      free: '5 wpisow',
+      free: '30 dni',
       premium: 'pelna',
-      pro: 'pelna + trendy',
+      pro: 'pelna',
     },
   },
   {
-    key: 'charts',
-    label: 'Wykresy',
+    key: 'alerts',
+    label: 'Alerty',
+    values: {
+      free: 'podstawowe + krytyczne',
+      premium: 'rozszerzone',
+      pro: 'zaawansowane',
+    },
+  },
+  {
+    key: 'catalogs',
+    label: 'Katalogi',
+    values: {
+      free: 'podstawowe',
+      premium: 'pelne',
+      pro: 'pelne',
+    },
+  },
+  {
+    key: 'stocking',
+    label: 'Obsada',
+    values: {
+      free: 'podstawowa kompatybilnosc',
+      premium: 'zaawansowana kompatybilnosc',
+      pro: 'zaawansowana + rekomendacje',
+    },
+  },
+  {
+    key: 'equipment',
+    label: 'Sprzet',
+    values: {
+      free: 'podstawowa ocena',
+      premium: 'pelna ocena',
+      pro: 'pelna + rekomendacje',
+    },
+  },
+  {
+    key: 'algae',
+    label: 'Glony',
+    values: {
+      free: 'katalog',
+      premium: 'diagnoza',
+      pro: 'diagnoza + plan',
+    },
+  },
+  {
+    key: 'diseases',
+    label: 'Choroby',
+    values: {
+      free: 'katalog',
+      premium: 'diagnoza',
+      pro: 'diagnoza + plan',
+    },
+  },
+  {
+    key: 'tasks',
+    label: 'Zadania',
+    values: {
+      free: 'reczne',
+      premium: 'automatyczne',
+      pro: 'automatyczne',
+    },
+  },
+  {
+    key: 'trends',
+    label: 'Trendy',
     values: {
       free: 'brak',
       premium: 'podstawowe',
@@ -321,62 +409,17 @@ export const SUBSCRIPTION_CAPABILITY_ROWS: SubscriptionCapabilityRow[] = [
     },
   },
   {
-    key: 'alerts',
-    label: 'Alerty',
-    values: {
-      free: 'proste',
-      premium: 'rozszerzone',
-      pro: 'inteligentne',
-    },
-  },
-  {
-    key: 'tasks',
-    label: 'Taski',
+    key: 'actionPlan',
+    label: 'Plan dzialania',
     values: {
       free: 'brak',
-      premium: 'przypomnienia',
-      pro: 'checklisty + plan',
+      premium: 'zaawansowany',
+      pro: 'smart',
     },
   },
   {
-    key: 'equipment',
-    label: 'Sprzet',
-    values: {
-      free: 'brak',
-      premium: 'zapis',
-      pro: 'analiza + rekomendacje',
-    },
-  },
-  {
-    key: 'recommendations',
-    label: 'Rekomendacje',
-    values: {
-      free: 'brak',
-      premium: 'ogolne',
-      pro: 'krok po kroku',
-    },
-  },
-  {
-    key: 'aiDiagnosis',
-    label: 'AI diagnoza',
-    values: {
-      free: 'brak',
-      premium: 'brak',
-      pro: 'tak',
-    },
-  },
-  {
-    key: 'analysis',
-    label: 'Analiza',
-    values: {
-      free: 'brak',
-      premium: 'brak',
-      pro: 'tak',
-    },
-  },
-  {
-    key: 'vision',
-    label: 'Vision',
+    key: 'ai',
+    label: 'AI / Asystent',
     values: {
       free: 'brak',
       premium: 'brak',
@@ -385,117 +428,215 @@ export const SUBSCRIPTION_CAPABILITY_ROWS: SubscriptionCapabilityRow[] = [
   },
 ];
 
-export const SUBSCRIPTION_PLAN_DEFINITIONS: Record<
-  SubscriptionTier,
-  SubscriptionPlanDefinition
-> = {
+const SUBSCRIPTION_PLAN_CAPABILITIES: Record<PlanId, SubscriptionCapabilities> = {
+  free: {
+    maxTanks: 1,
+    measurementSet: 'basic',
+    historyDays: 30,
+    advancedWaterAnalysis: false,
+    trendAnalysis: false,
+    stockingCompatibility: 'basic',
+    equipmentAnalysis: 'basic',
+    algaeDiagnosis: 'catalog_only',
+    fishDiseaseDiagnosis: 'catalog_only',
+    plantDiseaseDiagnosis: 'catalog_only',
+    automaticTasks: false,
+    smartActionPlan: false,
+    aiAssistant: false,
+    exportData: false,
+  },
+  premium: {
+    maxTanks: 3,
+    measurementSet: 'full',
+    historyDays: null,
+    advancedWaterAnalysis: true,
+    trendAnalysis: 'basic',
+    stockingCompatibility: 'advanced',
+    equipmentAnalysis: 'advanced',
+    algaeDiagnosis: 'diagnosis',
+    fishDiseaseDiagnosis: 'diagnosis',
+    plantDiseaseDiagnosis: 'diagnosis',
+    automaticTasks: true,
+    smartActionPlan: 'advanced',
+    aiAssistant: false,
+    exportData: true,
+  },
+  pro: {
+    maxTanks: null,
+    measurementSet: 'full',
+    historyDays: null,
+    advancedWaterAnalysis: true,
+    trendAnalysis: 'advanced',
+    stockingCompatibility: 'advanced_with_recommendations',
+    equipmentAnalysis: 'advanced_with_recommendations',
+    algaeDiagnosis: 'diagnosis_with_action_plan',
+    fishDiseaseDiagnosis: 'diagnosis_with_action_plan',
+    plantDiseaseDiagnosis: 'diagnosis_with_action_plan',
+    automaticTasks: true,
+    smartActionPlan: 'smart',
+    aiAssistant: true,
+    exportData: true,
+  },
+};
+
+export const PLAN_LIMITS: Record<PlanId, { maxTanks: number | null; historyDays: number | null }> = {
+  free: {
+    maxTanks: 1,
+    historyDays: 30,
+  },
+  premium: {
+    maxTanks: 3,
+    historyDays: null,
+  },
+  pro: {
+    maxTanks: null,
+    historyDays: null,
+  },
+};
+
+function buildEntitlementsForPlan(planId: PlanId): SubscriptionEntitlements {
+  const capabilities = SUBSCRIPTION_PLAN_CAPABILITIES[planId];
+
+  return {
+    measurementKeys:
+      capabilities.measurementSet === 'basic'
+        ? BASIC_MEASUREMENT_KEYS
+        : FULL_MEASUREMENT_KEYS,
+    parameterAnalysis: capabilities.advancedWaterAnalysis,
+    historyAccess:
+      capabilities.trendAnalysis === 'advanced'
+        ? 'full_with_trends'
+        : capabilities.historyDays === null
+          ? 'full'
+          : 'limited',
+    chartAccess:
+      planId === 'free' ? 'none' : planId === 'premium' ? 'basic' : 'advanced',
+    alertAccess:
+      planId === 'free' ? 'simple' : planId === 'premium' ? 'extended' : 'smart',
+    taskAccess:
+      planId === 'free'
+        ? 'none'
+        : planId === 'premium'
+          ? 'reminders'
+          : 'checklists_and_plan',
+    equipmentAccess:
+      capabilities.equipmentAnalysis === 'advanced_with_recommendations'
+        ? 'analysis_and_recommendations'
+        : capabilities.equipmentAnalysis === 'advanced'
+          ? 'save'
+          : 'none',
+    recommendationAccess:
+      capabilities.smartActionPlan === 'smart'
+        ? 'step_by_step'
+        : capabilities.smartActionPlan === 'advanced'
+          ? 'general'
+          : 'none',
+    aiDiagnosis: capabilities.aiAssistant,
+    advancedAnalysis: capabilities.trendAnalysis !== false,
+    vision: capabilities.aiAssistant,
+  };
+}
+
+function buildFeatureKeysForPlan(planId: PlanId): SubscriptionFeatureKey[] {
+  const capabilities = SUBSCRIPTION_PLAN_CAPABILITIES[planId];
+  const keys: SubscriptionFeatureKey[] = ['core_access', 'critical_alerts'];
+
+  if ((capabilities.maxTanks ?? 0) > 1 || capabilities.maxTanks === null) {
+    keys.push('multiple_tanks');
+  }
+  if (capabilities.measurementSet === 'full') {
+    keys.push('full_measurements');
+  }
+  if (capabilities.historyDays === null) {
+    keys.push('full_history');
+  }
+  if (capabilities.advancedWaterAnalysis) {
+    keys.push('advanced_water_analysis');
+  }
+  if (capabilities.trendAnalysis !== false) {
+    keys.push('trend_analysis');
+  }
+  if (capabilities.stockingCompatibility !== 'basic') {
+    keys.push('stocking_compatibility');
+  }
+  if (capabilities.equipmentAnalysis !== 'basic') {
+    keys.push('equipment_analysis');
+  }
+  if (capabilities.algaeDiagnosis !== 'catalog_only') {
+    keys.push('algae_diagnosis');
+  }
+  if (capabilities.fishDiseaseDiagnosis !== 'catalog_only') {
+    keys.push('fish_disease_diagnosis');
+  }
+  if (capabilities.plantDiseaseDiagnosis !== 'catalog_only') {
+    keys.push('plant_disease_diagnosis');
+  }
+  if (capabilities.automaticTasks) {
+    keys.push('automatic_tasks');
+  }
+  if (capabilities.smartActionPlan !== false) {
+    keys.push('smart_action_plan');
+  }
+  if (capabilities.aiAssistant) {
+    keys.push('ai_assistant');
+  }
+  if (capabilities.exportData) {
+    keys.push('export_data');
+  }
+
+  return keys;
+}
+
+export const SUBSCRIPTION_PLANS: Record<PlanId, SubscriptionPlanDefinition> = {
   free: {
     tier: 'free',
     rank: 0,
     label: 'Free',
-    description: '1 akwarium, podstawowe parametry i krotka historia.',
-    featureKeys: ['core_access'],
+    description: 'Podstawowe prowadzenie jednego akwarium.',
+    featureKeys: buildFeatureKeysForPlan('free'),
     limits: {
-      maxTanks: 1,
-      maxSavedMeasurementsPerTank: 5,
+      maxTanks: PLAN_LIMITS.free.maxTanks,
+      historyDays: PLAN_LIMITS.free.historyDays,
+      maxSavedMeasurementsPerTank: PLAN_LIMITS.free.historyDays,
       maxScheduledReminders: 0,
     },
-    entitlements: {
-      measurementKeys: FREE_MEASUREMENT_KEYS,
-      parameterAnalysis: false,
-      historyAccess: 'limited',
-      chartAccess: 'none',
-      alertAccess: 'simple',
-      taskAccess: 'none',
-      equipmentAccess: 'none',
-      recommendationAccess: 'none',
-      aiDiagnosis: false,
-      advancedAnalysis: false,
-      vision: false,
-    },
+    capabilities: SUBSCRIPTION_PLAN_CAPABILITIES.free,
+    entitlements: buildEntitlementsForPlan('free'),
   },
   premium: {
     tier: 'premium',
     rank: 1,
     label: 'Premium',
-    description:
-      'Do 3 akwariow, pelna historia, podstawowe wykresy i przypomnienia.',
-    featureKeys: [
-      'core_access',
-      'premium_parameters',
-      'full_history',
-      'basic_charts',
-      'extended_alerts',
-      'task_reminders',
-      'equipment_save',
-      'general_recommendations',
-    ],
+    description: 'Pelna analiza akwarium, obsady, sprzetu i problemow.',
+    featureKeys: buildFeatureKeysForPlan('premium'),
     limits: {
-      maxTanks: 3,
+      maxTanks: PLAN_LIMITS.premium.maxTanks,
+      historyDays: PLAN_LIMITS.premium.historyDays,
       maxSavedMeasurementsPerTank: null,
       maxScheduledReminders: null,
     },
-    entitlements: {
-      measurementKeys: PREMIUM_MEASUREMENT_KEYS,
-      parameterAnalysis: false,
-      historyAccess: 'full',
-      chartAccess: 'basic',
-      alertAccess: 'extended',
-      taskAccess: 'reminders',
-      equipmentAccess: 'save',
-      recommendationAccess: 'general',
-      aiDiagnosis: false,
-      advancedAnalysis: false,
-      vision: false,
-    },
+    capabilities: SUBSCRIPTION_PLAN_CAPABILITIES.premium,
+    entitlements: buildEntitlementsForPlan('premium'),
     isRecommended: true,
   },
   pro: {
     tier: 'pro',
     rank: 2,
     label: 'Pro',
-    description:
-      'Bez limitu akwariow, trendy, inteligentne alerty i warstwa AI.',
-    featureKeys: [
-      'core_access',
-      'premium_parameters',
-      'parameter_analysis',
-      'full_history',
-      'history_trends',
-      'basic_charts',
-      'advanced_charts',
-      'extended_alerts',
-      'smart_alerts',
-      'task_reminders',
-      'task_checklists',
-      'equipment_save',
-      'equipment_analysis',
-      'general_recommendations',
-      'guided_recommendations',
-      'ai_diagnosis',
-      'advanced_analysis',
-      'vision',
-    ],
+    description: 'Zaawansowany asystent z planem dzialania krok po kroku.',
+    featureKeys: buildFeatureKeysForPlan('pro'),
     limits: {
-      maxTanks: null,
+      maxTanks: PLAN_LIMITS.pro.maxTanks,
+      historyDays: PLAN_LIMITS.pro.historyDays,
       maxSavedMeasurementsPerTank: null,
       maxScheduledReminders: null,
     },
-    entitlements: {
-      measurementKeys: PRO_MEASUREMENT_KEYS,
-      parameterAnalysis: true,
-      historyAccess: 'full_with_trends',
-      chartAccess: 'advanced',
-      alertAccess: 'smart',
-      taskAccess: 'checklists_and_plan',
-      equipmentAccess: 'analysis_and_recommendations',
-      recommendationAccess: 'step_by_step',
-      aiDiagnosis: true,
-      advancedAnalysis: true,
-      vision: true,
-    },
+    capabilities: SUBSCRIPTION_PLAN_CAPABILITIES.pro,
+    entitlements: buildEntitlementsForPlan('pro'),
   },
 };
+
+export const SUBSCRIPTION_PLAN_DEFINITIONS = SUBSCRIPTION_PLANS;
 
 export const DEFAULT_SUBSCRIPTION_STATE: SubscriptionState = {
   tier: 'free',
@@ -505,7 +646,7 @@ export const DEFAULT_SUBSCRIPTION_STATE: SubscriptionState = {
   expiresAt: null,
   renewsAt: null,
   lastValidatedAt: null,
-  planVersion: 3,
+  planVersion: 4,
   featureOverrides: [],
   limitOverrides: {},
 };
@@ -537,20 +678,25 @@ export const SUBSCRIPTION_STORE_PRODUCT_MAP: SubscriptionStoreProductMap = {
   },
 };
 
+export function normalizePlanId(value: unknown): PlanId {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (normalized === 'premium' || normalized === 'pro') {
+    return normalized;
+  }
+  return 'free';
+}
+
 export function normalizeSubscriptionState(
   value?: Partial<SubscriptionState> | null
 ): SubscriptionState {
-  const tier = value?.tier;
+  const tier = normalizePlanId(value?.tier);
   const status = value?.status;
   const source = value?.source;
 
   return {
     ...DEFAULT_SUBSCRIPTION_STATE,
     ...value,
-    tier:
-      tier === 'free' || tier === 'premium' || tier === 'pro'
-        ? tier
-        : DEFAULT_SUBSCRIPTION_STATE.tier,
+    tier,
     status:
       status === 'active' ||
       status === 'inactive' ||
@@ -584,10 +730,252 @@ export function normalizeSubscriptionState(
   };
 }
 
+export function getPlanLimits(planId: PlanId): { maxTanks: number | null; historyDays: number | null } {
+  return PLAN_LIMITS[normalizePlanId(planId)];
+}
+
+export function getPlanLabel(planId: PlanId): string {
+  return SUBSCRIPTION_PLANS[normalizePlanId(planId)].label;
+}
+
+export function isPaidPlan(planId: PlanId): boolean {
+  const normalized = normalizePlanId(planId);
+  return normalized === 'premium' || normalized === 'pro';
+}
+
+export function getCapability<K extends SubscriptionCapabilityKey>(
+  planId: PlanId,
+  capabilityKey: K
+): SubscriptionCapabilities[K] {
+  return SUBSCRIPTION_PLAN_CAPABILITIES[normalizePlanId(planId)][capabilityKey];
+}
+
+const FEATURE_TO_CAPABILITY_MAP: Record<
+  SubscriptionFeatureKey,
+  ((capabilities: SubscriptionCapabilities) => boolean) | null
+> = {
+  core_access: () => true,
+  critical_alerts: () => true,
+  multiple_tanks: (c) => c.maxTanks === null || c.maxTanks > 1,
+  full_measurements: (c) => c.measurementSet === 'full',
+  full_history: (c) => c.historyDays === null,
+  advanced_water_analysis: (c) => c.advancedWaterAnalysis,
+  trend_analysis: (c) => c.trendAnalysis !== false,
+  stocking_compatibility: (c) => c.stockingCompatibility !== 'basic',
+  equipment_analysis: (c) => c.equipmentAnalysis !== 'basic',
+  algae_diagnosis: (c) => c.algaeDiagnosis !== 'catalog_only',
+  fish_disease_diagnosis: (c) => c.fishDiseaseDiagnosis !== 'catalog_only',
+  plant_disease_diagnosis: (c) => c.plantDiseaseDiagnosis !== 'catalog_only',
+  automatic_tasks: (c) => c.automaticTasks,
+  smart_action_plan: (c) => c.smartActionPlan !== false,
+  ai_assistant: (c) => c.aiAssistant,
+  export_data: (c) => c.exportData,
+};
+
+export function canUseFeature(planId: PlanId, featureKey: SubscriptionFeatureKey): boolean {
+  const normalizedPlan = normalizePlanId(planId);
+  const checker = FEATURE_TO_CAPABILITY_MAP[featureKey];
+  if (!checker) {
+    return false;
+  }
+  return checker(SUBSCRIPTION_PLAN_CAPABILITIES[normalizedPlan]);
+}
+
+export function getMaxTanks(planId: PlanId): number | null {
+  return getCapability(planId, 'maxTanks');
+}
+
+export function canCreateTank(planId: PlanId, currentTankCount: number): boolean {
+  const maxTanks = getMaxTanks(planId);
+  if (maxTanks === null) {
+    return true;
+  }
+  return Number(currentTankCount) < maxTanks;
+}
+
+export function isTankLockedByPlan(planId: PlanId, tankIndex: number): boolean {
+  const maxTanks = getMaxTanks(planId);
+  if (maxTanks === null) {
+    return false;
+  }
+  if (!Number.isFinite(Number(tankIndex)) || Number(tankIndex) < 0) {
+    return true;
+  }
+  return Number(tankIndex) >= maxTanks;
+}
+
+export function getAllowedMeasurementKeys(
+  input: SubscriptionState | PlanId
+): SubscriptionMeasurementParameterKey[] {
+  const planId =
+    typeof input === 'string'
+      ? normalizePlanId(input)
+      : normalizePlanId(input?.tier);
+  const setKind = getCapability(planId, 'measurementSet');
+  return setKind === 'basic' ? BASIC_MEASUREMENT_KEYS : FULL_MEASUREMENT_KEYS;
+}
+
+function getMeasurementTimestampMs(value: unknown): number {
+  if (!value) {
+    return 0;
+  }
+  if (value instanceof Date) {
+    return value.getTime();
+  }
+  if (typeof (value as { toMillis?: unknown })?.toMillis === 'function') {
+    return Number((value as { toMillis: () => number }).toMillis()) || 0;
+  }
+  const parsed = new Date(String(value)).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+export function canViewMeasurementHistoryItem(
+  planId: PlanId,
+  measurementDate: unknown
+): boolean {
+  const historyDays = getCapability(planId, 'historyDays');
+  if (historyDays === null) {
+    return true;
+  }
+
+  const measurementMs = getMeasurementTimestampMs(measurementDate);
+  if (!measurementMs) {
+    return false;
+  }
+
+  const nowMs = Date.now();
+  const ageMs = nowMs - measurementMs;
+  const dayMs = 24 * 60 * 60 * 1000;
+  return ageMs <= historyDays * dayMs;
+}
+
+export function getUpgradeTargetForFeature(
+  featureKey: SubscriptionFeatureKey
+): PlanId {
+  switch (featureKey) {
+    case 'smart_action_plan':
+    case 'ai_assistant':
+      return 'pro';
+    default:
+      return 'premium';
+  }
+}
+
+export function getFeatureLockMessage(
+  featureKey: SubscriptionFeatureKey,
+  currentPlan: PlanId
+): string {
+  const requiredPlan = getUpgradeTargetForFeature(featureKey);
+  if (normalizePlanId(currentPlan) === requiredPlan) {
+    return '';
+  }
+
+  const messages: Record<SubscriptionFeatureKey, string> = {
+    core_access: '',
+    critical_alerts: '',
+    full_measurements: 'Pelny zestaw parametrow jest dostepny w Premium.',
+    stocking_compatibility:
+      'Zaawansowana analiza obsady jest dostepna w Premium.',
+    smart_action_plan: 'Plan dzialania krok po kroku jest dostepny w Pro.',
+    full_history:
+      'W planie Free widoczna jest historia z ostatnich 30 dni. Pelna historia jest dostepna w Premium.',
+    multiple_tanks: 'Osiagnieto limit akwariow w obecnym planie.',
+    advanced_water_analysis: 'Pelna analiza parametrow jest dostepna w Premium.',
+    trend_analysis: 'Analiza trendow jest dostepna od planu Premium.',
+    equipment_analysis: 'Pelna analiza sprzetu jest dostepna od planu Premium.',
+    algae_diagnosis: 'Diagnoza glonow jest dostepna od planu Premium.',
+    fish_disease_diagnosis: 'Diagnoza chorob ryb jest dostepna od planu Premium.',
+    plant_disease_diagnosis:
+      'Diagnoza chorob roslin jest dostepna od planu Premium.',
+    automatic_tasks: 'Automatyczne zadania sa dostepne od planu Premium.',
+    ai_assistant: 'Asystent AI jest dostepny w planie Pro.',
+    export_data: 'Eksport danych jest dostepny od planu Premium.',
+  };
+
+  return messages[featureKey] || `Ta funkcja jest dostepna od planu ${getPlanLabel(requiredPlan)}.`;
+}
+
+export function getLockedMeasurementFields(planId: PlanId): SubscriptionMeasurementParameterKey[] {
+  const allowed = new Set(getAllowedMeasurementKeys(planId));
+  return ALL_MEASUREMENT_KEYS.filter((key) => !allowed.has(key));
+}
+
+export function filterMeasurementFieldsByPlan<T extends Record<string, unknown>>(
+  measurement: T,
+  planId: PlanId
+): Partial<T> {
+  if (!measurement || typeof measurement !== 'object') {
+    return {};
+  }
+
+  const allowed = new Set(getAllowedMeasurementKeys(planId));
+  const alwaysVisibleFields = new Set([
+    'id',
+    'userId',
+    'tankId',
+    'tankName',
+    'note',
+    'measuredAt',
+    'createdAt',
+    'updatedAt',
+  ]);
+
+  return Object.entries(measurement).reduce((acc, [key, value]) => {
+    if (alwaysVisibleFields.has(key) || allowed.has(key as SubscriptionMeasurementParameterKey)) {
+      (acc as Record<string, unknown>)[key] = value;
+    }
+    return acc;
+  }, {} as Partial<T>);
+}
+
+export function filterMeasurementsByPlan<T extends Record<string, unknown>>(
+  measurements: T[],
+  planId: PlanId
+): T[] {
+  if (!Array.isArray(measurements)) {
+    return [];
+  }
+
+  const normalizedPlan = normalizePlanId(planId);
+  return measurements
+    .filter((item) =>
+      canViewMeasurementHistoryItem(
+        normalizedPlan,
+        (item as Record<string, unknown>)?.measuredAt ??
+          (item as Record<string, unknown>)?.createdAt
+      )
+    )
+    .map((item) => filterMeasurementFieldsByPlan(item, normalizedPlan) as T);
+}
+
+export function getAccessibleTanksForPlan<T>(tanks: T[], planId: PlanId): T[] {
+  if (!Array.isArray(tanks)) {
+    return [];
+  }
+
+  const maxTanks = getMaxTanks(planId);
+  if (maxTanks === null) {
+    return [...tanks];
+  }
+
+  return tanks.slice(0, Math.max(0, maxTanks));
+}
+
+export function getLockedTanksForPlan<T>(tanks: T[], planId: PlanId): T[] {
+  if (!Array.isArray(tanks)) {
+    return [];
+  }
+
+  const maxTanks = getMaxTanks(planId);
+  if (maxTanks === null) {
+    return [];
+  }
+
+  return tanks.slice(Math.max(0, maxTanks));
+}
+
 export function listSubscriptionPlans(): SubscriptionPlanDefinition[] {
-  return Object.values(SUBSCRIPTION_PLAN_DEFINITIONS).sort(
-    (a, b) => a.rank - b.rank
-  );
+  return Object.values(SUBSCRIPTION_PLANS).sort((a, b) => a.rank - b.rank);
 }
 
 export function listSubscriptionCapabilityRows(): SubscriptionCapabilityRow[] {
@@ -597,7 +985,7 @@ export function listSubscriptionCapabilityRows(): SubscriptionCapabilityRow[] {
 export function getSubscriptionPlanDefinition(
   tier: SubscriptionTier
 ): SubscriptionPlanDefinition {
-  return SUBSCRIPTION_PLAN_DEFINITIONS[tier];
+  return SUBSCRIPTION_PLANS[normalizePlanId(tier)];
 }
 
 export function getSubscriptionEntitlements(
@@ -614,13 +1002,11 @@ export function hasSubscriptionFeature(
   state: SubscriptionState,
   featureKey: SubscriptionFeatureKey
 ): boolean {
-  const plan = getSubscriptionPlanDefinition(state.tier);
-
   if (state.featureOverrides.includes(featureKey)) {
     return true;
   }
 
-  return plan.featureKeys.includes(featureKey);
+  return canUseFeature(state.tier, featureKey);
 }
 
 export function getSubscriptionLimitValue(
@@ -634,13 +1020,11 @@ export function getSubscriptionLimitValue(
   }
 
   const plan = getSubscriptionPlanDefinition(state.tier);
-  return plan.limits?.[limitKey] ?? null;
-}
+  if (limitKey === 'maxSavedMeasurementsPerTank') {
+    return plan.limits.historyDays ?? plan.limits.maxSavedMeasurementsPerTank ?? null;
+  }
 
-export function getAllowedMeasurementKeys(
-  state: SubscriptionState
-): SubscriptionMeasurementParameterKey[] {
-  return getSubscriptionEntitlements(state).measurementKeys;
+  return plan.limits?.[limitKey] ?? null;
 }
 
 export function canAccessMeasurementKey(
@@ -654,7 +1038,7 @@ export function getSubscriptionStoreProductId(
   tier: SubscriptionTier,
   platform: SubscriptionStorePlatform
 ): string | null {
-  return SUBSCRIPTION_STORE_PRODUCT_MAP[tier]?.[platform] ?? null;
+  return SUBSCRIPTION_STORE_PRODUCT_MAP[normalizePlanId(tier)]?.[platform] ?? null;
 }
 
 export function hasSubscriptionStoreProductId(

@@ -119,6 +119,76 @@ test('owner can update tank lighting fields used by lamp catalog', async () => {
   );
 });
 
+test('owner can persist extended tank model fields used by domain analysis', async () => {
+  const db = asUser('user_a');
+  const tankRef = doc(db, 'tanks', 'tank_extended_a');
+  const createdAt = new Date('2026-05-07T09:00:00.000Z');
+
+  await assertSucceeds(
+    setDoc(tankRef, {
+      userId: 'user_a',
+      name: 'Akwarium Extended',
+      liters: 240,
+      aquariumType: 'general',
+      substrateType: 'sand',
+      substrateTypes: ['sand', 'gravel'],
+      waterProfile: 'low_tech',
+      targetTemperatureC: 25,
+      ambientTemperatureC: 20,
+      roomTemperatureMode: 'normal',
+      lengthCm: 120,
+      widthCm: 40,
+      heightCm: 50,
+      plantDensity: 'medium',
+      hardscapeDensity: 'high',
+      hidingPlacesCount: 8,
+      hidingPlacesEstimated: 'high',
+      lineOfSightBreaks: 'medium',
+      zones: {
+        openSwimmingSpace: 'medium',
+        bottomArea: 'high',
+        caveArea: 'medium',
+        plantArea: 'low',
+      },
+      createdAt,
+    })
+  );
+
+  await assertSucceeds(
+    updateDoc(tankRef, {
+      roomTemperatureMode: 'custom',
+      ambientTemperatureC: 22,
+      waterProfile: 'single_species',
+      updatedAt: new Date('2026-05-07T10:00:00.000Z'),
+    })
+  );
+});
+
+test('owner can save new onboarding modes for tank', async () => {
+  const db = asUser('user_a');
+  const tankRef = doc(db, 'tanks', 'tank_onboarding_modes');
+  const createdAt = new Date('2026-05-07T09:00:00.000Z');
+
+  await assertSucceeds(
+    setDoc(tankRef, {
+      userId: 'user_a',
+      name: 'Akwarium Onboarding',
+      liters: 150,
+      onboardingMode: 'restart',
+      onboardingStartAt: createdAt,
+      createdAt,
+    })
+  );
+
+  await assertSucceeds(
+    updateDoc(tankRef, {
+      onboardingMode: 'mature_media_start',
+      onboardingStartAt: new Date('2026-05-08T09:00:00.000Z'),
+      updatedAt: new Date('2026-05-08T09:05:00.000Z'),
+    })
+  );
+});
+
 test('cannot read or mutate another user tank', async () => {
   await seedDoc('tanks', 'tank_owned_by_a', {
     userId: 'user_a',
@@ -226,6 +296,47 @@ test('stock item plant payload accepts lighting requirement fields', async () =>
       lightLumenMaxPerLiter: 25,
       lightHoursMin: 6,
       lightHoursMax: 9,
+      lightDemand: 'low',
+      co2Demand: 'low',
+      growthRate: 'medium',
+      difficulty: 'easy',
+      fertilizationDemand: 'low',
+      plantType: 'epiphyte',
+      placementZone: 'hardscape',
+      carboSensitivity: 'medium',
+      parameterStabilitySensitivity: 'medium',
+      minTankHeightCm: 20,
+      minTankVolumeL: 20,
+      compatibleWithDiggers: true,
+      phMin: 6,
+      phMax: 7.8,
+      ghMin: 3,
+      ghMax: 14,
+      tempMin: 22,
+      tempMax: 28,
+      quantity: 1,
+      minLiters: 20,
+      notes: '',
+      createdAt: new Date('2026-05-07T09:00:00.000Z'),
+    })
+  );
+});
+
+test('stock item plant payload blocks invalid v2 demand fields', async () => {
+  const dbA = asUser('user_a');
+  const stockCollection = collection(dbA, 'stockItems');
+
+  await assertFails(
+    addDoc(stockCollection, {
+      userId: 'user_a',
+      tankId: 'tank_a',
+      tankName: 'Akwarium A',
+      type: 'plant',
+      name: 'Anubias',
+      commonName: 'Anubias',
+      latinName: 'Anubias barteri',
+      catalogPlantId: 'plant_1',
+      lightDemand: 'very_high',
       phMin: 6,
       phMax: 7.8,
       ghMin: 3,

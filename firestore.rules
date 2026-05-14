@@ -42,6 +42,12 @@ service cloud.firestore {
       return value == 'plant' ||
         value == 'shrimp' ||
         value == 'mixed' ||
+        value == 'general' ||
+        value == 'planted_low_tech' ||
+        value == 'planted_high_tech' ||
+        value == 'malawi' ||
+        value == 'tanganyika' ||
+        value == 'betta_or_calm_fish' ||
         value == '';
     }
 
@@ -53,7 +59,36 @@ service cloud.firestore {
     }
 
     function validOnboardingMode(value) {
-      return value == 'fresh_start' || value == 'existing_running';
+      return value == 'fresh_start' ||
+        value == 'existing_running' ||
+        value == 'restart' ||
+        value == 'mature_media_start';
+    }
+
+    function validRoomTemperatureMode(value) {
+      return value == 'cold' ||
+        value == 'normal' ||
+        value == 'warm' ||
+        value == 'very_warm' ||
+        value == 'custom';
+    }
+
+    function validDensityLevel(value) {
+      return value == 'none' ||
+        value == 'low' ||
+        value == 'medium' ||
+        value == 'high';
+    }
+
+    function validWaterProfile(value) {
+      return value == 'general' ||
+        value == 'plant' ||
+        value == 'low_tech' ||
+        value == 'high_tech' ||
+        value == 'tanganyika' ||
+        value == 'malawi' ||
+        value == 'single_species' ||
+        value == 'shrimp';
     }
 
     function validStockType(value) {
@@ -65,6 +100,32 @@ service cloud.firestore {
         value == 'manual' ||
         value == 'custom' ||
         value == '';
+    }
+
+    function validPlantDemandLevel(value) {
+      return value == 'low' || value == 'medium' || value == 'high';
+    }
+
+    function validPlantDifficulty(value) {
+      return value == 'easy' || value == 'medium' || value == 'hard';
+    }
+
+    function validPlantType(value) {
+      return value == 'epiphyte' ||
+        value == 'rooted' ||
+        value == 'stem' ||
+        value == 'floating' ||
+        value == 'moss' ||
+        value == 'carpet' ||
+        value == 'rosette';
+    }
+
+    function validPlantPlacementZone(value) {
+      return value == 'foreground' ||
+        value == 'midground' ||
+        value == 'background' ||
+        value == 'floating' ||
+        value == 'hardscape';
     }
 
     function validCaseType(value) {
@@ -93,6 +154,18 @@ service cloud.firestore {
           'lightModelId',
           'lightModelName',
           'lightLumens',
+          'targetTemperatureC',
+          'ambientTemperatureC',
+          'roomTemperatureMode',
+          'lengthCm',
+          'widthCm',
+          'heightCm',
+          'plantDensity',
+          'hardscapeDensity',
+          'hidingPlacesCount',
+          'hidingPlacesEstimated',
+          'lineOfSightBreaks',
+          'zones',
           'waterProfile',
           'singleSpeciesFishId',
           'targetRanges',
@@ -118,9 +191,15 @@ service cloud.firestore {
         optionalString(data, 'lightIntensity', 20) &&
         optionalString(data, 'lightModelId', 120) &&
         optionalString(data, 'lightModelName', 160) &&
+        optionalString(data, 'roomTemperatureMode', 30) &&
+        optionalString(data, 'plantDensity', 20) &&
+        optionalString(data, 'hardscapeDensity', 20) &&
+        optionalString(data, 'hidingPlacesEstimated', 20) &&
+        optionalString(data, 'lineOfSightBreaks', 20) &&
         optionalString(data, 'waterProfile', 30) &&
         optionalString(data, 'singleSpeciesFishId', 128) &&
         optionalMap(data, 'targetRanges', 40) &&
+        optionalMap(data, 'zones', 20) &&
         optionalTimestamp(data, 'onboardingStartAt') &&
         optionalTimestamp(data, 'updatedAt') &&
         optionalList(data, 'plantFertilizationEntries', 200) &&
@@ -133,6 +212,18 @@ service cloud.firestore {
         (!('lightIntensity' in data) || validLightIntensity(data.lightIntensity)) &&
         (!('lightHours' in data) || inRangeNumber(data.lightHours, 1, 24)) &&
         (!('lightLumens' in data) || inRangeNumber(data.lightLumens, 1, 200000)) &&
+        (!('targetTemperatureC' in data) || inRangeNumber(data.targetTemperatureC, 5, 40)) &&
+        (!('ambientTemperatureC' in data) || inRangeNumber(data.ambientTemperatureC, 0, 45)) &&
+        (!('lengthCm' in data) || inRangeNumber(data.lengthCm, 0, 2000)) &&
+        (!('widthCm' in data) || inRangeNumber(data.widthCm, 0, 2000)) &&
+        (!('heightCm' in data) || inRangeNumber(data.heightCm, 0, 2000)) &&
+        (!('hidingPlacesCount' in data) || inRangeNumber(data.hidingPlacesCount, 0, 500)) &&
+        (!('roomTemperatureMode' in data) || validRoomTemperatureMode(data.roomTemperatureMode)) &&
+        (!('plantDensity' in data) || validDensityLevel(data.plantDensity)) &&
+        (!('hardscapeDensity' in data) || validDensityLevel(data.hardscapeDensity)) &&
+        (!('hidingPlacesEstimated' in data) || validDensityLevel(data.hidingPlacesEstimated)) &&
+        (!('lineOfSightBreaks' in data) || validDensityLevel(data.lineOfSightBreaks)) &&
+        (!('waterProfile' in data) || validWaterProfile(data.waterProfile)) &&
         (!('onboardingMode' in data) || validOnboardingMode(data.onboardingMode));
     }
 
@@ -221,6 +312,18 @@ service cloud.firestore {
           'lightLumenMaxPerLiter',
           'lightHoursMin',
           'lightHoursMax',
+          'lightDemand',
+          'co2Demand',
+          'growthRate',
+          'difficulty',
+          'fertilizationDemand',
+          'plantType',
+          'placementZone',
+          'carboSensitivity',
+          'parameterStabilitySensitivity',
+          'minTankHeightCm',
+          'minTankVolumeL',
+          'compatibleWithDiggers',
           'phMin',
           'phMax',
           'ghMin',
@@ -269,6 +372,18 @@ service cloud.firestore {
         (!('lightLumenMaxPerLiter' in data) || inRangeNumber(data.lightLumenMaxPerLiter, 1, 250)) &&
         (!('lightHoursMin' in data) || inRangeNumber(data.lightHoursMin, 1, 24)) &&
         (!('lightHoursMax' in data) || inRangeNumber(data.lightHoursMax, 1, 24)) &&
+        (!('lightDemand' in data) || validPlantDemandLevel(data.lightDemand)) &&
+        (!('co2Demand' in data) || validPlantDemandLevel(data.co2Demand)) &&
+        (!('growthRate' in data) || validPlantDemandLevel(data.growthRate)) &&
+        (!('difficulty' in data) || validPlantDifficulty(data.difficulty)) &&
+        (!('fertilizationDemand' in data) || validPlantDemandLevel(data.fertilizationDemand)) &&
+        (!('plantType' in data) || validPlantType(data.plantType)) &&
+        (!('placementZone' in data) || validPlantPlacementZone(data.placementZone)) &&
+        (!('carboSensitivity' in data) || validPlantDemandLevel(data.carboSensitivity)) &&
+        (!('parameterStabilitySensitivity' in data) || validPlantDemandLevel(data.parameterStabilitySensitivity)) &&
+        (!('minTankHeightCm' in data) || inRangeNumber(data.minTankHeightCm, 5, 200)) &&
+        (!('minTankVolumeL' in data) || inRangeNumber(data.minTankVolumeL, 1, 20000)) &&
+        (!('compatibleWithDiggers' in data) || data.compatibleWithDiggers is bool) &&
         (
           (data.type == 'fish' &&
             ('catalogFishId' in data) &&
@@ -566,6 +681,11 @@ service cloud.firestore {
     }
 
     match /plantDiseaseCatalog/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /equipmentCatalog/{docId} {
       allow read: if isSignedIn();
       allow write: if isAdmin();
     }

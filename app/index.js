@@ -52,7 +52,17 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { createTranslator } from '@/constants/translations';
 import { useAppTheme } from '@/features/aquarium/context/AppThemeContext';
 import { useTank } from '@/features/aquarium/context/TankContext';
+import { useSectionVisibility } from '@/features/aquarium/hooks/useSectionVisibility';
 import {
+  filterMeasurementFieldsByPlan,
+  filterMeasurementsByPlan,
+  getAccessibleTanksForPlan,
+  getFeatureLockMessage,
+  getLockedMeasurementFields,
+  getLockedTanksForPlan,
+  getPlanLabel,
+  getUpgradeTargetForFeature,
+  isTankLockedByPlan,
   listSubscriptionCapabilityRows,
   listSubscriptionPlans,
 } from '@/features/aquarium/subscription/subscriptionModel';
@@ -66,9 +76,36 @@ import {
 } from '@/data/plantDiseaseCatalog';
 import { PLANT_CATALOG_EXPANDED } from '@/data/plantCatalogExpanded';
 import { PLANT_CATALOG_STARTER } from '@/data/plantCatalogStarter';
-import { getSelectedTankStorageKey } from '@/features/aquarium/services/storageKeys';
+import {
+  getAdaptiveTaskChecksStorageKey,
+  getSelectedTankStorageKey,
+} from '@/features/aquarium/services/storageKeys';
+import {
+  buildTankEquipmentFromCatalogItemService,
+  getTankEquipmentLegacyFieldService,
+  getTankEquipmentListFieldService,
+  getTankEquipmentListService,
+} from '@/features/aquarium/services/equipmentService';
+import {
+  buildFishStockingSummaryService,
+  getFishQuantityService,
+} from '@/features/aquarium/services/stockingService';
+import {
+  buildTodayActionPlanService,
+  buildTankOnboardingPlanService,
+  generateAdaptiveTaskSchedule,
+} from '@/features/aquarium/services/tasksService';
+import { evaluateEmergencyState } from '@/features/aquarium/services/emergencyService';
+import {
+  buildTargetRangeInputDraftFromRangesService,
+  getWaterAnalysisOptionsForTankService,
+  normalizeTankTargetRangesService,
+  parseTankTargetRangeDraftOrThrowService,
+} from '@/features/aquarium/services/waterService';
 import {
   buildTankEquipmentAssessment,
+  getFilterRealFlowFactor,
+  normalizeFilterType,
   normalizeEquipmentType,
   toFiniteNumber,
 } from '@/logic/equipmentAnalysis';
@@ -98,6 +135,33 @@ const REMOTE_JSON_REQUEST_HEADERS = Object.freeze({
   'User-Agent':
     'MyAquariumAssistant/1.0 (mobile app; https://my-aquarium-assistant.firebaseapp.com)',
 });
+const ADAPTIVE_TASK_BUCKET_PREVIEW_LIMIT = 4;
+
+function getAdaptiveTaskOccurrenceKey(task) {
+  const taskId = String(task?.id ?? '').trim();
+  const dayBucketMs = Number(task?.dayBucketMs);
+  if (!taskId || !Number.isFinite(dayBucketMs) || dayBucketMs <= 0) {
+    return '';
+  }
+  return `${taskId}::${Math.round(dayBucketMs)}`;
+}
+
+function normalizeAdaptiveTaskChecks(value) {
+  if (!value || typeof value !== 'object') {
+    return {};
+  }
+
+  return Object.entries(value).reduce((accumulator, [key, checked]) => {
+    const normalizedKey = String(key ?? '').trim();
+    if (!normalizedKey) {
+      return accumulator;
+    }
+    if (checked) {
+      accumulator[normalizedKey] = true;
+    }
+    return accumulator;
+  }, {});
+}
 
 function buildFishCommonsFallbackImageUrl(latinName, width = 420) {
   const words = String(latinName ?? '')
@@ -446,6 +510,30 @@ function formatEquipmentTankRange(item) {
   return '-';
 }
 
+function roundToNearestTen(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+  return Math.round(numeric / 10) * 10;
+}
+
+function formatRoundedTankRangeToTens(minLiters, maxLiters) {
+  const minRounded = roundToNearestTen(minLiters);
+  const maxRounded = roundToNearestTen(maxLiters);
+
+  if (Number.isFinite(minRounded) && Number.isFinite(maxRounded)) {
+    return `${minRounded}-${maxRounded} l`;
+  }
+  if (Number.isFinite(maxRounded)) {
+    return `do ${maxRounded} l`;
+  }
+  if (Number.isFinite(minRounded)) {
+    return `od ${minRounded} l`;
+  }
+  return '-';
+}
+
 function getEquipmentCatalogDescription(item) {
   const normalizedType = String(item?.type ?? '').trim().toLowerCase();
   if (normalizedType === 'light') {
@@ -482,44 +570,98 @@ function normalizeEquipmentCatalogType(value) {
     : '';
 }
 
+const FILTER_TYPE_OPTIONS = [
+  { value: 'internal', label: 'Wewnetrzny', factor: 0.7 },
+  { value: 'canister', label: 'Kubelkowy', factor: 0.55 },
+  { value: 'cascade', label: 'Kaskadowy', factor: 0.65 },
+  { value: 'sponge', label: 'Gabkowy / powietrzny', factor: 0.5 },
+  { value: 'sump_panel', label: 'Sump / panel', factor: 0.7 },
+];
+
+function getFilterTypeLabel(value) {
+  const normalized = normalizeFilterType(value);
+  if (!normalized) {
+    return 'Filtr';
+  }
+
+  return (
+    FILTER_TYPE_OPTIONS.find((item) => item.value === normalized)?.label ||
+    'Filtr'
+  );
+}
+
+function normalizeEquipmentCatalogEntry(raw, fallbackId = '') {
+  const id = String(raw?.id ?? fallbackId ?? '').trim().toLowerCase();
+  const type = normalizeEquipmentCatalogType(raw?.type);
+
+  if (!id || !type) {
+    return null;
+  }
+
+  const brand = String(raw?.brand ?? '').trim();
+  const model = String(raw?.model ?? '').trim();
+  const entry = {
+    id,
+    type,
+    brand,
+    model,
+    source: String(raw?.source ?? 'catalog').trim() || 'catalog',
+    tankMinLiters: toFiniteNumber(raw?.tankMinLiters),
+    tankMaxLiters: toFiniteNumber(raw?.tankMaxLiters),
+  };
+
+  if (type === 'heater') {
+    const powerW = toFiniteNumber(raw?.powerW);
+    if (!Number.isFinite(powerW) || powerW <= 0) {
+      return null;
+    }
+    return {
+      ...entry,
+      powerW,
+    };
+  }
+
+  if (type === 'filter') {
+    const flowLh = toFiniteNumber(raw?.flowLh);
+    if (!Number.isFinite(flowLh) || flowLh <= 0) {
+      return null;
+    }
+    const filterType = normalizeFilterType(raw?.filterType);
+    const filterEfficiencyFactor = getFilterRealFlowFactor(
+      filterType,
+      raw?.filterEfficiencyFactor
+    );
+    return {
+      ...entry,
+      flowLh,
+      ...(filterType ? { filterType } : {}),
+      filterEfficiencyFactor,
+    };
+  }
+
+  const lumens = toFiniteNumber(raw?.lumens);
+  if (!Number.isFinite(lumens) || lumens <= 0) {
+    return null;
+  }
+
+  return {
+    ...entry,
+    lumens,
+  };
+}
+
 function getTankEquipmentListField(type) {
-  return type === 'heater' ? 'heaterEquipments' : 'filterEquipments';
+  return getTankEquipmentListFieldService(type);
 }
 
 function getTankEquipmentLegacyField(type) {
-  return type === 'heater' ? 'heaterEquipment' : 'filterEquipment';
+  return getTankEquipmentLegacyFieldService(type);
 }
 
 function getTankEquipmentList(tank, type) {
-  if (!tank) {
-    return [];
-  }
-
-  const listField = getTankEquipmentListField(type);
-  const legacyField = getTankEquipmentLegacyField(type);
-  const fromList = Array.isArray(tank[listField])
-    ? tank[listField]
-        .filter(Boolean)
-        .map((item) => ({
-          ...item,
-          type: normalizeEquipmentType(item?.type) || type,
-        }))
-    : [];
-
-  if (fromList.length > 0) {
-    return fromList;
-  }
-
-  if (!tank[legacyField]) {
-    return [];
-  }
-
-  return [
-    {
-      ...tank[legacyField],
-      type: normalizeEquipmentType(tank[legacyField]?.type) || type,
-    },
-  ];
+  return getTankEquipmentListService(tank, type, {
+    normalizeEquipmentType,
+  });
 }
 
 function buildTankRuleSanitizationPatch(tank) {
@@ -550,6 +692,9 @@ function buildTankRuleSanitizationPatch(tank) {
     'lightModelId',
     'lightModelName',
     'lightLumens',
+    'targetTemperatureC',
+    'ambientTemperatureC',
+    'roomTemperatureMode',
     'waterProfile',
     'singleSpeciesFishId',
     'targetRanges',
@@ -558,7 +703,17 @@ function buildTankRuleSanitizationPatch(tank) {
     'filterEquipments',
     'heaterEquipment',
     'filterEquipment',
+    'lengthCm',
+    'widthCm',
+    'heightCm',
+    'plantDensity',
+    'hardscapeDensity',
+    'hidingPlacesCount',
+    'hidingPlacesEstimated',
+    'lineOfSightBreaks',
+    'zones',
     'onboardingTaskChecks',
+    'maintenanceActionState',
   ];
   const allowedTankFields = new Set([
     'userId',
@@ -572,12 +727,25 @@ function buildTankRuleSanitizationPatch(tank) {
     'lightModelName',
     'lightLumens',
     'lightHours',
+    'targetTemperatureC',
+    'ambientTemperatureC',
+    'roomTemperatureMode',
+    'lengthCm',
+    'widthCm',
+    'heightCm',
+    'plantDensity',
+    'hardscapeDensity',
+    'hidingPlacesCount',
+    'hidingPlacesEstimated',
+    'lineOfSightBreaks',
+    'zones',
     'waterProfile',
     'singleSpeciesFishId',
     'targetRanges',
     'onboardingMode',
     'onboardingStartAt',
     'onboardingTaskChecks',
+    'maintenanceActionState',
     'plantFertilizationEntries',
     'heaterEquipments',
     'filterEquipments',
@@ -606,8 +774,13 @@ function buildTankRuleSanitizationPatch(tank) {
     ['aquariumType', 20],
     ['substrateType', 40],
     ['lightIntensity', 20],
-    ['lightModelId', 80],
-    ['lightModelName', 120],
+    ['lightModelId', 120],
+    ['lightModelName', 160],
+    ['roomTemperatureMode', 30],
+    ['plantDensity', 20],
+    ['hardscapeDensity', 20],
+    ['hidingPlacesEstimated', 20],
+    ['lineOfSightBreaks', 20],
     ['waterProfile', 30],
     ['singleSpeciesFishId', 128],
     ['onboardingMode', 30],
@@ -650,8 +823,47 @@ function buildTankRuleSanitizationPatch(tank) {
     }
   }
 
+  ['lengthCm', 'widthCm', 'heightCm', 'hidingPlacesCount', 'targetTemperatureC', 'ambientTemperatureC'].forEach((field) => {
+    if (!hasField(field)) {
+      return;
+    }
+    const parsed = Number(tank[field]);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      patch[field] = deleteField();
+    }
+  });
+  if (hasField('targetTemperatureC')) {
+    const targetTemp = Number(tank.targetTemperatureC);
+    if (!Number.isFinite(targetTemp) || targetTemp < 5 || targetTemp > 40) {
+      patch.targetTemperatureC = deleteField();
+    }
+  }
+  if (hasField('ambientTemperatureC')) {
+    const ambientTemp = Number(tank.ambientTemperatureC);
+    if (!Number.isFinite(ambientTemp) || ambientTemp < 0 || ambientTemp > 45) {
+      patch.ambientTemperatureC = deleteField();
+    }
+  }
+  if (hasField('roomTemperatureMode')) {
+    const mode = normalizeRoomTemperatureMode(tank.roomTemperatureMode);
+    if (!mode) {
+      patch.roomTemperatureMode = deleteField();
+    }
+  }
+
   if (hasField('aquariumType')) {
-    const allowedAquariumTypes = new Set(['plant', 'shrimp', 'mixed', '']);
+    const allowedAquariumTypes = new Set([
+      'plant',
+      'shrimp',
+      'mixed',
+      'general',
+      'planted_low_tech',
+      'planted_high_tech',
+      'malawi',
+      'tanganyika',
+      'betta_or_calm_fish',
+      '',
+    ]);
     const value = String(tank.aquariumType ?? '').trim().toLowerCase();
     if (!allowedAquariumTypes.has(value)) {
       patch.aquariumType = deleteField();
@@ -668,18 +880,43 @@ function buildTankRuleSanitizationPatch(tank) {
 
   if (hasField('lightModelId')) {
     const value = String(tank.lightModelId ?? '').trim().toLowerCase();
-    if (value && !LIGHT_LAMP_CATALOG.some((item) => item.id === value)) {
+    if (!value || value.length > 120) {
       patch.lightModelId = deleteField();
     }
   }
 
   if (hasField('onboardingMode')) {
-    const allowedModes = new Set(['fresh_start', 'existing_running']);
+    const allowedModes = new Set([
+      'fresh_start',
+      'existing_running',
+      'restart',
+      'mature_media_start',
+    ]);
     const value = String(tank.onboardingMode ?? '').trim().toLowerCase();
     if (!allowedModes.has(value)) {
       patch.onboardingMode = deleteField();
     }
   }
+
+  if (hasField('waterProfile')) {
+    const allowedWaterProfiles = new Set(
+      WATER_PROFILE_OPTIONS.map((item) => item.value)
+    );
+    const value = String(tank.waterProfile ?? '').trim().toLowerCase();
+    if (!allowedWaterProfiles.has(value)) {
+      patch.waterProfile = deleteField();
+    }
+  }
+
+  ['plantDensity', 'hardscapeDensity', 'hidingPlacesEstimated', 'lineOfSightBreaks'].forEach((field) => {
+    if (!hasField(field)) {
+      return;
+    }
+    const normalized = normalizeDensityLevel(tank[field]);
+    if (!normalized) {
+      patch[field] = deleteField();
+    }
+  });
 
   if (hasField('substrateTypes')) {
     const value = tank.substrateTypes;
@@ -719,7 +956,9 @@ function buildTankRuleSanitizationPatch(tank) {
     ['targetRanges', 40],
     ['heaterEquipment', 30],
     ['filterEquipment', 30],
+    ['zones', 20],
     ['onboardingTaskChecks', 300],
+    ['maintenanceActionState', 60],
   ];
   optionalMapFields.forEach(([field, maxSize]) => {
     if (!hasField(field)) {
@@ -743,33 +982,88 @@ function buildTankRuleSanitizationPatch(tank) {
     }
   });
 
+  if (hasField('zones')) {
+    const value = tank.zones;
+    if (value === null || value === undefined) {
+      patch.zones = deleteField();
+    } else if (!isPlainMap(value)) {
+      patch.zones = deleteField();
+    } else {
+      const allowedZoneKeys = [
+        'openSwimmingSpace',
+        'bottomArea',
+        'caveArea',
+        'plantArea',
+      ];
+      const normalizedZones = {};
+      allowedZoneKeys.forEach((key) => {
+        if (!Object.prototype.hasOwnProperty.call(value, key)) {
+          return;
+        }
+        const normalized = normalizeDensityLevel(value[key]);
+        if (normalized) {
+          normalizedZones[key] = normalized;
+        }
+      });
+      patch.zones = normalizedZones;
+    }
+  }
+
+  return patch;
+}
+
+function buildMeasurementRuleSanitizationPatch(measurement) {
+  const patch = {};
+  if (!measurement || typeof measurement !== 'object') {
+    return patch;
+  }
+
+  const allowedMeasurementFields = new Set([
+    'userId',
+    'tankId',
+    'tankName',
+    'note',
+    'measuredAt',
+    'ph',
+    'gh',
+    'kh',
+    'no2',
+    'no3',
+    'temperature',
+    'nh3nh4',
+    'po4',
+    'fe',
+    'ca',
+    'mg',
+    'k',
+    'tds',
+    'co2',
+    'createdAt',
+    'updatedAt',
+  ]);
+
+  Object.keys(measurement).forEach((field) => {
+    if (field === 'id') {
+      return;
+    }
+    if (!allowedMeasurementFields.has(field)) {
+      patch[field] = deleteField();
+    }
+  });
+
   return patch;
 }
 
 function buildTankEquipmentFromCatalogItem(equipmentItem, equipmentType) {
-  return equipmentType === 'heater'
-    ? {
-        id: equipmentItem.id,
-        assignmentId: `${equipmentItem.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        type: 'heater',
-        brand: equipmentItem.brand ?? '',
-        model: equipmentItem.model ?? '',
-        powerW: toFiniteNumber(equipmentItem.powerW),
-        tankMinLiters: toFiniteNumber(equipmentItem.tankMinLiters),
-        tankMaxLiters: toFiniteNumber(equipmentItem.tankMaxLiters),
-        source: 'catalog',
-      }
-    : {
-        id: equipmentItem.id,
-        assignmentId: `${equipmentItem.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        type: 'filter',
-        brand: equipmentItem.brand ?? '',
-        model: equipmentItem.model ?? '',
-        flowLh: toFiniteNumber(equipmentItem.flowLh),
-        tankMinLiters: toFiniteNumber(equipmentItem.tankMinLiters),
-        tankMaxLiters: toFiniteNumber(equipmentItem.tankMaxLiters),
-        source: 'catalog',
-      };
+  return buildTankEquipmentFromCatalogItemService(
+    equipmentItem,
+    equipmentType,
+    {
+      toFiniteNumber,
+      normalizeFilterType,
+      getFilterRealFlowFactor,
+    }
+  );
 }
 
 function hasMeasurementDisplayValue(value) {
@@ -1369,6 +1663,7 @@ function buildHomeSectionCounts({
   stockItems = [],
   issueCases = [],
   enabledTests = {},
+  equipmentCatalog = EQUIPMENT_CATALOG,
 }) {
   if (!tank) {
     return {
@@ -1379,7 +1674,7 @@ function buildHomeSectionCounts({
 
   const tankLiters = Number(tank?.liters);
   const tankProfile = buildTankEnvironmentProfile(tank);
-  const equipmentAssessment = buildTankEquipmentAssessment(tank, EQUIPMENT_CATALOG);
+  const equipmentAssessment = buildTankEquipmentAssessment(tank, equipmentCatalog);
   const fishItems = stockItems.filter((item) => item.type === 'fish');
   const plantItems = stockItems.filter((item) => item.type === 'plant');
   const activeDiseaseCases = issueCases.filter(
@@ -1421,30 +1716,33 @@ function buildHomeSectionCounts({
     .filter(Boolean);
   const fishSchoolingWarningsCount = fishSchoolingWarnings.length;
 
-  const fishAggressionConflicts = [];
-  for (let index = 0; index < fishItems.length; index += 1) {
-    for (let compareIndex = index + 1; compareIndex < fishItems.length; compareIndex += 1) {
-      const conflict = getFishAggressionConflict(
-        fishItems[index],
-        fishItems[compareIndex],
-        tankLiters
-      );
-      if (conflict) {
-        fishAggressionConflicts.push({
-          id: `${fishItems[index].id}-${fishItems[compareIndex].id}`,
-          firstFish: fishItems[index],
-          secondFish: fishItems[compareIndex],
-          ...conflict,
-        });
-      }
-    }
-  }
+  const stockingCompatibility = evaluateStockingCompatibility(
+    tank,
+    stockItems,
+    measurement
+  );
+  const fishAggressionConflicts = (stockingCompatibility?.conflicts ?? [])
+    .filter((item) =>
+      ['aggression', 'territoriality', 'predation', 'finNipping'].includes(
+        String(item?.category ?? '')
+      )
+    )
+    .map((item, index) => ({
+      id: String(item?.id ?? `home-conflict-${index}`),
+      firstFish: item?.firstFish,
+      secondFish: item?.secondFish,
+      label: item?.severity === 'critical' ? 'niezgodne' : 'ryzykowne',
+      reasons: [String(item?.message ?? '').trim()].filter(Boolean),
+    }))
+    .filter((item) => item?.firstFish && item?.secondFish);
   const fishAggressionConflictsCount = fishAggressionConflicts.length;
 
   const plantCompatibilityResults = plantItems.map((item) => ({
     id: item.id,
     label: `${item.commonName ?? item.name ?? item.latinName ?? 'Roslina'} (${item.latinName ?? 'brak nazwy lacinskiej'})`,
-    issues: checkPlantCompatibility(item, measurement, tankLiters, tankProfile),
+    issues: checkPlantCompatibility(item, measurement, tankLiters, tankProfile, {
+      fishItems,
+    }),
   }));
   const plantCompatibilitySummary = summarizeCompatibilityResults(
     plantCompatibilityResults
@@ -1516,7 +1814,13 @@ function buildHomeSectionCounts({
     )
   );
   addAttention('fish-compat', incompatibleFishCount > 0);
-  addAttention('fish-aggression', fishAggressionConflictsCount > 0);
+  addAttention(
+    'fish-aggression',
+    fishAggressionConflictsCount > 0 ||
+      ['high_risk', 'incompatible'].includes(
+        String(stockingCompatibility?.overallStatus ?? '')
+      )
+  );
   addAttention('fish-schooling', fishSchoolingWarningsCount > 0);
   addAttention(
     'stocking',
@@ -1572,6 +1876,12 @@ function buildHomeSectionCounts({
     fishStockingSummary.hasFish &&
       fishStockingSummary.hasTankLiters &&
       (fishStockingSummary.ratio > 1.2 || fishStockingSummary.isOverstocked)
+  );
+  addPlan(
+    'fish-dynamic-compatibility',
+    ['caution', 'high_risk', 'incompatible'].includes(
+      String(stockingCompatibility?.overallStatus ?? '')
+    )
   );
   addPlan('plant-compat', incompatiblePlantCount > 0);
   addPlan('issues', activeIssueCasesCount > 0);
@@ -1920,18 +2230,6 @@ const DISEASE_SEVERITY_PRIORITY = {
   high: 2,
 };
 
-function getHighestSeverity(severities = []) {
-  if (severities.some((severity) => severity === 'critical')) {
-    return 'critical';
-  }
-
-  if (severities.some((severity) => severity === 'warning')) {
-    return 'warning';
-  }
-
-  return 'none';
-}
-
 const SUBSTRATE_OPTIONS = [
   { value: 'sand', label: 'Piasek', labelKey: 'substrateSand' },
   { value: 'fine_gravel', label: 'Drobny zwir', labelKey: 'substrateFineGravel' },
@@ -1947,23 +2245,39 @@ const LIGHT_INTENSITY_OPTIONS = [
   { value: 'medium', label: 'Srednia', labelKey: 'lightMedium' },
   { value: 'high', label: 'Wysoka', labelKey: 'lightHigh' },
 ];
-const LIGHT_LAMP_CATALOG = [
-  { id: 'chihiros-a2-451', name: 'Chihiros A2 451', lumens: 3900 },
-  { id: 'chihiros-a2-601', name: 'Chihiros A2 601', lumens: 5800 },
-  { id: 'chihiros-a2-801', name: 'Chihiros A2 801', lumens: 8000 },
-  { id: 'chihiros-wrgb2-60', name: 'Chihiros WRGB II 60', lumens: 4500 },
-  { id: 'chihiros-wrgb2-90', name: 'Chihiros WRGB II 90', lumens: 6000 },
-  { id: 'twinstar-b-line-600s', name: 'Twinstar B-Line 600S', lumens: 3000 },
-  { id: 'twinstar-e-line-600e', name: 'Twinstar E-Line 600E', lumens: 3600 },
-  { id: 'twinstar-s-line-600sa', name: 'Twinstar S-Line 600SA', lumens: 4200 },
-  { id: 'weekaqua-l-series-600', name: 'WeekAqua L-Series 600', lumens: 5400 },
-  { id: 'weekaqua-a-series-900', name: 'WeekAqua A-Series 900', lumens: 7600 },
-  { id: 'hygger-957-48w', name: 'Hygger 957 (48W)', lumens: 4200 },
-  { id: 'hygger-hg978-36w', name: 'Hygger HG978 (36W)', lumens: 3000 },
-  { id: 'aquael-leddy-slim-32w', name: 'Aquael Leddy Slim 32W', lumens: 3300 },
-  { id: 'aquael-leddy-slim-36w', name: 'Aquael Leddy Slim 36W', lumens: 4300 },
-  { id: 'sinkor-wrgb-ii-90', name: 'Sinkor WRGB II 90', lumens: 6200 },
-];
+const LIGHT_LAMP_CATALOG_SEED = EQUIPMENT_CATALOG.filter(
+  (item) => String(item?.type ?? '').trim().toLowerCase() === 'light'
+).map((item) => ({
+  id: String(item.id ?? '').trim().toLowerCase(),
+  name: `${item.brand ?? ''} ${item.model ?? ''}`.trim(),
+  lumens: Number(item.lumens),
+}));
+let runtimeLightLampCatalog = LIGHT_LAMP_CATALOG_SEED;
+
+function setRuntimeLightLampCatalog(catalog = []) {
+  if (!Array.isArray(catalog) || catalog.length === 0) {
+    runtimeLightLampCatalog = LIGHT_LAMP_CATALOG_SEED;
+    return;
+  }
+
+  runtimeLightLampCatalog = catalog
+    .map((item) => ({
+      id: String(item?.id ?? '').trim().toLowerCase(),
+      name: String(item?.name ?? '').trim(),
+      lumens: Number(item?.lumens),
+    }))
+    .filter(
+      (item) =>
+        item.id &&
+        item.name &&
+        Number.isFinite(item.lumens) &&
+        item.lumens > 0
+    );
+
+  if (runtimeLightLampCatalog.length === 0) {
+    runtimeLightLampCatalog = LIGHT_LAMP_CATALOG_SEED;
+  }
+}
 
 const AQUARIUM_TYPE_OPTIONS = [
   { value: 'plant', label: 'Roslinne', labelKey: 'aquariumTypePlant' },
@@ -2134,8 +2448,17 @@ const MAX_PLANT_FERTILIZATION_ENTRIES = 120;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const ONBOARDING_START_OPTIONS = [
-  { value: 'existing_running', label: 'Nowe, ale juz dzialajace' },
-  { value: 'fresh_start', label: 'Zakladam od zera (start cyklu)' },
+  { value: 'fresh_start', label: 'Fresh start: nowy zbiornik od zera' },
+  { value: 'existing_running', label: 'Istniejace, juz dzialajace akwarium' },
+  { value: 'restart', label: 'Restart zbiornika (przearanzowanie/reset)' },
+  { value: 'mature_media_start', label: 'Start na dojrzalym medium filtracyjnym' },
+];
+const ROOM_TEMPERATURE_MODE_OPTIONS = [
+  { value: 'cold', label: 'Chlodno (18 C)' },
+  { value: 'normal', label: 'Normalnie (20 C)' },
+  { value: 'warm', label: 'Cieplo (22 C)' },
+  { value: 'very_warm', label: 'Bardzo cieplo (24 C)' },
+  { value: 'custom', label: 'Wlasna temperatura' },
 ];
 
 function normalizeText(value) {
@@ -2198,10 +2521,7 @@ function normalizeLightIntensity(value) {
 }
 
 function normalizeLightModelId(value) {
-  const normalized = String(value ?? '').trim().toLowerCase();
-  return LIGHT_LAMP_CATALOG.some((item) => item.id === normalized)
-    ? normalized
-    : '';
+  return String(value ?? '').trim().toLowerCase();
 }
 
 function getLightLampById(lightModelId) {
@@ -2209,7 +2529,7 @@ function getLightLampById(lightModelId) {
   if (!normalized) {
     return null;
   }
-  return LIGHT_LAMP_CATALOG.find((item) => item.id === normalized) ?? null;
+  return runtimeLightLampCatalog.find((item) => item.id === normalized) ?? null;
 }
 
 function estimateLightIntensityFromLumens(lightLumens, liters) {
@@ -2271,15 +2591,39 @@ function getTankLightingSummary(tank) {
 
 function normalizeAquariumType(value) {
   const normalized = String(value ?? '').trim().toLowerCase();
-  return AQUARIUM_TYPE_OPTIONS.some((item) => item.value === normalized)
-    ? normalized
-    : '';
+  const extendedAllowed = new Set([
+    'plant',
+    'shrimp',
+    'mixed',
+    'general',
+    'planted_low_tech',
+    'planted_high_tech',
+    'malawi',
+    'tanganyika',
+    'betta_or_calm_fish',
+  ]);
+  if (AQUARIUM_TYPE_OPTIONS.some((item) => item.value === normalized)) {
+    return normalized;
+  }
+  return extendedAllowed.has(normalized) ? normalized : '';
 }
 
 function normalizeOnboardingMode(value) {
-  return String(value ?? '').trim().toLowerCase() === 'fresh_start'
-    ? 'fresh_start'
-    : 'existing_running';
+  const normalized = String(value ?? '').trim().toLowerCase();
+  const allowedModes = new Set([
+    'fresh_start',
+    'existing_running',
+    'restart',
+    'mature_media_start',
+  ]);
+  return allowedModes.has(normalized) ? normalized : 'existing_running';
+}
+
+function normalizeRoomTemperatureMode(value) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return ROOM_TEMPERATURE_MODE_OPTIONS.some((item) => item.value === normalized)
+    ? normalized
+    : 'normal';
 }
 
 function normalizeWaterProfile(value) {
@@ -2358,72 +2702,25 @@ function buildSingleSpeciesTargetRangesFromFish(
 }
 
 function normalizeTankTargetRanges(value, profile = DEFAULT_WATER_PROFILE) {
-  const defaults = getWaterTargetDefaults(profile);
-  if (!value || typeof value !== 'object') {
-    return defaults;
-  }
-
-  const next = { ...defaults };
-  WATER_TARGET_FIELDS.forEach((field) => {
-    const rawRange = value[field.key];
-    if (!rawRange || typeof rawRange !== 'object') {
-      return;
-    }
-
-    const min = Number(rawRange.min);
-    const max = Number(rawRange.max);
-    if (!Number.isFinite(min) || !Number.isFinite(max) || min > max) {
-      return;
-    }
-
-    next[field.key] = { min, max };
+  return normalizeTankTargetRangesService(value, profile, {
+    getWaterTargetDefaults,
+    WATER_TARGET_FIELDS,
   });
-
-  return next;
 }
 
 function buildTargetRangeInputDraftFromRanges(ranges, profile = DEFAULT_WATER_PROFILE) {
-  const normalized = normalizeTankTargetRanges(ranges, profile);
-  const draft = {};
-
-  WATER_TARGET_FIELDS.forEach((field) => {
-    const range = normalized[field.key];
-    draft[`${field.key}Min`] = String(range?.min ?? '');
-    draft[`${field.key}Max`] = String(range?.max ?? '');
+  return buildTargetRangeInputDraftFromRangesService(ranges, profile, {
+    getWaterTargetDefaults,
+    WATER_TARGET_FIELDS,
   });
-
-  return draft;
 }
 
 function parseTankTargetRangeDraftOrThrow(draft, profile = DEFAULT_WATER_PROFILE) {
-  const fallback = getWaterTargetDefaults(profile);
-  const result = {};
-
-  WATER_TARGET_FIELDS.forEach((field) => {
-    const minKey = `${field.key}Min`;
-    const maxKey = `${field.key}Max`;
-    const rawMin = String(draft?.[minKey] ?? '').trim();
-    const rawMax = String(draft?.[maxKey] ?? '').trim();
-    const minValue =
-      rawMin.length === 0
-        ? Number(fallback[field.key]?.min)
-        : parseNumberOrThrow(`${field.label} min`, rawMin);
-    const maxValue =
-      rawMax.length === 0
-        ? Number(fallback[field.key]?.max)
-        : parseNumberOrThrow(`${field.label} max`, rawMax);
-
-    if (minValue > maxValue) {
-      throw new Error(`Zakres ${field.label}: min nie moze byc wieksze od max.`);
-    }
-
-    result[field.key] = {
-      min: minValue,
-      max: maxValue,
-    };
+  return parseTankTargetRangeDraftOrThrowService(draft, profile, {
+    WATER_TARGET_FIELDS,
+    getWaterTargetDefaults,
+    parseNumberOrThrow,
   });
-
-  return result;
 }
 
 function isFirestorePermissionDeniedError(error) {
@@ -2435,14 +2732,28 @@ function isFirestorePermissionDeniedError(error) {
   );
 }
 
-function getWaterAnalysisOptionsForTank(tank) {
-  const defaultProfile = getDefaultWaterProfileForAquariumType(tank?.aquariumType);
-  const profile = normalizeWaterProfile(tank?.waterProfile ?? defaultProfile);
-  const targetRanges = normalizeTankTargetRanges(tank?.targetRanges, profile);
+function normalizeWasteProductionLevelValue(value, fallback = null) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  const clamped = clampScore(parsed, 0, 5);
+  return Math.round(clamped * 100) / 100;
+}
 
-  return {
-    targetRanges,
-  };
+function buildManualCatalogFishId(name) {
+  const normalized = normalizeText(name).replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  const suffix = normalized.slice(0, 112) || 'fish';
+  return `manual_${suffix}`;
+}
+
+function getWaterAnalysisOptionsForTank(tank) {
+  return getWaterAnalysisOptionsForTankService(tank, {
+    getDefaultWaterProfileForAquariumType,
+    normalizeWaterProfile,
+    getWaterTargetDefaults,
+    WATER_TARGET_FIELDS,
+  });
 }
 
 function normalizeOnboardingTaskChecks(value) {
@@ -2456,6 +2767,43 @@ function normalizeOnboardingTaskChecks(value) {
       return acc;
     }
     acc[normalizedKey] = Boolean(itemValue);
+    return acc;
+  }, {});
+}
+
+function normalizeMaintenanceActionState(value) {
+  if (!value || typeof value !== 'object') {
+    return {};
+  }
+
+  return Object.entries(value).reduce((acc, [rawKey, rawEntry]) => {
+    const key = String(rawKey ?? '').trim().toLowerCase();
+    if (!key || !rawEntry || typeof rawEntry !== 'object') {
+      return acc;
+    }
+
+    const toMs = (entryValue) => {
+      const parsed = Number(entryValue);
+      return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : null;
+    };
+
+    const normalizedEntry = {
+      lastCompletedAtMs: toMs(rawEntry.lastCompletedAtMs),
+      lastSkippedAtMs: toMs(rawEntry.lastSkippedAtMs),
+      postponedUntilMs: toMs(rawEntry.postponedUntilMs),
+      updatedAtMs: toMs(rawEntry.updatedAtMs),
+    };
+
+    if (
+      !normalizedEntry.lastCompletedAtMs &&
+      !normalizedEntry.lastSkippedAtMs &&
+      !normalizedEntry.postponedUntilMs &&
+      !normalizedEntry.updatedAtMs
+    ) {
+      return acc;
+    }
+
+    acc[key] = normalizedEntry;
     return acc;
   }, {});
 }
@@ -2737,6 +3085,289 @@ function inferPlantSubstrateNeed(item) {
   return null;
 }
 
+function normalizePlantDemandLevel(value, fallback = 'medium') {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+  if (normalized === 'low' || normalized === 'medium' || normalized === 'high') {
+    return normalized;
+  }
+  return fallback;
+}
+
+function normalizePlantDifficulty(value, fallback = 'medium') {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+  if (normalized === 'easy' || normalized === 'medium' || normalized === 'hard') {
+    return normalized;
+  }
+  return fallback;
+}
+
+function normalizePlantType(value, fallback = '') {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+  if (
+    normalized === 'epiphyte' ||
+    normalized === 'rooted' ||
+    normalized === 'stem' ||
+    normalized === 'floating' ||
+    normalized === 'moss' ||
+    normalized === 'carpet' ||
+    normalized === 'rosette'
+  ) {
+    return normalized;
+  }
+  return fallback;
+}
+
+function normalizePlantPlacementZone(value, fallback = '') {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+  if (
+    normalized === 'foreground' ||
+    normalized === 'midground' ||
+    normalized === 'background' ||
+    normalized === 'floating' ||
+    normalized === 'hardscape'
+  ) {
+    return normalized;
+  }
+  return fallback;
+}
+
+function toPositiveNumberOrNull(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+}
+
+function inferPlantType(item) {
+  const explicitType = normalizePlantType(item?.plantType);
+  if (explicitType) {
+    return explicitType;
+  }
+
+  const fingerprint = getStockNameFingerprint(item);
+  if (
+    ['anubias', 'microsorum', 'bolbitis', 'bucephalandra'].some((keyword) =>
+      fingerprint.includes(keyword)
+    )
+  ) {
+    return 'epiphyte';
+  }
+  if (['taxiphyllum', 'vesicularia', 'fissidens', 'mch', 'moss'].some((keyword) => fingerprint.includes(keyword))) {
+    return 'moss';
+  }
+  if (['pistia', 'salvinia', 'limnobium', 'lemna', 'riccia'].some((keyword) => fingerprint.includes(keyword))) {
+    return 'floating';
+  }
+  if (['glossostigma', 'micranthemum', 'eleocharis', 'marsilea'].some((keyword) => fingerprint.includes(keyword))) {
+    return 'carpet';
+  }
+  if (['cryptocoryne', 'kryptokoryna', 'echinodorus', 'zabienica', 'sagittaria'].some((keyword) => fingerprint.includes(keyword))) {
+    return 'rosette';
+  }
+  if (['rotala', 'ludwigia', 'hygrophila', 'bacopa', 'cabomba', 'pogostemon'].some((keyword) => fingerprint.includes(keyword))) {
+    return 'stem';
+  }
+  return inferPlantSubstrateNeed(item) === 'nutrient' ? 'rooted' : 'stem';
+}
+
+function inferPlantPlacementZone(item, plantType) {
+  const explicitPlacement = normalizePlantPlacementZone(item?.placementZone);
+  if (explicitPlacement) {
+    return explicitPlacement;
+  }
+
+  if (plantType === 'floating') return 'floating';
+  if (plantType === 'epiphyte' || plantType === 'moss') return 'hardscape';
+  if (plantType === 'carpet') return 'foreground';
+  if (plantType === 'stem') return 'background';
+  return 'midground';
+}
+
+function inferPlantDemandFromLightRange(item) {
+  const range = inferPlantLightRange(item);
+  if (!range) {
+    return 'medium';
+  }
+  const minRank = lightLevelToRank(range.min);
+  const maxRank = lightLevelToRank(range.max);
+  if (minRank === 0 && maxRank <= 1) return 'low';
+  if (minRank >= 1 && maxRank >= 2) return 'high';
+  return 'medium';
+}
+
+function inferPlantCo2Demand(item) {
+  const explicit = normalizePlantDemandLevel(item?.co2Demand, '');
+  if (explicit) {
+    return explicit;
+  }
+
+  const fingerprint = getStockNameFingerprint(item);
+  if (
+    [
+      'glossostigma',
+      'hemianthus',
+      'micranthemum',
+      'eriocaulon',
+      'tonina',
+      'pogostemon stellatus',
+      'alternanthera',
+    ].some((keyword) => fingerprint.includes(keyword))
+  ) {
+    return 'high';
+  }
+  if (['anubias', 'microsorum', 'bolbitis', 'mch', 'moss', 'cryptocoryne'].some((keyword) => fingerprint.includes(keyword))) {
+    return 'low';
+  }
+  return 'medium';
+}
+
+function inferPlantGrowthRate(item) {
+  const explicit = normalizePlantDemandLevel(item?.growthRate, '');
+  if (explicit) {
+    return explicit;
+  }
+
+  const text = normalizeText(`${item?.notes ?? ''} ${item?.commonName ?? ''} ${item?.latinName ?? ''}`);
+  if (
+    text.includes('szybko rosn') ||
+    ['egeria', 'ceratophyllum', 'hygrophila polysperma', 'limnobium', 'lemna'].some((keyword) =>
+      text.includes(keyword)
+    )
+  ) {
+    return 'high';
+  }
+  if (
+    text.includes('wolniejszym wzros') ||
+    text.includes('wolny wzrost') ||
+    ['anubias', 'bucephalandra', 'fissidens', 'bolbitis'].some((keyword) => text.includes(keyword))
+  ) {
+    return 'low';
+  }
+  return 'medium';
+}
+
+function inferPlantDifficulty(item) {
+  const explicit = normalizePlantDifficulty(item?.difficulty, '');
+  if (explicit) {
+    return explicit;
+  }
+
+  const text = normalizeText(`${item?.notes ?? ''} ${item?.commonName ?? ''} ${item?.latinName ?? ''}`);
+  if (text.includes('latwa') || text.includes('dla poczatkuj')) {
+    return 'easy';
+  }
+  if (
+    text.includes('wymagaj') ||
+    text.includes('delikatn') ||
+    text.includes('stabilne warunki') ||
+    text.includes('lubi czysta wode')
+  ) {
+    return 'hard';
+  }
+  return 'medium';
+}
+
+function inferPlantFertilizationDemand(item, plantType) {
+  const explicit = normalizePlantDemandLevel(item?.fertilizationDemand, '');
+  if (explicit) {
+    return explicit;
+  }
+  const text = normalizeText(`${item?.notes ?? ''} ${item?.commonName ?? ''} ${item?.latinName ?? ''}`);
+  if (plantType === 'stem' || plantType === 'carpet' || text.includes('wymagaj')) {
+    return 'high';
+  }
+  if (plantType === 'epiphyte' || plantType === 'moss' || plantType === 'floating') {
+    return 'low';
+  }
+  return 'medium';
+}
+
+function inferPlantCarboSensitivity(item) {
+  const explicit = normalizePlantDemandLevel(item?.carboSensitivity, '');
+  if (explicit) {
+    return explicit;
+  }
+  const fingerprint = getStockNameFingerprint(item);
+  if (['vallisneria', 'nurzaniec', 'mch', 'moss', 'riccia'].some((keyword) => fingerprint.includes(keyword))) {
+    return 'high';
+  }
+  if (['anubias', 'microsorum', 'hygrophila'].some((keyword) => fingerprint.includes(keyword))) {
+    return 'low';
+  }
+  return 'medium';
+}
+
+function inferPlantParameterStabilitySensitivity(item) {
+  const explicit = normalizePlantDemandLevel(item?.parameterStabilitySensitivity, '');
+  if (explicit) {
+    return explicit;
+  }
+  const text = normalizeText(`${item?.notes ?? ''} ${item?.commonName ?? ''} ${item?.latinName ?? ''}`);
+  if (
+    text.includes('stabilne warunki') ||
+    text.includes('delikatn') ||
+    text.includes('gubic liscie')
+  ) {
+    return 'high';
+  }
+  if (text.includes('latwa') || text.includes('wytrzymala')) {
+    return 'low';
+  }
+  return 'medium';
+}
+
+function inferPlantRequirementProfile(item) {
+  const plantType = inferPlantType(item);
+  const placementZone = inferPlantPlacementZone(item, plantType);
+  const minTankVolumeL =
+    toPositiveNumberOrNull(item?.minTankVolumeL) ??
+    toPositiveNumberOrNull(item?.minLiters) ??
+    20;
+  const minTankHeightCm =
+    toPositiveNumberOrNull(item?.minTankHeightCm) ??
+    (placementZone === 'background'
+      ? 35
+      : placementZone === 'midground'
+        ? 28
+        : placementZone === 'floating'
+          ? 15
+          : 20);
+  const explicitCompatibleWithDiggers =
+    typeof item?.compatibleWithDiggers === 'boolean' ? item.compatibleWithDiggers : null;
+  const compatibleWithDiggers =
+    explicitCompatibleWithDiggers === null
+      ? plantType === 'epiphyte' || plantType === 'moss' || plantType === 'floating'
+      : explicitCompatibleWithDiggers;
+
+  return {
+    lightDemand: normalizePlantDemandLevel(
+      item?.lightDemand,
+      inferPlantDemandFromLightRange(item)
+    ),
+    co2Demand: inferPlantCo2Demand(item),
+    growthRate: inferPlantGrowthRate(item),
+    difficulty: inferPlantDifficulty(item),
+    fertilizationDemand: inferPlantFertilizationDemand(item, plantType),
+    plantType,
+    placementZone,
+    carboSensitivity: inferPlantCarboSensitivity(item),
+    parameterStabilitySensitivity: inferPlantParameterStabilitySensitivity(item),
+    minTankHeightCm: Math.max(10, Math.round(minTankHeightCm)),
+    minTankVolumeL: Math.max(5, Math.round(minTankVolumeL)),
+    compatibleWithDiggers,
+  };
+}
+
 function inferPlantLightRange(item) {
   const fingerprint = getStockNameFingerprint(item);
   const highLight = [
@@ -2854,6 +3485,12 @@ function getPlantLightRequirements(item) {
   const explicitHoursMax = parsePlantLightLumenValue(
     item?.lightHoursMax ?? item?.maxLightHours
   );
+  const normalizedLightDemand = normalizePlantDemandLevel(item?.lightDemand, '');
+  const lightDemandRanges = {
+    low: { minLumensPerLiter: 10, maxLumensPerLiter: 25, minHours: 6, maxHours: 9 },
+    medium: { minLumensPerLiter: 20, maxLumensPerLiter: 45, minHours: 7, maxHours: 10 },
+    high: { minLumensPerLiter: 35, maxLumensPerLiter: 65, minHours: 8, maxHours: 11 },
+  };
 
   if (
     Number.isFinite(explicitMin) &&
@@ -2866,6 +3503,17 @@ function getPlantLightRequirements(item) {
       minHours: Number.isFinite(explicitHoursMin) ? explicitHoursMin : null,
       maxHours: Number.isFinite(explicitHoursMax) ? explicitHoursMax : null,
       source: 'explicit',
+    };
+  }
+
+  if (normalizedLightDemand && lightDemandRanges[normalizedLightDemand]) {
+    const range = lightDemandRanges[normalizedLightDemand];
+    return {
+      minLumensPerLiter: range.minLumensPerLiter,
+      maxLumensPerLiter: range.maxLumensPerLiter,
+      minHours: Number.isFinite(explicitHoursMin) ? explicitHoursMin : range.minHours,
+      maxHours: Number.isFinite(explicitHoursMax) ? explicitHoursMax : range.maxHours,
+      source: 'light_demand',
     };
   }
 
@@ -3066,6 +3714,65 @@ function buildTankEnvironmentProfile(tank) {
   const substrateTypes = normalizeSubstrateTypes(
     tank?.substrateTypes ?? tank?.substrateType
   );
+  const aquariumType = normalizeAquariumType(tank?.aquariumType);
+  const rawType = normalizeText(tank?.aquariumType);
+  const isRockyType =
+    rawType.includes('malawi') ||
+    rawType.includes('tanganika') ||
+    rawType.includes('cichlid');
+  const isTechnicalType =
+    rawType.includes('technic') ||
+    rawType.includes('empty') ||
+    rawType.includes('puste');
+  const defaultPlantDensity = aquariumType === 'plant' ? 'high' : aquariumType === 'mixed' ? 'medium' : 'low';
+  const defaultHardscapeDensity = isRockyType ? 'high' : aquariumType === 'mixed' ? 'medium' : 'low';
+  const defaultLineOfSightBreaks = isTechnicalType ? 'low' : isRockyType ? 'high' : aquariumType === 'plant' ? 'medium' : 'low';
+  const volumeLiters = Number(tank?.volumeLiters ?? tank?.liters);
+  const lengthCmRaw = Number(tank?.lengthCm);
+  const widthCmRaw = Number(tank?.widthCm);
+  const heightCmRaw = Number(tank?.heightCm);
+  const defaultHeight = Number.isFinite(heightCmRaw) && heightCmRaw > 0 ? heightCmRaw : 40;
+  const estimatedFootprintCm2 =
+    Number.isFinite(volumeLiters) && volumeLiters > 0 ? (volumeLiters * 1000) / Math.max(25, defaultHeight) : 0;
+  const estimatedLengthCm =
+    estimatedFootprintCm2 > 0 ? Math.max(35, Math.round(Math.sqrt(estimatedFootprintCm2 * 2.1))) : 0;
+  const estimatedWidthCm =
+    estimatedFootprintCm2 > 0 ? Math.max(20, Math.round(estimatedFootprintCm2 / Math.max(1, estimatedLengthCm))) : 0;
+  const lengthCm =
+    Number.isFinite(lengthCmRaw) && lengthCmRaw > 0 ? lengthCmRaw : estimatedLengthCm;
+  const widthCm =
+    Number.isFinite(widthCmRaw) && widthCmRaw > 0 ? widthCmRaw : estimatedWidthCm;
+  const heightCm =
+    Number.isFinite(heightCmRaw) && heightCmRaw > 0
+      ? heightCmRaw
+      : Number.isFinite(volumeLiters) && volumeLiters > 0 && lengthCm > 0 && widthCm > 0
+        ? Math.round((volumeLiters * 1000) / (lengthCm * widthCm))
+        : defaultHeight;
+  const plantDensity = normalizeDensityLevel(tank?.plantDensity) || defaultPlantDensity;
+  const hardscapeDensity = normalizeDensityLevel(tank?.hardscapeDensity) || defaultHardscapeDensity;
+  const lineOfSightBreaks = normalizeDensityLevel(tank?.lineOfSightBreaks) || defaultLineOfSightBreaks;
+  const hidingPlacesCountRaw = Number(tank?.hidingPlacesCount);
+  const hidingPlacesEstimated = normalizeDensityLevel(tank?.hidingPlacesEstimated);
+  const hidingPlacesCount =
+    Number.isFinite(hidingPlacesCountRaw) && hidingPlacesCountRaw >= 0
+      ? Math.round(hidingPlacesCountRaw)
+      : hidingPlacesEstimated === 'high'
+        ? 12
+        : hidingPlacesEstimated === 'medium'
+          ? 6
+          : hidingPlacesEstimated === 'low'
+            ? 2
+            : hardscapeDensity === 'high'
+              ? 10
+              : hardscapeDensity === 'medium'
+                ? 5
+                : 2;
+  const zones = {
+    openSwimmingSpace: normalizeDensityLevel(tank?.zones?.openSwimmingSpace) || (isTechnicalType ? 'high' : 'medium'),
+    bottomArea: normalizeDensityLevel(tank?.zones?.bottomArea) || 'medium',
+    caveArea: normalizeDensityLevel(tank?.zones?.caveArea) || (isRockyType ? 'high' : 'low'),
+    plantArea: normalizeDensityLevel(tank?.zones?.plantArea) || (aquariumType === 'plant' ? 'high' : defaultPlantDensity),
+  };
 
   return {
     substrateType: substrateTypes[0] ?? '',
@@ -3078,6 +3785,17 @@ function buildTankEnvironmentProfile(tank) {
     lightHours: lighting.lightHours,
     hasActiveRootTabsSupport: fertilizationSummary.hasActiveRootTabs,
     rootTabsSupportDaysLeft: fertilizationSummary.rootTabsSupportDaysLeft,
+    volumeLiters,
+    lengthCm,
+    widthCm,
+    heightCm,
+    aquariumType,
+    plantDensity,
+    hardscapeDensity,
+    hidingPlacesCount,
+    hidingPlacesEstimated,
+    lineOfSightBreaks,
+    zones,
   };
 }
 
@@ -3094,6 +3812,19 @@ const EXPANDED_FISH_DEFAULTS = {
 };
 
 const DEFAULT_SCHOOLING_GROUP_SIZE = 6;
+const DEFAULT_RECOMMENDED_GROUP_SIZE = 6;
+const DEFAULT_MAX_GROUP_DENSITY_PER_100L = 24;
+const DEFAULT_COMPATIBILITY_CATEGORIES = {
+  waterParameters: 'ok',
+  tankSize: 'ok',
+  aggression: 'ok',
+  territoriality: 'ok',
+  predation: 'ok',
+  finNipping: 'ok',
+  socialNeeds: 'ok',
+  zoneCompetition: 'ok',
+};
+const STOCKING_COMPATIBILITY_OVERRIDES = [];
 const SCHOOLING_FISH_KEYWORDS = [
   'stadna',
   'lawic',
@@ -3278,6 +4009,54 @@ const CARNIVORE_FISH_KEYWORDS = [
   'oscar',
   'astronotus',
 ];
+const FISH_TERRITORIAL_KEYWORDS = [
+  'terytorial',
+  'rewir',
+  'cichlid',
+  'pielegnic',
+  'goby',
+  'babka',
+  'shark',
+  'grubowarg',
+  'muszlow',
+  'shell dweller',
+];
+const FISH_PREDATORY_KEYWORDS = [
+  'drapiez',
+  'predator',
+  'zjada mniejsze',
+  'poluje',
+  'carnivore',
+  'miesozern',
+];
+const AGGRESSION_ZONE_KEYS = ['bottom', 'middle', 'top', 'caves', 'rocks', 'plants', 'open_water', 'whole_tank'];
+const FILTER_REAL_FLOW_FACTOR_COMPENSATION = {
+  internal: 0.7,
+  hang_on_back: 0.65,
+  cascade: 0.65,
+  canister: 0.55,
+  sponge_air: 0.5,
+  sponge: 0.5,
+  sponge_powerhead: 0.6,
+  sump: 0.7,
+  sump_panel: 0.7,
+  other: 0.6,
+};
+const TURNOVER_THRESHOLDS_BY_TANK_TYPE = {
+  general: { idealMin: 4, idealMax: 8, strongMax: 12 },
+  planted_low_tech: { idealMin: 4, idealMax: 7, strongMax: 10 },
+  planted_high_tech: { idealMin: 6, idealMax: 10, strongMax: 14 },
+  shrimp: { idealMin: 3, idealMax: 6, strongMax: 8 },
+  malawi: { idealMin: 8, idealMax: 12, strongMax: 16 },
+  tanganyika: { idealMin: 7, idealMax: 12, strongMax: 16 },
+  betta_or_calm_fish: { idealMin: 3, idealMax: 5, strongMax: 7 },
+};
+const BIOLOAD_CAPACITY_PER_LITER = 4.4;
+const BIOLOAD_RISK_THRESHOLDS = {
+  medium: 0.95,
+  high: 1.15,
+  critical: 1.35,
+};
 
 function normalizeFishWaterZone(value) {
   const normalized = normalizeText(value);
@@ -3293,7 +4072,28 @@ function normalizeFishWaterZone(value) {
   return 'all';
 }
 
+function normalizeFishTerritoryZone(value) {
+  const normalized = normalizeText(value);
+  if (!normalized) return 'middle';
+  if (normalized.includes('whole') || normalized.includes('caly')) return 'whole_tank';
+  if (normalized.includes('open')) return 'open_water';
+  if (normalized.includes('cave') || normalized.includes('jaskin')) return 'caves';
+  if (normalized.includes('rock') || normalized.includes('skal')) return 'rocks';
+  if (normalized.includes('plant') || normalized.includes('roslin')) return 'plants';
+  if (normalized.includes('bottom') || normalized.includes('denn')) return 'bottom';
+  if (normalized.includes('top') || normalized.includes('gorn')) return 'top';
+  if (normalized.includes('middle') || normalized.includes('srodk')) return 'middle';
+  return 'middle';
+}
+
 function normalizeFishTemperament(value) {
+  const normalized = normalizeText(value);
+  if (normalized.includes('timid') || normalized.includes('plochli')) {
+    return 'timid';
+  }
+  if (normalized.includes('predator') || normalized.includes('drapiez')) {
+    return 'predatory';
+  }
   const aggression = normalizeAggressionLevel(value);
   if (aggression === 'aggressive') {
     return 'aggressive';
@@ -3302,6 +4102,130 @@ function normalizeFishTemperament(value) {
     return 'semi_aggressive';
   }
   return 'peaceful';
+}
+
+function getTemperamentAggressionLevel(temperament) {
+  const normalized = String(temperament ?? '').trim().toLowerCase();
+  if (normalized === 'predatory') return 5;
+  if (normalized === 'aggressive') return 4;
+  if (normalized === 'semi_aggressive') return 3;
+  if (normalized === 'timid') return 1;
+  return 1;
+}
+
+function normalizeAggressionType(value) {
+  const normalized = normalizeText(value).replace(/-/g, '_');
+  if (!normalized || normalized === 'none') return 'none';
+  if (normalized.includes('intraspecific') || normalized.includes('wewnatrzgatunk')) {
+    return 'intraspecific';
+  }
+  if (normalized.includes('interspecific') || normalized.includes('miedzygatunk')) {
+    return 'interspecific';
+  }
+  if (normalized.includes('territorial') || normalized.includes('terytorial')) {
+    return 'territorial';
+  }
+  if (normalized.includes('breeding') || normalized.includes('tarl')) {
+    return 'breeding';
+  }
+  if (normalized.includes('food') || normalized.includes('pokarm')) {
+    return 'food_competition';
+  }
+  if (normalized.includes('fin') || normalized.includes('pletw') || normalized.includes('nipp')) {
+    return 'fin_nipping';
+  }
+  if (normalized.includes('predatory') || normalized.includes('drapiez')) {
+    return 'predatory';
+  }
+  return 'interspecific';
+}
+
+function normalizeAggressionScale(value, fallback = 1) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return clampScore(Number(fallback), 0, 5);
+  }
+  return clampScore(Math.round(parsed), 0, 5);
+}
+
+function normalizeAggressionBand(value) {
+  const normalized = normalizeText(value);
+  if (normalized.includes('high') || normalized.includes('wysok')) return 'high';
+  if (normalized.includes('medium') || normalized.includes('sred')) return 'medium';
+  if (normalized.includes('none') || normalized.includes('brak')) return 'none';
+  return 'low';
+}
+
+function normalizeFishSocialStructure(value, schoolingProfile) {
+  const normalized = normalizeText(value ?? '');
+  if (normalized.includes('harem')) return 'harem';
+  if (normalized.includes('pair') || normalized.includes('para')) return 'pair';
+  if (normalized.includes('colony') || normalized.includes('koloni')) return 'colony';
+  if (normalized.includes('school') || normalized.includes('lawic')) return 'school';
+  if (normalized.includes('group') || normalized.includes('grup')) return 'group';
+  if (normalized.includes('solo') || normalized.includes('single')) return 'solo';
+  if (schoolingProfile?.isSchooling) return 'school';
+  return 'solo';
+}
+
+function normalizeEatsShrimp(value, predatorRisk = false) {
+  const normalized = normalizeText(value);
+  if (normalized === 'yes' || normalized === 'tak') return 'yes';
+  if (normalized === 'no' || normalized === 'nie') return 'no';
+  if (normalized === 'maybe' || normalized === 'moze' || normalized === 'ryzyko') return 'maybe';
+  return predatorRisk ? 'maybe' : 'no';
+}
+
+function normalizeSexRatio(value) {
+  const normalized = normalizeText(value).replace(/\s+/g, '_');
+  if (!normalized || normalized === 'unknown' || normalized === 'nieznane') return 'unknown';
+  if (normalized.includes('mostly_male') || normalized.includes('wiekszosc_samc')) return 'mostly_males';
+  if (normalized.includes('mostly_female') || normalized.includes('wiekszosc_samic')) return 'mostly_females';
+  if (normalized.includes('pair') || normalized.includes('para')) return 'pair';
+  if (normalized.includes('harem')) return 'harem';
+  if (normalized.includes('mixed') || normalized.includes('miesz')) return 'mixed';
+  return 'unknown';
+}
+
+function normalizeLifeStage(value) {
+  const normalized = normalizeText(value);
+  if (!normalized || normalized === 'unknown' || normalized === 'nieznane') return 'unknown';
+  if (normalized.includes('juvenile') || normalized.includes('mlod')) return 'juvenile';
+  if (normalized.includes('adult') || normalized.includes('dorosl')) return 'adult';
+  if (normalized.includes('mixed') || normalized.includes('miesz')) return 'mixed';
+  return 'unknown';
+}
+
+function normalizeDensityLevel(value) {
+  const normalized = normalizeText(value);
+  if (!normalized || normalized === 'none' || normalized === 'brak') return 'none';
+  if (normalized.includes('high') || normalized.includes('duz') || normalized.includes('wysok')) return 'high';
+  if (normalized.includes('medium') || normalized.includes('sred')) return 'medium';
+  if (normalized.includes('low') || normalized.includes('malo') || normalized.includes('nisk')) return 'low';
+  return '';
+}
+
+function normalizeFlowPreference(value) {
+  const normalized = normalizeText(value);
+  if (normalized.includes('low') || normalized.includes('slaby') || normalized.includes('spokoj')) {
+    return 'low';
+  }
+  if (normalized.includes('high') || normalized.includes('mocny') || normalized.includes('silny')) {
+    return 'high';
+  }
+  return 'medium';
+}
+
+function inferWasteProductionLevel(rawFish, adultSizeCm, diet) {
+  const explicit = normalizeWasteProductionLevelValue(rawFish?.wasteProductionLevel);
+  if (Number.isFinite(explicit)) {
+    return explicit;
+  }
+  if (adultSizeCm >= 22) return 5.0;
+  if (adultSizeCm >= 14) return diet === 'carnivore' ? 5.0 : 4.0;
+  if (adultSizeCm >= 9) return diet === 'carnivore' ? 4.0 : 3.0;
+  if (adultSizeCm >= 6) return 3.0;
+  return 2.0;
 }
 
 function normalizeFishDiet(value) {
@@ -3458,18 +4382,57 @@ function buildFishSpeciesProfile(rawFish, quantity = null) {
     typeof rawFish?.finNipper === 'boolean'
       ? rawFish.finNipper
       : inferFinNipper(rawFish);
+  const { latinKey, text } = buildFishConflictFingerprint(rawFish);
+  const aggressionLevelBase = normalizeAggressionScale(
+    rawFish?.aggressionLevelNumeric ?? rawFish?.fishAggressionLevel,
+    getTemperamentAggressionLevel(temperament)
+  );
+  const territorialityLevel = normalizeAggressionScale(
+    rawFish?.territorialityLevel,
+    FISH_TERRITORIAL_KEYWORDS.some((keyword) => text.includes(keyword))
+      ? Math.max(2, aggressionLevelBase - 1)
+      : Math.max(0, aggressionLevelBase - 2)
+  );
+  const aggressionType = normalizeAggressionType(
+    rawFish?.aggressionType ??
+      (temperament === 'predatory'
+        ? 'predatory'
+        : territorialityLevel >= 2
+          ? 'territorial'
+          : 'none')
+  );
   const explicitPredatorRisk =
     typeof rawFish?.predatorRisk === 'boolean' ? rawFish.predatorRisk : null;
-  const { latinKey, text } = buildFishConflictFingerprint(rawFish);
   const adultSizeCm = inferAdultSizeCm(rawFish, sanitized.minLiters);
   const derivedPredatorRisk =
     temperament === 'aggressive' ||
+    temperament === 'predatory' ||
     diet === 'carnivore' ||
     adultSizeCm >= 12 ||
     SHRIMP_PREDATOR_LATIN_PREFIXES.some((prefix) => latinKey.startsWith(prefix)) ||
     SHRIMP_PREDATOR_KEYWORDS.some((keyword) => text.includes(keyword));
   const predatorRisk =
     explicitPredatorRisk === null ? derivedPredatorRisk : explicitPredatorRisk;
+  const eatsSmallFish =
+    typeof rawFish?.eatsSmallFish === 'boolean'
+      ? rawFish.eatsSmallFish
+      : predatorRisk || FISH_PREDATORY_KEYWORDS.some((keyword) => text.includes(keyword));
+  const longFinRiskTarget =
+    typeof rawFish?.longFinRiskTarget === 'boolean'
+      ? rawFish.longFinRiskTarget
+      : inferLongFinRisk(rawFish);
+  const territoryZone = normalizeFishTerritoryZone(
+    rawFish?.territoryZone ?? (waterZone === 'all' ? 'whole_tank' : waterZone)
+  );
+  const territorySizeLiters = Number(rawFish?.territorySizeLiters);
+  const normalizedTerritorySizeLiters =
+    Number.isFinite(territorySizeLiters) && territorySizeLiters > 0
+      ? territorySizeLiters
+      : territorialityLevel >= 4
+        ? Math.max(30, Math.round((Number(sanitized.minLiters) || 80) * 0.55))
+        : territorialityLevel >= 2
+          ? Math.max(20, Math.round((Number(sanitized.minLiters) || 80) * 0.35))
+          : 0;
 
   const explicitShrimpSafe = String(rawFish?.shrimpSafe ?? '').trim();
   const shrimpSafe = explicitShrimpSafe
@@ -3479,6 +4442,10 @@ function buildFishSpeciesProfile(rawFish, quantity = null) {
         ? 'maybe'
         : 'no'
       : 'yes';
+  const eatsShrimp = normalizeEatsShrimp(
+    rawFish?.eatsShrimp ?? (shrimpSafe === 'yes' ? 'no' : shrimpSafe),
+    predatorRisk
+  );
   const specialTags = Array.isArray(rawFish?.specialTags)
     ? rawFish.specialTags
         .map((tag) => normalizeText(tag))
@@ -3498,6 +4465,47 @@ function buildFishSpeciesProfile(rawFish, quantity = null) {
   const normalizedQuantity = Number.isFinite(Number(quantity))
     ? Math.max(1, Math.round(Number(quantity)))
     : Math.max(1, getFishQuantity(rawFish));
+  const socialStructure = normalizeFishSocialStructure(
+    rawFish?.socialStructure ?? rawFish?.socialType,
+    schoolingProfile
+  );
+  const recommendedGroupSizeRaw = Number(rawFish?.recommendedGroupSize);
+  const recommendedGroupSize = Number.isFinite(recommendedGroupSizeRaw)
+    ? Math.max(1, Math.round(recommendedGroupSizeRaw))
+    : schoolingProfile.isSchooling
+      ? Math.max(
+          Number(schoolingProfile.minGroupSize) || DEFAULT_SCHOOLING_GROUP_SIZE,
+          DEFAULT_RECOMMENDED_GROUP_SIZE
+        )
+      : socialStructure === 'pair'
+        ? 2
+        : 1;
+  const maxGroupDensityRaw = Number(rawFish?.maxGroupDensityPer100L);
+  const maxGroupDensityPer100L = Number.isFinite(maxGroupDensityRaw) && maxGroupDensityRaw > 0
+    ? maxGroupDensityRaw
+    : Math.max(
+        2,
+        Math.round((100 / Math.max(1, adultSizeCm)) * (temperament === 'aggressive' ? 0.55 : 0.85))
+      );
+  const maleAggression = normalizeAggressionBand(rawFish?.maleAggression);
+  const breedingAggression = normalizeAggressionBand(rawFish?.breedingAggression);
+  const preferredTankLengthCmRaw = Number(rawFish?.preferredTankLengthCm);
+  const minTankLengthCmRaw = Number(rawFish?.minTankLengthCm);
+  const minTankLengthCm = Number.isFinite(minTankLengthCmRaw) && minTankLengthCmRaw > 0
+    ? minTankLengthCmRaw
+    : Math.max(40, Math.round(adultSizeCm * 5.5));
+  const preferredTankLengthCm =
+    Number.isFinite(preferredTankLengthCmRaw) && preferredTankLengthCmRaw > 0
+      ? preferredTankLengthCmRaw
+      : Math.max(minTankLengthCm, Math.round(adultSizeCm * 7));
+  const wasteProductionLevel = inferWasteProductionLevel(rawFish, adultSizeCm, diet);
+  const flowPreference = normalizeFlowPreference(rawFish?.flowPreference);
+  const sensitiveToStrongCurrent =
+    typeof rawFish?.sensitiveToStrongCurrent === 'boolean'
+      ? rawFish.sensitiveToStrongCurrent
+      : flowPreference === 'low' ||
+        temperament === 'timid' ||
+        normalizeText(`${rawFish?.commonName ?? ''} ${rawFish?.latinName ?? ''}`).includes('betta');
 
   return {
     minTankLiters: Number(sanitized.minLiters),
@@ -3516,8 +4524,38 @@ function buildFishSpeciesProfile(rawFish, quantity = null) {
     diet,
     activity,
     socialType,
+    socialStructure,
     finNipper,
+    longFinRiskTarget,
     predatorRisk,
+    aggressionType,
+    aggressionLevel: aggressionLevelBase,
+    territorialityLevel,
+    territorySizeLiters: normalizedTerritorySizeLiters,
+    territoryZone,
+    recommendedGroupSize,
+    maxGroupDensityPer100L,
+    maleAggression,
+    breedingAggression,
+    eatsSmallFish,
+    eatsShrimp,
+    needsShelter:
+      typeof rawFish?.needsShelter === 'boolean'
+        ? rawFish.needsShelter
+        : territorialityLevel >= 2 || socialStructure === 'pair' || socialStructure === 'harem',
+    needsLineOfSightBreaks:
+      typeof rawFish?.needsLineOfSightBreaks === 'boolean'
+        ? rawFish.needsLineOfSightBreaks
+        : territorialityLevel >= 3 || aggressionLevelBase >= 3,
+    needsLargeFootprint:
+      typeof rawFish?.needsLargeFootprint === 'boolean'
+        ? rawFish.needsLargeFootprint
+        : territorialityLevel >= 3 || territoryZone === 'bottom' || territoryZone === 'whole_tank',
+    preferredTankLengthCm,
+    minTankLengthCm,
+    wasteProductionLevel,
+    flowPreference,
+    sensitiveToStrongCurrent,
     shrimpSafe,
     specialTags,
     quantity: normalizedQuantity,
@@ -3525,12 +4563,31 @@ function buildFishSpeciesProfile(rawFish, quantity = null) {
 }
 
 function getFishSpeciesProfile(rawFish) {
+  const latinKey = normalizeLatinCatalogKey(rawFish?.latinName);
+  const seedWasteProductionLevel = normalizeWasteProductionLevelValue(
+    latinKey ? FISH_WASTE_BY_LATIN_FROM_SEED[latinKey] : null
+  );
+  const rawWasteProductionLevel = normalizeWasteProductionLevelValue(
+    rawFish?.wasteProductionLevel
+  );
+  const profileWasteProductionLevel = normalizeWasteProductionLevelValue(
+    rawFish?.fishProfile?.wasteProductionLevel
+  );
+  const resolvedWasteProductionLevel = Number.isFinite(seedWasteProductionLevel)
+    ? seedWasteProductionLevel
+    : Number.isFinite(rawWasteProductionLevel)
+      ? rawWasteProductionLevel
+      : profileWasteProductionLevel;
+
   if (rawFish?.fishProfile && typeof rawFish.fishProfile === 'object') {
     const profile = rawFish.fishProfile;
     const normalized = buildFishSpeciesProfile(
       {
         ...rawFish,
         ...profile,
+        ...(Number.isFinite(resolvedWasteProductionLevel)
+          ? { wasteProductionLevel: resolvedWasteProductionLevel }
+          : {}),
         aggressionLevel:
           profile.temperament === 'semi_aggressive'
             ? 'semi-aggressive'
@@ -3541,7 +4598,15 @@ function getFishSpeciesProfile(rawFish) {
     return normalized;
   }
 
-  return buildFishSpeciesProfile(rawFish, rawFish?.quantity);
+  return buildFishSpeciesProfile(
+    {
+      ...rawFish,
+      ...(Number.isFinite(resolvedWasteProductionLevel)
+        ? { wasteProductionLevel: resolvedWasteProductionLevel }
+        : {}),
+    },
+    rawFish?.quantity
+  );
 }
 
 function rangesOverlap(minA, maxA, minB, maxB) {
@@ -3613,10 +4678,17 @@ function evaluateFishPairCompatibility(firstFish, secondFish, tankLiters = null)
 
   const firstTemp = firstProfile.temperament;
   const secondTemp = secondProfile.temperament;
+  const normalizeLegacyTemperament = (value) => {
+    if (value === 'predatory') return 'aggressive';
+    if (value === 'timid') return 'peaceful';
+    return value;
+  };
+  const firstTempLegacy = normalizeLegacyTemperament(firstTemp);
+  const secondTempLegacy = normalizeLegacyTemperament(secondTemp);
   const firstAggLevel =
-    firstTemp === 'semi_aggressive' ? 'semi-aggressive' : firstTemp;
+    firstTempLegacy === 'semi_aggressive' ? 'semi-aggressive' : firstTempLegacy;
   const secondAggLevel =
-    secondTemp === 'semi_aggressive' ? 'semi-aggressive' : secondTemp;
+    secondTempLegacy === 'semi_aggressive' ? 'semi-aggressive' : secondTempLegacy;
   const matrixConflict =
     AGGRESSION_COMPATIBILITY_MATRIX[firstAggLevel]?.[secondAggLevel] ??
     AGGRESSION_COMPATIBILITY_MATRIX[secondAggLevel]?.[firstAggLevel] ??
@@ -3625,18 +4697,18 @@ function evaluateFishPairCompatibility(firstFish, secondFish, tankLiters = null)
     applyPenalty(20, 'Podwyzszone ryzyko konfliktu zachowan terytorialnych.');
   }
   if (
-    (firstTemp === 'aggressive' && secondTemp === 'peaceful') ||
-    (firstTemp === 'peaceful' && secondTemp === 'aggressive')
+    (firstTempLegacy === 'aggressive' && secondTempLegacy === 'peaceful') ||
+    (firstTempLegacy === 'peaceful' && secondTempLegacy === 'aggressive')
   ) {
     applyPenalty(35, 'Polaczenie ryby agresywnej i spokojnej.');
   } else if (
-    (firstTemp === 'aggressive' && secondTemp === 'semi_aggressive') ||
-    (firstTemp === 'semi_aggressive' && secondTemp === 'aggressive')
+    (firstTempLegacy === 'aggressive' && secondTempLegacy === 'semi_aggressive') ||
+    (firstTempLegacy === 'semi_aggressive' && secondTempLegacy === 'aggressive')
   ) {
     applyPenalty(20, 'Polaczenie ryb agresywnych i polagresywnych.');
   } else if (
-    (firstTemp === 'semi_aggressive' && secondTemp === 'peaceful') ||
-    (firstTemp === 'peaceful' && secondTemp === 'semi_aggressive')
+    (firstTempLegacy === 'semi_aggressive' && secondTempLegacy === 'peaceful') ||
+    (firstTempLegacy === 'peaceful' && secondTempLegacy === 'semi_aggressive')
   ) {
     applyPenalty(15, 'Polaczenie ryb polagresywnych i spokojnych.');
   }
@@ -3919,6 +4991,1270 @@ function getFishAggressionConflict(firstFish, secondFish, tankLiters = null) {
     reasons: compatibility.reasons,
     firstProfile: compatibility.firstProfile,
     secondProfile: compatibility.secondProfile,
+  };
+}
+
+function densityLevelToFactor(level) {
+  const normalized = normalizeDensityLevel(level);
+  if (normalized === 'high') return 1;
+  if (normalized === 'medium') return 0.66;
+  if (normalized === 'low') return 0.33;
+  return 0;
+}
+
+function scoreToUiStatus(scoreValue) {
+  const score = Number(scoreValue);
+  if (!Number.isFinite(score)) return 'Uwaga';
+  if (score >= 82) return 'OK';
+  if (score >= 65) return 'Uwaga';
+  if (score >= 45) return 'Ryzykowne';
+  if (score >= 25) return 'Niezalecane';
+  return 'Niezgodne';
+}
+
+function scoreToCompatibilityStatus(scoreValue) {
+  const score = Number(scoreValue);
+  if (!Number.isFinite(score)) return 'caution';
+  if (score >= 82) return 'compatible';
+  if (score >= 65) return 'mostly_compatible';
+  if (score >= 45) return 'caution';
+  if (score >= 25) return 'high_risk';
+  return 'incompatible';
+}
+
+function getZoneKeyFromProfile(profile) {
+  const normalized = normalizeFishTerritoryZone(profile?.territoryZone ?? profile?.waterZone);
+  if (AGGRESSION_ZONE_KEYS.includes(normalized)) {
+    return normalized;
+  }
+  if (normalized === 'all') {
+    return 'whole_tank';
+  }
+  return 'middle';
+}
+
+function toPairKey(a, b) {
+  const first = String(a ?? '').trim();
+  const second = String(b ?? '').trim();
+  return [first, second].sort().join('|');
+}
+
+function doesOverrideApplyForContext(override, aquarium, first, second) {
+  if (!override) return false;
+  const liters = Number(aquarium?.volumeLiters ?? aquarium?.liters);
+  const firstQty = Number(first?.quantity ?? 1);
+  const secondQty = Number(second?.quantity ?? 1);
+  const hidingPlacesCount = Number(aquarium?.hidingPlacesCount);
+  const requiresHidingPlaces = Boolean(override?.appliesWhen?.requiresHidingPlaces);
+  const checks = [
+    ['minTankLiters', (value) => !Number.isFinite(Number(value)) || liters >= Number(value)],
+    ['maxTankLiters', (value) => !Number.isFinite(Number(value)) || liters <= Number(value)],
+    ['minQuantityA', (value) => !Number.isFinite(Number(value)) || firstQty >= Number(value)],
+    ['maxQuantityA', (value) => !Number.isFinite(Number(value)) || firstQty <= Number(value)],
+    ['minQuantityB', (value) => !Number.isFinite(Number(value)) || secondQty >= Number(value)],
+    ['maxQuantityB', (value) => !Number.isFinite(Number(value)) || secondQty <= Number(value)],
+  ];
+  if (requiresHidingPlaces && (!Number.isFinite(hidingPlacesCount) || hidingPlacesCount < 4)) {
+    return false;
+  }
+  return checks.every(([field, predicate]) => predicate(override?.appliesWhen?.[field]));
+}
+
+function getCompatibilityOverrideForPair(firstFish, secondFish, aquarium) {
+  const firstId = String(firstFish?.catalogFishId ?? firstFish?.id ?? '').trim();
+  const secondId = String(secondFish?.catalogFishId ?? secondFish?.id ?? '').trim();
+  if (!firstId || !secondId) {
+    return null;
+  }
+  const pairKey = toPairKey(firstId, secondId);
+  return (
+    STOCKING_COMPATIBILITY_OVERRIDES.find((override) => {
+      const overrideKey = toPairKey(override?.speciesAId, override?.speciesBId);
+      if (!overrideKey || overrideKey !== pairKey) {
+        return false;
+      }
+      return doesOverrideApplyForContext(override, aquarium, firstFish, secondFish);
+    }) ?? null
+  );
+}
+
+function normalizeCompensationFilterType(value) {
+  const normalized = normalizeText(value).replace(/\s+/g, '_');
+  if (!normalized) return 'other';
+  if (normalized === 'internal' || normalized.includes('wewn')) return 'internal';
+  if (
+    normalized === 'hang_on_back' ||
+    normalized === 'hob' ||
+    normalized.includes('kaskad') ||
+    normalized === 'cascade'
+  ) {
+    return 'hang_on_back';
+  }
+  if (normalized === 'canister' || normalized.includes('kubel')) return 'canister';
+  if (normalized === 'sponge_air' || normalized.includes('powietrz')) return 'sponge_air';
+  if (normalized === 'sponge_powerhead' || normalized.includes('powerhead')) return 'sponge_powerhead';
+  if (normalized === 'sponge' || normalized.includes('gabka')) return 'sponge_air';
+  if (normalized === 'sump' || normalized === 'sump_panel' || normalized.includes('panel')) return 'sump';
+  return 'other';
+}
+
+function resolveCompensationFilterFactor(filterType, explicitFactor = null) {
+  const explicit = Number(explicitFactor);
+  if (Number.isFinite(explicit) && explicit > 0 && explicit <= 1) {
+    return explicit;
+  }
+  const normalized = normalizeCompensationFilterType(filterType);
+  return FILTER_REAL_FLOW_FACTOR_COMPENSATION[normalized] ?? 0.6;
+}
+
+function resolveTurnoverProfile(aquarium = {}, stockingList = []) {
+  const normalizedAquariumType = normalizeText(aquarium?.aquariumType);
+  const hasCalmFish = (stockingList ?? []).some((item) => {
+    const profile = item?.fishProfile ?? item?.profile ?? getFishSpeciesProfile(item);
+    return (
+      profile?.flowPreference === 'low' ||
+      Boolean(profile?.sensitiveToStrongCurrent) ||
+      normalizeText(`${item?.commonName ?? ''} ${item?.latinName ?? ''}`).includes('betta')
+    );
+  });
+
+  if (normalizedAquariumType.includes('malawi')) {
+    return { ...TURNOVER_THRESHOLDS_BY_TANK_TYPE.malawi, key: 'malawi' };
+  }
+  if (normalizedAquariumType.includes('tangan')) {
+    return { ...TURNOVER_THRESHOLDS_BY_TANK_TYPE.tanganyika, key: 'tanganyika' };
+  }
+  if (normalizedAquariumType.includes('high_tech') || normalizedAquariumType.includes('high tech')) {
+    return { ...TURNOVER_THRESHOLDS_BY_TANK_TYPE.planted_high_tech, key: 'planted_high_tech' };
+  }
+  if (normalizedAquariumType.includes('low_tech') || normalizedAquariumType.includes('low tech')) {
+    return { ...TURNOVER_THRESHOLDS_BY_TANK_TYPE.planted_low_tech, key: 'planted_low_tech' };
+  }
+  if (normalizedAquariumType.includes('shrimp') || normalizedAquariumType.includes('krewet')) {
+    return { ...TURNOVER_THRESHOLDS_BY_TANK_TYPE.shrimp, key: 'shrimp' };
+  }
+  if (normalizedAquariumType.includes('plant') || normalizedAquariumType.includes('roslin')) {
+    return { ...TURNOVER_THRESHOLDS_BY_TANK_TYPE.planted_low_tech, key: 'planted_low_tech' };
+  }
+  if (hasCalmFish) {
+    return { ...TURNOVER_THRESHOLDS_BY_TANK_TYPE.betta_or_calm_fish, key: 'betta_or_calm_fish' };
+  }
+  return { ...TURNOVER_THRESHOLDS_BY_TANK_TYPE.general, key: 'general' };
+}
+
+function calculateFiltrationCompensation(aquarium, filters, stockingList = []) {
+  const fallbackFilters = Array.isArray(filters) ? filters : getTankEquipmentList(aquarium, 'filter');
+  const safeFilters = (fallbackFilters ?? []).filter(Boolean);
+  const volumeLiters = Number(aquarium?.volumeLiters ?? aquarium?.liters);
+  const normalizedFilters = safeFilters.map((filterItem, index) => {
+    const declared = Number(filterItem?.declaredFlowLph ?? filterItem?.flowLh ?? 0);
+    const normalizedDeclared = Number.isFinite(declared) && declared > 0 ? declared : 0;
+    const effectiveFlowFactor = resolveCompensationFilterFactor(
+      filterItem?.filterType,
+      filterItem?.effectiveFlowFactor ?? filterItem?.filterEfficiencyFactor
+    );
+    const estimatedRealFlowLph = normalizedDeclared * effectiveFlowFactor;
+    return {
+      id: filterItem?.id ?? filterItem?.assignmentId ?? `filter-${index + 1}`,
+      filterType: String(filterItem?.filterType ?? '').trim() || null,
+      declaredFlowLph: normalizedDeclared,
+      effectiveFlowFactor,
+      estimatedRealFlowLph,
+    };
+  });
+  const declaredFlowTotalLph = normalizedFilters.reduce(
+    (sum, filterItem) => sum + (Number(filterItem?.declaredFlowLph) || 0),
+    0
+  );
+  const estimatedRealFlowTotalLph = normalizedFilters.reduce(
+    (sum, filterItem) => sum + (Number(filterItem?.estimatedRealFlowLph) || 0),
+    0
+  );
+  const effectiveFlowFactor =
+    declaredFlowTotalLph > 0
+      ? estimatedRealFlowTotalLph / declaredFlowTotalLph
+      : 0;
+  const turnoverPerHour =
+    Number.isFinite(volumeLiters) && volumeLiters > 0
+      ? estimatedRealFlowTotalLph / volumeLiters
+      : 0;
+  const turnoverProfile = resolveTurnoverProfile(aquarium, stockingList);
+  const warnings = [];
+  let status = 'za slaba';
+  let filtrationCompensationScore = 0;
+
+  if (!Number.isFinite(turnoverPerHour) || turnoverPerHour <= 0) {
+    status = 'za slaba';
+    filtrationCompensationScore = 0;
+  } else if (turnoverPerHour < turnoverProfile.idealMin) {
+    status = 'za slaba';
+    filtrationCompensationScore = clampScore(((turnoverPerHour / Math.max(1, turnoverProfile.idealMin)) * 10), 0, 10);
+  } else if (turnoverPerHour <= turnoverProfile.idealMax) {
+    status = 'OK';
+    const normalizedProgress =
+      (turnoverPerHour - turnoverProfile.idealMin) /
+      Math.max(0.5, turnoverProfile.idealMax - turnoverProfile.idealMin);
+    filtrationCompensationScore = 4 + normalizedProgress * 6;
+  } else if (turnoverPerHour <= turnoverProfile.strongMax) {
+    status = 'mocna';
+    const normalizedProgress =
+      (turnoverPerHour - turnoverProfile.idealMax) /
+      Math.max(0.5, turnoverProfile.strongMax - turnoverProfile.idealMax);
+    filtrationCompensationScore = 10 + normalizedProgress * 10;
+  } else {
+    status = 'nadfiltracja';
+    const normalizedProgress =
+      (turnoverPerHour - turnoverProfile.strongMax) /
+      Math.max(0.5, turnoverProfile.strongMax);
+    filtrationCompensationScore = 20 + Math.min(15, normalizedProgress * 15);
+  }
+
+  const sensitiveToCurrentCount = (stockingList ?? []).filter((item) => {
+    const profile = item?.fishProfile ?? item?.profile ?? getFishSpeciesProfile(item);
+    return Boolean(profile?.sensitiveToStrongCurrent || profile?.flowPreference === 'low');
+  }).length;
+  const hasStrongCurrentWarning =
+    turnoverPerHour > turnoverProfile.strongMax ||
+    (turnoverPerHour > turnoverProfile.idealMax && sensitiveToCurrentCount > 0);
+
+  if (turnoverPerHour > turnoverProfile.strongMax) {
+    warnings.push('Nurt jest bardzo silny - moze meczyc spokojne gatunki i utrudniac odpoczynek.');
+    status = 'za silny nurt';
+  } else if (turnoverPerHour > turnoverProfile.idealMax && sensitiveToCurrentCount > 0) {
+    warnings.push(
+      'Zbyt silny nurt moze stresowac gatunki spokojne lub slabo plywajace.'
+    );
+  }
+
+  if (status === 'za slaba') {
+    warnings.push('Filtracja jest zbyt slaba, aby stabilnie odciazac biologie zbiornika.');
+  }
+
+  return {
+    declaredFlowTotalLph: Math.round(declaredFlowTotalLph),
+    estimatedRealFlowTotalLph: Math.round(estimatedRealFlowTotalLph),
+    effectiveFlowFactor: Math.round(effectiveFlowFactor * 100) / 100,
+    filterFlowBreakdown: normalizedFilters.map((filterItem) => ({
+      ...filterItem,
+      effectiveFlowFactor: Math.round(Number(filterItem.effectiveFlowFactor ?? 0) * 100) / 100,
+      estimatedRealFlowLph: Math.round(Number(filterItem.estimatedRealFlowLph ?? 0)),
+    })),
+    turnoverPerHour: Math.round(turnoverPerHour * 10) / 10,
+    status,
+    hasStrongCurrentWarning,
+    warnings,
+    filtrationCompensationScore: clampScore(Math.round(filtrationCompensationScore), 0, 35),
+    compensationPercent: clampScore(Math.round(filtrationCompensationScore), 0, 35),
+    compensationAppliesTo: 'biologicalOnly',
+    turnoverProfile,
+  };
+}
+
+function resolvePlantGrowthCompensationFactor(plantItem) {
+  const normalizedGrowth = normalizeText(plantItem?.growthRate);
+  if (!normalizedGrowth) {
+    return 0.5;
+  }
+  if (normalizedGrowth.includes('high') || normalizedGrowth.includes('szybk')) {
+    return 1;
+  }
+  if (normalizedGrowth.includes('medium') || normalizedGrowth.includes('sred')) {
+    return 0.66;
+  }
+  if (normalizedGrowth.includes('low') || normalizedGrowth.includes('woln')) {
+    return 0.33;
+  }
+  return 0.5;
+}
+
+function resolvePlantBiomassUnitWeight(plantItem) {
+  const normalizedType = normalizeText(plantItem?.plantType);
+  if (normalizedType.includes('stem')) return 0.22;
+  if (normalizedType.includes('rosette')) return 0.2;
+  if (normalizedType.includes('rooted')) return 0.18;
+  if (normalizedType.includes('epiphyte')) return 0.15;
+  if (normalizedType.includes('floating')) return 0.14;
+  if (normalizedType.includes('carpet')) return 0.12;
+  if (normalizedType.includes('moss')) return 0.1;
+  return 0.16;
+}
+
+function calculatePlantBioloadCompensation(aquarium, stockingList = []) {
+  const plantItems = (stockingList ?? []).filter(
+    (item) => String(item?.type ?? '').toLowerCase() === 'plant'
+  );
+  if (plantItems.length === 0) {
+    return {
+      plantCompensationPercent: 0,
+      plantUnits: 0,
+      effectivePlantUnits: 0,
+      plantMassPer100L: 0,
+      averageGrowthFactor: 0,
+      biomassAvailabilityFactor: 0,
+      biomassScore: 0,
+      structureScore: 0,
+      growthScore: 0,
+      plantDensityFactor: 0,
+      plantAreaFactor: 0,
+    };
+  }
+
+  const volumeLiters = Number(aquarium?.volumeLiters ?? aquarium?.liters);
+  const plantUnits = plantItems.reduce((sum, item) => {
+    const quantity = Number(item?.quantity);
+    return sum + (Number.isFinite(quantity) && quantity > 0 ? quantity : 1);
+  }, 0);
+  const effectivePlantUnits = plantItems.reduce((sum, item) => {
+    const quantity = Number(item?.quantity);
+    const safeQuantity =
+      Number.isFinite(quantity) && quantity > 0 ? quantity : 1;
+    return sum + safeQuantity * resolvePlantBiomassUnitWeight(item);
+  }, 0);
+  const plantDensityFactor = densityLevelToFactor(aquarium?.plantDensity);
+  const plantAreaFactor = densityLevelToFactor(aquarium?.zones?.plantArea);
+  const averageGrowthFactor =
+    plantItems.reduce(
+      (sum, item) => sum + resolvePlantGrowthCompensationFactor(item),
+      0
+    ) / Math.max(1, plantItems.length);
+
+  const plantMassPer100L =
+    Number.isFinite(volumeLiters) && volumeLiters > 0
+      ? (effectivePlantUnits / volumeLiters) * 100
+      : (effectivePlantUnits / 40) * 100;
+  const biomassAvailabilityFactor = clampScore(plantMassPer100L / 25, 0, 1);
+  const biomassScore = clampScore(plantMassPer100L * 0.6, 0, 12);
+  const structureScoreRaw = clampScore(
+    plantDensityFactor * 4 + plantAreaFactor * 4,
+    0,
+    8
+  );
+  const growthScoreRaw = clampScore(averageGrowthFactor * 4, 0, 4);
+  const structureScore = structureScoreRaw * (0.35 + biomassAvailabilityFactor * 0.65);
+  const growthScore = growthScoreRaw * (0.25 + biomassAvailabilityFactor * 0.75);
+  const plantCompensationPercent = clampScore(
+    Math.round((biomassScore + structureScore + growthScore) * 10) / 10,
+    0,
+    20
+  );
+
+  return {
+    plantCompensationPercent,
+    plantUnits: Math.round(plantUnits * 10) / 10,
+    effectivePlantUnits: Math.round(effectivePlantUnits * 10) / 10,
+    plantMassPer100L: Math.round(plantMassPer100L * 10) / 10,
+    averageGrowthFactor: Math.round(averageGrowthFactor * 100) / 100,
+    biomassAvailabilityFactor: Math.round(biomassAvailabilityFactor * 100) / 100,
+    biomassScore: Math.round(biomassScore * 10) / 10,
+    structureScore: Math.round(structureScore * 10) / 10,
+    growthScore: Math.round(growthScore * 10) / 10,
+    plantDensityFactor: Math.round(plantDensityFactor * 100) / 100,
+    plantAreaFactor: Math.round(plantAreaFactor * 100) / 100,
+  };
+}
+
+function getBiologicalLoadRiskByIndex(indexValue) {
+  const index = Number(indexValue);
+  if (!Number.isFinite(index) || index <= 0) {
+    return 'low';
+  }
+  if (index >= BIOLOAD_RISK_THRESHOLDS.critical) {
+    return 'critical';
+  }
+  if (index >= BIOLOAD_RISK_THRESHOLDS.high) {
+    return 'high';
+  }
+  if (index >= BIOLOAD_RISK_THRESHOLDS.medium) {
+    return 'medium';
+  }
+  return 'low';
+}
+
+function riskToRank(risk) {
+  if (risk === 'critical') return 3;
+  if (risk === 'high') return 2;
+  if (risk === 'medium') return 1;
+  return 0;
+}
+
+function rankToRisk(rank) {
+  if (rank >= 3) return 'critical';
+  if (rank >= 2) return 'high';
+  if (rank >= 1) return 'medium';
+  return 'low';
+}
+
+function riskToCompatibilityStatus(risk) {
+  if (risk === 'critical') return 'incompatible';
+  if (risk === 'high') return 'high_risk';
+  if (risk === 'medium') return 'caution';
+  return 'compatible';
+}
+
+function evaluateStockingCompatibility(aquarium, stockingList, measurement = null) {
+  const baseProfile = buildTankEnvironmentProfile(aquarium ?? {});
+  const tank = {
+    ...baseProfile,
+    volumeLiters: Number(baseProfile.volumeLiters ?? aquarium?.volumeLiters ?? aquarium?.liters),
+    lengthCm: Number(baseProfile.lengthCm),
+    widthCm: Number(baseProfile.widthCm),
+    heightCm: Number(baseProfile.heightCm),
+  };
+  const filtrationContext = {
+    ...(aquarium ?? {}),
+    ...tank,
+  };
+  const fishItems = (stockingList ?? []).filter(
+    (item) => String(item?.type ?? 'fish').toLowerCase() === 'fish'
+  );
+  const plantItems = (stockingList ?? []).filter(
+    (item) => String(item?.type ?? '').toLowerCase() === 'plant'
+  );
+  const plantCompensationProfile = calculatePlantBioloadCompensation(
+    filtrationContext,
+    stockingList
+  );
+  const categoryScores = {
+    waterParameters: 100,
+    tankSize: 100,
+    aggression: 100,
+    territoriality: 100,
+    predation: 100,
+    finNipping: 100,
+    socialNeeds: 100,
+    zoneCompetition: 100,
+  };
+  const categoryProblems = Object.keys(categoryScores).reduce((acc, key) => {
+    acc[key] = [];
+    return acc;
+  }, {});
+  const categoryRecommendations = Object.keys(categoryScores).reduce((acc, key) => {
+    acc[key] = [];
+    return acc;
+  }, {});
+  const warnings = [];
+  const recommendations = [];
+  const conflicts = [];
+  const fishProfiles = fishItems.map((item) => ({
+    item,
+    profile: getFishSpeciesProfile(item),
+    quantity: getFishQuantity(item),
+    sexRatio: normalizeSexRatio(item?.sexRatio),
+    lifeStage: normalizeLifeStage(item?.lifeStage),
+  }));
+  if (fishProfiles.length === 0) {
+    const emptyFiltration = calculateFiltrationCompensation(
+      filtrationContext,
+      null,
+      []
+    );
+    const emptyAssessment = {
+      overallStatus: 'compatible',
+      biologicalLoad: {
+        rawRisk: 'low',
+        adjustedRisk: 'low',
+        bioloadIndex: 0,
+        bioloadIndexFromStocking: 0,
+        bioloadIndexReal: 0,
+        filtrationCompensation:
+          Number(emptyFiltration.filtrationCompensationScore ?? emptyFiltration.compensationPercent) || 0,
+        plantCompensation: 0,
+        totalCompensation: 0,
+        filtrationIndexReduction: 0,
+        plantIndexReduction: 0,
+        totalIndexReduction: 0,
+        plantMassPer100L: 0,
+        plantUnits: 0,
+        effectivePlantUnits: 0,
+        plantBioloadBreakdown: {
+          biomassScore: 0,
+          structureScore: 0,
+          growthScore: 0,
+          averageGrowthFactor: 0,
+          plantDensityFactor: 0,
+          plantAreaFactor: 0,
+          biomassAvailabilityFactor: 0,
+        },
+        message: 'Brak obsady ryb - obciazenie biologiczne jest niskie.',
+      },
+      spaceLoad: {
+        risk: 'low',
+        message: 'Brak obsady ryb - brak presji przestrzennej.',
+      },
+      behaviorLoad: {
+        risk: 'low',
+        message: 'Brak obsady ryb - brak konfliktow behawioralnych.',
+      },
+      filtration: emptyFiltration,
+      recommendations: [],
+    };
+    return {
+      overallStatus: 'compatible',
+      score: 100,
+      categories: Object.keys(DEFAULT_COMPATIBILITY_CATEGORIES).reduce((acc, key) => {
+        acc[key] = { score: 100, status: 'compatible', uiStatus: 'OK', problems: [], recommendations: [] };
+        return acc;
+      }, {}),
+      conflicts: [],
+      warnings: [],
+      recommendations: [],
+      stockingAssessment: emptyAssessment,
+      metrics: {
+        aggressiveBioloadCount: 0,
+        peacefulBioloadCount: 0,
+        aggressiveRatio: 0,
+        averageAggressionLevel: 0,
+        maxAggressionLevel: 0,
+        weightedAggression: 0,
+        weightedPeaceful: 0,
+      },
+    };
+  }
+
+  const appendUnique = (list, value) => {
+    const normalized = String(value ?? '').trim();
+    if (!normalized) return;
+    if (list.some((entry) => String(entry ?? '').trim().toLowerCase() === normalized.toLowerCase())) {
+      return;
+    }
+    list.push(normalized);
+  };
+  const addPenalty = (category, points, message, recommendation = '') => {
+    const safePoints = Math.max(0, Number(points) || 0);
+    if (!safePoints) return;
+    categoryScores[category] = clampScore(Number(categoryScores[category]) - safePoints, 0, 100);
+    if (message) appendUnique(categoryProblems[category], message);
+    if (recommendation) appendUnique(categoryRecommendations[category], recommendation);
+  };
+  const aquariumLiters = Number(tank.volumeLiters);
+  const hasLiters = Number.isFinite(aquariumLiters) && aquariumLiters > 0;
+  const filtrationCompensation = calculateFiltrationCompensation(
+    filtrationContext,
+    null,
+    fishProfiles.map((entry) => ({
+      ...entry.item,
+      fishProfile: entry.profile,
+    }))
+  );
+  const inferWaterChangeIntervalDays = () => {
+    const directDays = Number(
+      aquarium?.waterChangeIntervalDays ??
+        aquarium?.waterChangeScheduleDays ??
+        aquarium?.maintenancePlan?.waterChangeIntervalDays ??
+        aquarium?.maintenance?.waterChangeIntervalDays
+    );
+    if (Number.isFinite(directDays) && directDays > 0) {
+      return directDays;
+    }
+    return null;
+  };
+  const waterChangeIntervalDays = inferWaterChangeIntervalDays();
+  const footprintCm2 = Number(tank.lengthCm) > 0 && Number(tank.widthCm) > 0
+    ? Number(tank.lengthCm) * Number(tank.widthCm)
+    : 0;
+  const hidingFactor = clampScore(
+    (
+      densityLevelToFactor(tank.hardscapeDensity) * 0.4 +
+      densityLevelToFactor(tank.plantDensity) * 0.2 +
+      densityLevelToFactor(tank.lineOfSightBreaks) * 0.25 +
+      Math.min(1, (Number(tank.hidingPlacesCount) || 0) / 10) * 0.15
+    ) * 100,
+    0,
+    100
+  ) / 100;
+  const sharedZoneLoad = new Map();
+  fishProfiles.forEach(({ profile, quantity }) => {
+    const zone = getZoneKeyFromProfile(profile);
+    sharedZoneLoad.set(zone, (sharedZoneLoad.get(zone) ?? 0) + quantity);
+  });
+
+  const tempMin = Math.max(...fishProfiles.map((entry) => Number(entry.profile.temperatureMin) || -99));
+  const tempMax = Math.min(...fishProfiles.map((entry) => Number(entry.profile.temperatureMax) || 99));
+  const phMin = Math.max(...fishProfiles.map((entry) => Number(entry.profile.phMin) || -99));
+  const phMax = Math.min(...fishProfiles.map((entry) => Number(entry.profile.phMax) || 99));
+  const ghMin = Math.max(...fishProfiles.map((entry) => Number(entry.profile.ghMin) || -99));
+  const ghMax = Math.min(...fishProfiles.map((entry) => Number(entry.profile.ghMax) || 99));
+  if (tempMin > tempMax) {
+    addPenalty(
+      'waterParameters',
+      35,
+      'Zakresy temperatur gatunkow nie pokrywaja sie - moze to zwiekszac ryzyko stresu i chorob.',
+      'Dobierz gatunki o bardziej zblizonych wymaganiach temperatury.'
+    );
+  }
+  if (phMin > phMax) {
+    addPenalty(
+      'waterParameters',
+      30,
+      'Zakresy pH gatunkow nie pokrywaja sie.',
+      'Rozwaz bardziej jednorodna obsade pod katem pH.'
+    );
+  }
+  if (ghMin > ghMax) {
+    addPenalty(
+      'waterParameters',
+      22,
+      'Zakresy GH gatunkow nie pokrywaja sie.',
+      'Dobierz ryby o podobnych wymaganiach twardosci wody.'
+    );
+  }
+  if (measurement) {
+    const phValue = Number(measurement?.ph);
+    const ghValue = Number(measurement?.gh);
+    const tempValue = Number(measurement?.temperature);
+    fishProfiles.forEach(({ item, profile }) => {
+      const fishLabel = String(item?.commonName ?? item?.name ?? item?.latinName ?? 'Gatunek').trim();
+      if (Number.isFinite(phValue) && (phValue < Number(profile.phMin) || phValue > Number(profile.phMax))) {
+        addPenalty(
+          'waterParameters',
+          5,
+          `${fishLabel}: aktualne pH moze byc poza komfortowym zakresem gatunku.`
+        );
+      }
+      if (Number.isFinite(ghValue) && (ghValue < Number(profile.ghMin) || ghValue > Number(profile.ghMax))) {
+        addPenalty(
+          'waterParameters',
+          4,
+          `${fishLabel}: aktualne GH moze byc poza komfortowym zakresem gatunku.`
+        );
+      }
+      if (
+        Number.isFinite(tempValue) &&
+        (tempValue < Number(profile.temperatureMin) || tempValue > Number(profile.temperatureMax))
+      ) {
+        addPenalty(
+          'waterParameters',
+          6,
+          `${fishLabel}: aktualna temperatura moze byc poza komfortowym zakresem gatunku.`
+        );
+      }
+    });
+  }
+
+  fishProfiles.forEach(({ item, profile, quantity, sexRatio }) => {
+    const fishLabel = String(item?.commonName ?? item?.name ?? item?.latinName ?? 'Gatunek').trim();
+    const minTankLiters = Number(profile.minTankLiters) || 0;
+    if (hasLiters && minTankLiters > aquariumLiters) {
+      const ratio = minTankLiters / Math.max(1, aquariumLiters);
+      addPenalty(
+        'tankSize',
+        ratio >= 1.8 ? 55 : ratio >= 1.4 ? 42 : 30,
+        `${fishLabel}: zbiornik jest mniejszy niz zwykle zalecane minimum (${Math.round(minTankLiters)} l).`,
+        'Wiekszy zbiornik zwykle obniza ryzyko agresji i stresu.'
+      );
+    }
+    if (Number.isFinite(Number(tank.lengthCm)) && Number(tank.lengthCm) > 0) {
+      const minLength = Number(profile.minTankLengthCm);
+      if (Number.isFinite(minLength) && minLength > Number(tank.lengthCm)) {
+        addPenalty(
+          'tankSize',
+          14,
+          `${fishLabel}: dlugosc akwarium moze byc za mala (${Math.round(Number(tank.lengthCm))} cm vs min ${Math.round(minLength)} cm).`,
+          'Przy gatunkach terytorialnych dluzszy zbiornik zwykle ulatwia podzial stref.'
+        );
+      }
+    }
+    if (profile.needsLargeFootprint && footprintCm2 > 0) {
+      const minFootprint = Math.max(1800, Number(profile.adultSizeCm) * 210);
+      if (footprintCm2 < minFootprint) {
+        addPenalty(
+          'territoriality',
+          18,
+          `${fishLabel}: powierzchnia dna moze byc za mala dla rewiru tego gatunku.`,
+          'Zwieksz powierzchnie dna albo ogranicz liczbe gatunkow dennych/terytorialnych.'
+        );
+      }
+    }
+    const per100L = hasLiters ? (quantity / aquariumLiters) * 100 : 0;
+    if (hasLiters && per100L > Number(profile.maxGroupDensityPer100L || DEFAULT_MAX_GROUP_DENSITY_PER_100L)) {
+      addPenalty(
+        'stockingDensity',
+        12,
+        `${fishLabel}: liczebnosc moze byc za wysoka jak na litraz.`,
+        'Zmniejsz liczebnosc lub zwieksz litraz.'
+      );
+    }
+    if (profile.socialStructure === 'harem' && (sexRatio === 'mostly_males' || sexRatio === 'unknown')) {
+      addPenalty(
+        'socialNeeds',
+        sexRatio === 'unknown' ? 10 : 18,
+        `${fishLabel}: ten gatunek zwykle lepiej funkcjonuje w ukladzie haremowym, a udzial samcow moze zwiekszac konflikty.`,
+        'Rozwaz uklad 1 samiec + kilka samic i wiecej kryjowek.'
+      );
+    }
+    if (profile.socialStructure === 'pair' && quantity !== 2) {
+      addPenalty(
+        'socialNeeds',
+        10,
+        `${fishLabel}: gatunek preferuje trzymanie w parze.`,
+        'Rozwaz utrzymanie stabilnej pary lub zmiane gatunku.'
+      );
+    }
+    if (quantity < Number(profile.minGroupSize || 1)) {
+      addPenalty(
+        'socialNeeds',
+        16,
+        `${fishLabel}: grupa jest mniejsza niz zwykle zalecane minimum (${profile.minGroupSize}).`,
+        'Zwieksz liczebnosc grupy albo wybierz gatunek mniej stadny.'
+      );
+    } else if (quantity < Number(profile.recommendedGroupSize || profile.minGroupSize || 1)) {
+      addPenalty(
+        'socialNeeds',
+        6,
+        `${fishLabel}: liczebnosc jest ponizej czesto zalecanej grupy (${profile.recommendedGroupSize}).`
+      );
+    }
+  });
+
+  const weightedAggression = fishProfiles.reduce(
+    (sum, entry) => sum + entry.quantity * Math.max(1, Number(entry.profile.adultSizeCm) || 1) * (Number(entry.profile.aggressionLevel) || 0),
+    0
+  );
+  const fishBioload = fishProfiles.reduce(
+    (sum, entry) => {
+      const rawWasteProductionLevel = Number(entry.profile.wasteProductionLevel);
+      const wasteProductionLevel = Number.isFinite(rawWasteProductionLevel)
+        ? Math.max(0, rawWasteProductionLevel)
+        : 2.6;
+
+      return (
+        sum +
+        entry.quantity *
+          Math.max(1, Number(entry.profile.adultSizeCm) || 1) *
+          wasteProductionLevel
+      );
+    },
+    0
+  );
+  const biologicalCapacity =
+    (hasLiters ? aquariumLiters : 40) * BIOLOAD_CAPACITY_PER_LITER;
+  const biologicalLoadIndex =
+    biologicalCapacity > 0 ? fishBioload / biologicalCapacity : 0;
+  let biologicalLoadRawRisk = getBiologicalLoadRiskByIndex(biologicalLoadIndex);
+  const weightedPeaceful = fishProfiles.reduce((sum, entry) => {
+    const aggressionLevel = Number(entry.profile.aggressionLevel) || 0;
+    if (aggressionLevel <= 1) {
+      return sum + entry.quantity * Math.max(1, Number(entry.profile.adultSizeCm) || 1);
+    }
+    return sum;
+  }, 0);
+  const aggressiveBioloadCount = fishProfiles.reduce((sum, entry) => {
+    const aggressionLevel = Number(entry.profile.aggressionLevel) || 0;
+    return aggressionLevel >= 3
+      ? sum + entry.quantity * Math.max(1, Number(entry.profile.adultSizeCm) || 1)
+      : sum;
+  }, 0);
+  const peacefulBioloadCount = fishProfiles.reduce((sum, entry) => {
+    const aggressionLevel = Number(entry.profile.aggressionLevel) || 0;
+    return aggressionLevel <= 1
+      ? sum + entry.quantity * Math.max(1, Number(entry.profile.adultSizeCm) || 1)
+      : sum;
+  }, 0);
+  const aggressiveRatio =
+    weightedAggression + weightedPeaceful > 0
+      ? weightedAggression / (weightedAggression + weightedPeaceful)
+      : 0;
+  const maxAggressionLevel = fishProfiles.reduce(
+    (max, entry) => Math.max(max, Number(entry.profile.aggressionLevel) || 0),
+    0
+  );
+  const averageAggressionLevel =
+    fishProfiles.reduce(
+      (sum, entry) => sum + (Number(entry.profile.aggressionLevel) || 0) * entry.quantity,
+      0
+    ) / Math.max(1, fishProfiles.reduce((sum, entry) => sum + entry.quantity, 0));
+  if (aggressiveRatio >= 0.72) {
+    addPenalty(
+      'aggression',
+      34,
+      'Udzial ryb agresywnych w obsadzie jest wysoki, co moze nasilac nekanie spokojniejszych gatunkow.',
+      'Ogranicz udzial agresywnych gatunkow albo zwieksz litraz i liczbe kryjowek.'
+    );
+  } else if (aggressiveRatio >= 0.52) {
+    addPenalty(
+      'aggression',
+      18,
+      'Udzial ryb agresywnych jest podwyzszony - obserwuj zachowanie po zmianach obsady.'
+    );
+  }
+
+  for (let index = 0; index < fishProfiles.length; index += 1) {
+    const first = fishProfiles[index];
+    for (let compareIndex = index + 1; compareIndex < fishProfiles.length; compareIndex += 1) {
+      const second = fishProfiles[compareIndex];
+      const firstName = String(
+        first.item?.commonName ?? first.item?.name ?? first.item?.latinName ?? 'Ryba 1'
+      ).trim();
+      const secondName = String(
+        second.item?.commonName ?? second.item?.name ?? second.item?.latinName ?? 'Ryba 2'
+      ).trim();
+      const firstZone = getZoneKeyFromProfile(first.profile);
+      const secondZone = getZoneKeyFromProfile(second.profile);
+      const sameZone =
+        firstZone === secondZone || firstZone === 'whole_tank' || secondZone === 'whole_tank';
+      const override = getCompatibilityOverrideForPair(first.item, second.item, tank);
+      if (override) {
+        const status = String(override.status ?? '').toLowerCase();
+        if (status === 'incompatible') {
+          addPenalty(
+            'aggression',
+            55,
+            `${firstName} + ${secondName}: reczny override oznacza niezgodnosc (${override.reason ?? 'brak uzasadnienia'}).`
+          );
+          conflicts.push({
+            id: `${first.item?.id ?? index}-${second.item?.id ?? compareIndex}-override`,
+            type: 'override',
+            category: 'aggression',
+            severity: 'critical',
+            firstFish: first.item,
+            secondFish: second.item,
+            message: override.reason ?? 'Reczny override: niezgodna para.',
+          });
+        } else if (status === 'high_risk') {
+          addPenalty(
+            'aggression',
+            36,
+            `${firstName} + ${secondName}: reczny override oznacza wysokie ryzyko.`
+          );
+        } else if (status === 'caution') {
+          addPenalty(
+            'aggression',
+            18,
+            `${firstName} + ${secondName}: reczny override oznacza ostroznosc.`
+          );
+        }
+        continue;
+      }
+      const firstAgg = Number(first.profile.aggressionLevel) || 0;
+      const secondAgg = Number(second.profile.aggressionLevel) || 0;
+      const firstTerritoriality = Number(first.profile.territorialityLevel) || 0;
+      const secondTerritoriality = Number(second.profile.territorialityLevel) || 0;
+      const sharedZoneCount = sameZone
+        ? (sharedZoneLoad.get(firstZone) ?? first.quantity + second.quantity)
+        : 0;
+      if (sameZone && (firstTerritoriality >= 3 || secondTerritoriality >= 3)) {
+        const basePenalty = sharedZoneCount >= 8 ? 34 : sharedZoneCount >= 5 ? 24 : 16;
+        const mitigatedPenalty = Math.max(8, Math.round(basePenalty * (1 - hidingFactor * 0.25)));
+        addPenalty(
+          'territoriality',
+          mitigatedPenalty,
+          `${firstName} i ${secondName} korzystaja z tej samej strefy (${firstZone}) i moga konkurowac o rewiry.`,
+          'Dodaj kryjowki/przelamania linii widzenia albo ogranicz liczbe gatunkow terytorialnych w tej strefie.'
+        );
+        conflicts.push({
+          id: `${first.item?.id ?? index}-${second.item?.id ?? compareIndex}-territorial`,
+          type: 'territoriality',
+          category: 'territoriality',
+          severity: mitigatedPenalty >= 25 ? 'critical' : 'warning',
+          firstFish: first.item,
+          secondFish: second.item,
+          message: `${firstName} i ${secondName}: mozliwy konflikt terytorialny w strefie ${firstZone}.`,
+        });
+      }
+      if (sameZone && firstAgg >= 3 && secondAgg >= 3) {
+        const volumeRelief = hasLiters ? clampScore((aquariumLiters / 350) * 100, 35, 120) / 100 : 1;
+        const aggressionPenalty = Math.max(
+          10,
+          Math.round((firstAgg + secondAgg) * 4 * (1 / Math.max(0.7, volumeRelief)))
+        );
+        addPenalty(
+          'aggression',
+          aggressionPenalty,
+          `${firstName} i ${secondName} maja wysoki potencjal agresji, a ryzyko rosnie przy wspolnej strefie.`,
+          'W wiekszym akwarium z kryjowkami to polaczenie moze byc latwiejsze.'
+        );
+        conflicts.push({
+          id: `${first.item?.id ?? index}-${second.item?.id ?? compareIndex}-aggr`,
+          type: 'aggression',
+          category: 'aggression',
+          severity: aggressionPenalty >= 25 ? 'critical' : 'warning',
+          firstFish: first.item,
+          secondFish: second.item,
+          message: `${firstName} i ${secondName}: podwyzszone ryzyko konfliktow agresji.`,
+        });
+      }
+      const bigger =
+        Number(first.profile.adultSizeCm) >= Number(second.profile.adultSizeCm)
+          ? first
+          : second;
+      const smaller = bigger === first ? second : first;
+      const sizeRatio =
+        (Number(bigger.profile.adultSizeCm) || 0) /
+        Math.max(1, Number(smaller.profile.adultSizeCm) || 1);
+      if (
+        sizeRatio >= 2.2 &&
+        (bigger.profile.predatorRisk || bigger.profile.eatsSmallFish || bigger.profile.aggressionType === 'predatory')
+      ) {
+        const predatorPenalty = sizeRatio >= 3.2 ? 66 : 44;
+        addPenalty(
+          'predation',
+          predatorPenalty,
+          `${bigger.item?.commonName ?? bigger.item?.name} moze traktowac ${smaller.item?.commonName ?? smaller.item?.name} jako potencjalny pokarm.`,
+          'Nie lacz drapieznika z wyraznie mniejszymi rybami.'
+        );
+        conflicts.push({
+          id: `${bigger.item?.id ?? index}-${smaller.item?.id ?? compareIndex}-pred`,
+          type: 'predation',
+          category: 'predation',
+          severity: predatorPenalty >= 55 ? 'critical' : 'warning',
+          firstFish: bigger.item,
+          secondFish: smaller.item,
+          message: `Wysokie ryzyko drapieznictwa: ${firstName} <-> ${secondName}.`,
+        });
+      }
+      if (
+        (first.profile.finNipper && second.profile.longFinRiskTarget) ||
+        (second.profile.finNipper && first.profile.longFinRiskTarget)
+      ) {
+        addPenalty(
+          'finNipping',
+          28,
+          `${firstName} i ${secondName}: mozliwe podgryzanie pletw.`,
+          'Rozdziel gatunki lub zapewnij wiecej przestrzeni i kryjowek.'
+        );
+      }
+    }
+  }
+
+  fishProfiles.forEach(({ item, profile, quantity, sexRatio }) => {
+    const fishLabel = String(item?.commonName ?? item?.name ?? item?.latinName ?? 'Gatunek').trim();
+    const zone = getZoneKeyFromProfile(profile);
+    const zoneLoad = sharedZoneLoad.get(zone) ?? quantity;
+    const territoryLitersNeed = Math.max(0, Number(profile.territorySizeLiters) || 0);
+    const zonePressure =
+      hasLiters && territoryLitersNeed > 0
+        ? (quantity * territoryLitersNeed) / Math.max(1, aquariumLiters)
+        : 0;
+    if (zonePressure > 1.1) {
+      addPenalty(
+        'territoriality',
+        26,
+        `${fishLabel}: dostepna przestrzen moze byc za mala do liczby rewirow (${zone}).`,
+        'Zmniejsz liczbe osobnikow lub zwieksz przestrzen akwarium.'
+      );
+    } else if (zonePressure > 0.75) {
+      addPenalty(
+        'territoriality',
+        14,
+        `${fishLabel}: rewir moze byc ciasny dla tej liczebnosci (${zone}).`
+      );
+    }
+    if (profile.needsShelter && hidingFactor < 0.35) {
+      addPenalty(
+        'territoriality',
+        18,
+        `${fishLabel}: gatunek zwykle wymaga kryjowek, a obecnie jest ich niewiele.`,
+        'Dodaj kryjowki (korzenie, kamienie, rosliny) i przelamania linii widzenia.'
+      );
+    }
+    if (profile.needsLineOfSightBreaks && densityLevelToFactor(tank.lineOfSightBreaks) < 0.34) {
+      addPenalty(
+        'aggression',
+        14,
+        `${fishLabel}: niskie przelamanie linii widzenia moze zwiekszac agresje.`,
+        'Dodaj elementy dzielace widok (rosliny, korzenie, skaly).'
+      );
+    }
+    if (
+      profile.maleAggression === 'high' &&
+      hasLiters &&
+      aquariumLiters < Math.max(120, (Number(profile.minTankLiters) || 80) * 1.2) &&
+      (sexRatio === 'mostly_males' || sexRatio === 'unknown')
+    ) {
+      addPenalty(
+        'aggression',
+        sexRatio === 'mostly_males' ? 34 : 20,
+        `${fishLabel}: przy wysokiej agresji samcow i tym litrazu ryzyko konfliktow moze byc podwyzszone.`,
+        'Ogranicz liczbe samcow lub zapewnij wiekszy zbiornik.'
+      );
+    }
+    if (profile.breedingAggression === 'high' && profile.socialStructure !== 'school') {
+      addPenalty(
+        'territoriality',
+        8,
+        `${fishLabel}: w okresie tarla ten gatunek moze silnie bronic rewiru.`
+      );
+    }
+    if (zoneLoad >= 10 && zone !== 'whole_tank') {
+      addPenalty(
+        'zoneCompetition',
+        10,
+        `${fishLabel}: duze zageszczenie ryb w strefie ${zone} moze prowadzic do konkurencji.`
+      );
+    }
+  });
+
+  let biologicalCompensationPercent =
+    Number(
+      filtrationCompensation.filtrationCompensationScore ??
+      filtrationCompensation.compensationPercent
+    ) || 0;
+  if (filtrationCompensation.status === 'za slaba') {
+    biologicalCompensationPercent = 0;
+  } else if (filtrationCompensation.status === 'OK') {
+    biologicalCompensationPercent = clampScore(biologicalCompensationPercent, 0, 10);
+  } else if (filtrationCompensation.status === 'mocna') {
+    biologicalCompensationPercent = clampScore(biologicalCompensationPercent, 10, 20);
+  } else {
+    biologicalCompensationPercent = clampScore(biologicalCompensationPercent, 20, 35);
+  }
+
+  const plantCompensationPercent = Number(
+    plantCompensationProfile?.plantCompensationPercent
+  ) || 0;
+  const totalBiologicalCompensationPercent = clampScore(
+    biologicalCompensationPercent + plantCompensationPercent,
+    0,
+    55
+  );
+  const biologicalLoadRealIndex = Math.max(
+    0,
+    biologicalLoadIndex * (1 - totalBiologicalCompensationPercent / 100)
+  );
+  const filtrationIndexReduction = Math.max(
+    0,
+    biologicalLoadIndex * (biologicalCompensationPercent / 100)
+  );
+  const plantIndexReduction = Math.max(
+    0,
+    biologicalLoadIndex * (plantCompensationPercent / 100)
+  );
+  const totalIndexReduction = Math.max(
+    0,
+    biologicalLoadIndex - biologicalLoadRealIndex
+  );
+
+  let biologicalLoadAdjustedRiskRank = riskToRank(
+    getBiologicalLoadRiskByIndex(biologicalLoadRealIndex)
+  );
+  if (biologicalCompensationPercent >= 30 && biologicalLoadRawRisk === 'critical') {
+    biologicalLoadAdjustedRiskRank = Math.max(1, biologicalLoadAdjustedRiskRank);
+  }
+  const biologicalLoadAdjustedRisk = rankToRisk(
+    clampScore(biologicalLoadAdjustedRiskRank, 0, 3)
+  );
+
+  if (riskToRank(biologicalLoadRawRisk) >= 2 && biologicalCompensationPercent > 0) {
+    appendUnique(
+      warnings,
+      'Mocna filtracja czesciowo kompensuje obciazenie biologiczne.'
+    );
+  }
+  if (riskToRank(biologicalLoadRawRisk) >= 1 && plantCompensationPercent >= 8) {
+    appendUnique(
+      warnings,
+      'Masa roslinna wspiera buforowanie obciazenia azotowego i stabilizacje biologii.'
+    );
+  }
+  if (riskToRank(biologicalLoadRawRisk) >= 1 && plantItems.length > 0 && plantCompensationPercent < 8) {
+    appendUnique(
+      recommendations,
+      'Zwieksz mase roslin (szczegolnie szybkorosnacych), aby mocniej odciazyc obieg azotu.'
+    );
+  }
+  appendUnique(
+    recommendations,
+    'Filtracja nie zmniejsza agresji ani terytorialnosci.'
+  );
+  if (
+    riskToRank(biologicalLoadRawRisk) >= 2 &&
+    (waterChangeIntervalDays === null || waterChangeIntervalDays > 10)
+  ) {
+    appendUnique(
+      warnings,
+      'Mocna filtracja pomaga w stabilizacji biologicznej, ale nie usuwa koncowych produktow przemiany azotu. Przy takiej obsadzie konieczne sa regularne podmiany wody i kontrola NO3.'
+    );
+  }
+  if (filtrationCompensation.status === 'za silny nurt') {
+    appendUnique(
+      warnings,
+      'Zbyt silny nurt moze stresowac gatunki spokojne lub slabo plywajace.'
+    );
+  }
+  if (riskToRank(biologicalLoadRawRisk) >= 1) {
+    appendUnique(
+      recommendations,
+      'Przy wysokiej obsadzie konieczne sa regularne podmiany wody.'
+    );
+  }
+  (filtrationCompensation.warnings ?? []).forEach((warningText) => {
+    appendUnique(warnings, warningText);
+  });
+
+  const categoryEntries = Object.entries(categoryScores).map(([key, score]) => {
+    const status = scoreToCompatibilityStatus(score);
+    return [
+      key,
+      {
+        score: Math.round(score),
+        status,
+        uiStatus: scoreToUiStatus(score),
+        problems: categoryProblems[key].slice(0, 5),
+        recommendations: categoryRecommendations[key].slice(0, 5),
+      },
+    ];
+  });
+  const categories = Object.fromEntries(categoryEntries);
+  const toRiskFromCategoryScore = (scoreValue) => {
+    const score = Number(scoreValue);
+    if (score < 35) return 'critical';
+    if (score < 55) return 'high';
+    if (score < 75) return 'medium';
+    return 'low';
+  };
+  const spaceLoadRisk = rankToRisk(
+    riskToRank(toRiskFromCategoryScore(categories.tankSize.score))
+  );
+  const behaviorLoadRisk = rankToRisk(
+    Math.max(
+      riskToRank(toRiskFromCategoryScore(categories.aggression.score)),
+      riskToRank(toRiskFromCategoryScore(categories.territoriality.score)),
+      riskToRank(toRiskFromCategoryScore(categories.predation.score)),
+      riskToRank(toRiskFromCategoryScore(categories.finNipping.score)),
+      riskToRank(toRiskFromCategoryScore(categories.socialNeeds.score)),
+      riskToRank(toRiskFromCategoryScore(categories.zoneCompetition.score))
+    )
+  );
+  const weightedCategoryScoreRaw =
+    Number(categories.waterParameters.score) * 0.16 +
+    Number(categories.tankSize.score) * 0.16 +
+    Number(categories.aggression.score) * 0.16 +
+    Number(categories.territoriality.score) * 0.13 +
+    Number(categories.predation.score) * 0.1 +
+    Number(categories.finNipping.score) * 0.07 +
+    Number(categories.socialNeeds.score) * 0.06 +
+    Number(categories.zoneCompetition.score) * 0.06;
+  const weightedCategoryScore = clampScore(
+    weightedCategoryScoreRaw / 0.9,
+    0,
+    100
+  );
+  const criticalConflictCount = conflicts.filter((item) => item?.severity === 'critical').length;
+  const conflictPenalty = Math.min(criticalConflictCount * 6, 24);
+  const baseScore = clampScore(Math.round(weightedCategoryScore - conflictPenalty), 0, 100);
+  const worstRiskRank = Math.max(
+    riskToRank(spaceLoadRisk),
+    riskToRank(behaviorLoadRisk)
+  );
+  const score = clampScore(
+    Math.round(baseScore - worstRiskRank * 12),
+    0,
+    100
+  );
+  const overallStatus = riskToCompatibilityStatus(rankToRisk(worstRiskRank));
+  const biologicalLoadMessage =
+    biologicalLoadAdjustedRisk === 'low'
+      ? 'Obciazenie biologiczne jest niskie lub dobrze kontrolowane.'
+      : biologicalLoadAdjustedRisk === 'medium'
+        ? 'Obciazenie biologiczne jest podwyzszone. Kontroluj NO3 i regularnosc podmian.'
+        : biologicalLoadAdjustedRisk === 'high'
+          ? 'Obciazenie biologiczne jest wysokie. Filtracja moze pomagac, ale nie zastapi podmian.'
+          : 'Obciazenie biologiczne jest krytyczne - ryzyko skokow NH3/NH4, NO2 i NO3 jest wysokie.';
+  const spaceLoadMessage =
+    spaceLoadRisk === 'low'
+      ? 'Przestrzen akwarium wydaje sie odpowiednia dla obecnej obsady.'
+      : spaceLoadRisk === 'medium'
+        ? 'Przestrzen jest na granicy komfortu dla czesci obsady.'
+        : spaceLoadRisk === 'high'
+          ? 'Akwarium moze byc zbyt male przestrzennie dla tej obsady.'
+          : 'Przestrzen jest krytycznie niewystarczajaca dla obecnej obsady.';
+  const behaviorLoadMessage =
+    behaviorLoadRisk === 'low'
+      ? 'Ryzyko konfliktow behawioralnych jest niskie.'
+      : behaviorLoadRisk === 'medium'
+        ? 'Wystepuje umiarkowane ryzyko stresu/agresji - obserwuj zachowanie ryb.'
+        : behaviorLoadRisk === 'high'
+          ? 'Ryzyko konfliktow behawioralnych jest wysokie (agresja/terytorialnosc/strefy).'
+          : 'Ryzyko konfliktow behawioralnych jest krytyczne.';
+  if (
+    filtrationCompensation.status === 'nadfiltracja' &&
+    (riskToRank(spaceLoadRisk) >= 1 || riskToRank(behaviorLoadRisk) >= 1)
+  ) {
+    appendUnique(
+      warnings,
+      'Nadfiltracja nie oznacza, ze mozna dowolnie zwiekszac obsade.'
+    );
+  }
+
+  const stockingAssessment = {
+    overallStatus,
+    biologicalLoad: {
+      rawRisk: biologicalLoadRawRisk,
+      adjustedRisk: biologicalLoadAdjustedRisk,
+      bioloadIndex: Math.round(biologicalLoadIndex * 100) / 100,
+      bioloadIndexFromStocking: Math.round(biologicalLoadIndex * 100) / 100,
+      bioloadIndexReal: Math.round(biologicalLoadRealIndex * 100) / 100,
+      filtrationCompensation: biologicalCompensationPercent,
+      plantCompensation: Math.round(plantCompensationPercent),
+      totalCompensation: Math.round(totalBiologicalCompensationPercent),
+      filtrationIndexReduction:
+        Math.round(filtrationIndexReduction * 100) / 100,
+      plantIndexReduction: Math.round(plantIndexReduction * 100) / 100,
+      totalIndexReduction: Math.round(totalIndexReduction * 100) / 100,
+      plantMassPer100L: Number(plantCompensationProfile?.plantMassPer100L) || 0,
+      plantUnits: Number(plantCompensationProfile?.plantUnits) || 0,
+      effectivePlantUnits:
+        Number(plantCompensationProfile?.effectivePlantUnits) || 0,
+      plantBioloadBreakdown: {
+        biomassScore: Number(plantCompensationProfile?.biomassScore) || 0,
+        structureScore: Number(plantCompensationProfile?.structureScore) || 0,
+        growthScore: Number(plantCompensationProfile?.growthScore) || 0,
+        averageGrowthFactor:
+          Number(plantCompensationProfile?.averageGrowthFactor) || 0,
+        plantDensityFactor:
+          Number(plantCompensationProfile?.plantDensityFactor) || 0,
+        plantAreaFactor: Number(plantCompensationProfile?.plantAreaFactor) || 0,
+        biomassAvailabilityFactor:
+          Number(plantCompensationProfile?.biomassAvailabilityFactor) || 0,
+      },
+      message: biologicalLoadMessage,
+    },
+    spaceLoad: {
+      risk: spaceLoadRisk,
+      message: spaceLoadMessage,
+    },
+    behaviorLoad: {
+      risk: behaviorLoadRisk,
+      message: behaviorLoadMessage,
+    },
+    filtration: filtrationCompensation,
+    recommendations: [...recommendations],
+  };
+
+  Object.values(categories).forEach((category) => {
+    (category?.problems ?? []).slice(0, 2).forEach((text) => appendUnique(warnings, text));
+    (category?.recommendations ?? []).slice(0, 2).forEach((text) => appendUnique(recommendations, text));
+  });
+  if (overallStatus === 'high_risk' || overallStatus === 'incompatible') {
+    appendUnique(
+      recommendations,
+      'Obserwuj zachowanie ryb po zmianach obsady i reaguj szybko na nekanie/slabniecie osobnikow.'
+    );
+  }
+
+  return {
+    overallStatus,
+    overallUiStatus: scoreToUiStatus(score),
+    score,
+    biologicalLoadRisk: biologicalLoadAdjustedRisk,
+    spaceLoadRisk,
+    behaviorLoadRisk,
+    categories,
+    conflicts,
+    warnings,
+    recommendations,
+    stockingAssessment,
+    metrics: {
+      aggressiveBioloadCount,
+      peacefulBioloadCount,
+      aggressiveRatio: Math.round(aggressiveRatio * 100) / 100,
+      averageAggressionLevel: Math.round(averageAggressionLevel * 10) / 10,
+      maxAggressionLevel,
+      weightedAggression: Math.round(weightedAggression),
+      weightedPeaceful: Math.round(weightedPeaceful),
+      fishBioload: Math.round(fishBioload),
+      biologicalLoadIndex: Math.round(biologicalLoadIndex * 100) / 100,
+    },
   };
 }
 
@@ -4338,6 +6674,7 @@ function buildFishSeedEntry(rawFish, source) {
     isSchooling,
     minGroupSize,
     aggressionLevel,
+    wasteProductionLevel: Number(fishProfile.wasteProductionLevel),
     fishProfile,
     notes: notes || (!hasCustomRange ? EXPANDED_FISH_DEFAULTS.notes : ''),
     source,
@@ -5286,6 +7623,9 @@ function isManualStockEntry(item) {
   if (item.type === 'fish') {
     const catalogFishId = String(item.catalogFishId ?? '').trim();
     const latinName = String(item.latinName ?? '').trim();
+    if (catalogFishId.toLowerCase().startsWith('manual_')) {
+      return true;
+    }
     return !catalogFishId && !latinName;
   }
 
@@ -5340,6 +7680,18 @@ function buildFishCatalogSeed() {
 }
 
 const FISH_CATALOG_SEED = buildFishCatalogSeed();
+const FISH_WASTE_BY_LATIN_FROM_SEED = Object.freeze(
+  FISH_CATALOG_SEED.reduce((accumulator, item) => {
+    const latinKey = normalizeLatinCatalogKey(item?.latinName);
+    const wasteProductionLevel = normalizeWasteProductionLevelValue(
+      item?.wasteProductionLevel
+    );
+    if (latinKey && Number.isFinite(wasteProductionLevel)) {
+      accumulator[latinKey] = wasteProductionLevel;
+    }
+    return accumulator;
+  }, {})
+);
 
 const EXPANDED_PLANT_DEFAULTS = {
   phMin: 5.8,
@@ -5537,6 +7889,11 @@ function getPlantCatalogNormalizationPayload(item) {
     commonName,
     latinName,
   });
+  const requirementsProfile = inferPlantRequirementProfile({
+    ...item,
+    commonName,
+    latinName,
+  });
 
   return {
     commonName,
@@ -5553,6 +7910,19 @@ function getPlantCatalogNormalizationPayload(item) {
     lightHoursMax: Number.isFinite(Number(lightRequirements.maxHours))
       ? Number(lightRequirements.maxHours)
       : null,
+    lightDemand: requirementsProfile.lightDemand,
+    co2Demand: requirementsProfile.co2Demand,
+    growthRate: requirementsProfile.growthRate,
+    difficulty: requirementsProfile.difficulty,
+    fertilizationDemand: requirementsProfile.fertilizationDemand,
+    plantType: requirementsProfile.plantType,
+    placementZone: requirementsProfile.placementZone,
+    carboSensitivity: requirementsProfile.carboSensitivity,
+    parameterStabilitySensitivity:
+      requirementsProfile.parameterStabilitySensitivity,
+    minTankHeightCm: requirementsProfile.minTankHeightCm,
+    minTankVolumeL: requirementsProfile.minTankVolumeL,
+    compatibleWithDiggers: requirementsProfile.compatibleWithDiggers,
   };
 }
 
@@ -5590,6 +7960,10 @@ function buildPlantSeedEntry(rawPlant, source) {
     Number.isFinite(Number(rawPlant.tempMax)) &&
     Number.isFinite(Number(rawPlant.minLiters));
   const lightRequirements = getPlantLightRequirements(rawPlant);
+  const requirementsProfile = inferPlantRequirementProfile({
+    ...rawPlant,
+    minLiters,
+  });
 
   return {
     commonName,
@@ -5610,9 +7984,37 @@ function buildPlantSeedEntry(rawPlant, source) {
     lightHoursMax: Number.isFinite(Number(lightRequirements.maxHours))
       ? Number(lightRequirements.maxHours)
       : null,
+    lightDemand: requirementsProfile.lightDemand,
+    co2Demand: requirementsProfile.co2Demand,
+    growthRate: requirementsProfile.growthRate,
+    difficulty: requirementsProfile.difficulty,
+    fertilizationDemand: requirementsProfile.fertilizationDemand,
+    plantType: requirementsProfile.plantType,
+    placementZone: requirementsProfile.placementZone,
+    carboSensitivity: requirementsProfile.carboSensitivity,
+    parameterStabilitySensitivity:
+      requirementsProfile.parameterStabilitySensitivity,
+    minTankHeightCm: requirementsProfile.minTankHeightCm,
+    minTankVolumeL: requirementsProfile.minTankVolumeL,
+    compatibleWithDiggers: requirementsProfile.compatibleWithDiggers,
     ...getPlantCatalogNormalizationPayload({
+      ...rawPlant,
       commonName,
       latinName,
+      minLiters,
+      minTankVolumeL: requirementsProfile.minTankVolumeL,
+      minTankHeightCm: requirementsProfile.minTankHeightCm,
+      lightDemand: requirementsProfile.lightDemand,
+      co2Demand: requirementsProfile.co2Demand,
+      growthRate: requirementsProfile.growthRate,
+      difficulty: requirementsProfile.difficulty,
+      fertilizationDemand: requirementsProfile.fertilizationDemand,
+      plantType: requirementsProfile.plantType,
+      placementZone: requirementsProfile.placementZone,
+      carboSensitivity: requirementsProfile.carboSensitivity,
+      parameterStabilitySensitivity:
+        requirementsProfile.parameterStabilitySensitivity,
+      compatibleWithDiggers: requirementsProfile.compatibleWithDiggers,
       imagePreviewUrl: rawPlant.imagePreviewUrl,
       imageUrl: rawPlant.imageUrl,
       lightLumenMinPerLiter: lightRequirements.minLumensPerLiter,
@@ -5870,8 +8272,52 @@ function checkFishCompatibility(item, measurement, tankLiters, tankProfile = nul
   return issues;
 }
 
-function checkPlantCompatibility(item, measurement, tankLiters, tankProfile = null) {
+function isPotentialDiggingFish(item) {
+  if (!item || String(item?.type ?? 'fish').toLowerCase() !== 'fish') {
+    return false;
+  }
+  const profile = getFishSpeciesProfile(item);
+  const text = normalizeText(
+    `${item?.commonName ?? ''} ${item?.latinName ?? ''} ${item?.notes ?? ''}`
+  );
+  const diggerKeywords = [
+    'kopie',
+    'kopia',
+    'kopi',
+    'przekop',
+    'grzebi',
+    'podloze',
+    'geophagus',
+    'earth eater',
+    'pyszczak',
+    'mbuna',
+  ];
+  if (diggerKeywords.some((keyword) => text.includes(keyword))) {
+    return true;
+  }
+
+  const waterZone = String(profile?.waterZone ?? '');
+  const territorialityLevel = Number(profile?.territorialityLevel || 0);
+  const adultSizeCm = Number(profile?.adultSizeCm || 0);
+  const temperament = String(profile?.temperament ?? '');
+  return (
+    (waterZone === 'bottom' || waterZone === 'all') &&
+    adultSizeCm >= 8 &&
+    (territorialityLevel >= 3 ||
+      temperament === 'aggressive' ||
+      temperament === 'semi_aggressive')
+  );
+}
+
+function checkPlantCompatibility(
+  item,
+  measurement,
+  tankLiters,
+  tankProfile = null,
+  context = {}
+) {
   const issues = [];
+  const requirementsProfile = inferPlantRequirementProfile(item);
 
   if (!measurement) {
     issues.push(
@@ -5887,10 +8333,39 @@ function checkPlantCompatibility(item, measurement, tankLiters, tankProfile = nu
       `Ta roslina zwykle lepiej sprawdza sie od ${item.minLiters} l, a akwarium ma ${tankLiters} l.`
     );
   }
+  if (
+    Number.isFinite(Number(requirementsProfile.minTankVolumeL)) &&
+    Number(requirementsProfile.minTankVolumeL) > Number(tankLiters) &&
+    Math.abs(
+      Number(requirementsProfile.minTankVolumeL) - Number(item.minLiters)
+    ) > 1
+  ) {
+    issues.push(
+      `Docelowy litraz dla tej rosliny to min. ${requirementsProfile.minTankVolumeL} l, a akwarium ma ${tankLiters} l.`
+    );
+  }
 
   issues.push(...getPracticalWaterParameterIssues(item, measurement, 'plant'));
 
   if (tankProfile) {
+    if (
+      Number.isFinite(Number(tankProfile.heightCm)) &&
+      Number(tankProfile.heightCm) < Number(requirementsProfile.minTankHeightCm)
+    ) {
+      issues.push(
+        `Wysokosc zbiornika (${Math.round(Number(tankProfile.heightCm))} cm) jest ponizej zalecenia dla tej rosliny (${requirementsProfile.minTankHeightCm} cm).`
+      );
+    }
+
+    if (
+      requirementsProfile.placementZone === 'background' &&
+      normalizeDensityLevel(tankProfile?.zones?.plantArea) === 'low'
+    ) {
+      issues.push(
+        'Tylna strefa nasadzen jest uboga, a ta roslina najlepiej pracuje jako tlo. Rozwaz wiecej miejsca na tyl zbiornika.'
+      );
+    }
+
     const substrateNeed = inferPlantSubstrateNeed(item);
     const substrateTypes = normalizeSubstrateTypes(
       tankProfile.substrateTypes ?? tankProfile.substrateType
@@ -5946,6 +8421,58 @@ function checkPlantCompatibility(item, measurement, tankLiters, tankProfile = nu
         );
       }
     }
+
+    const measuredCo2 = getMeasurementNumericValue(measurement, 'co2');
+    if (requirementsProfile.co2Demand === 'high') {
+      if (Number.isFinite(Number(measuredCo2)) && Number(measuredCo2) < 15) {
+        issues.push(
+          `Ta roslina ma wysokie zapotrzebowanie na CO2, a aktualnie jest ok. ${Math.round(Number(measuredCo2))} mg/l.`
+        );
+      } else if (!Number.isFinite(Number(measuredCo2))) {
+        issues.push(
+          'Ta roslina ma wysokie zapotrzebowanie na CO2 - warto monitorowac CO2 (pomiar bezposredni lub z KH/pH).'
+        );
+      }
+    } else if (
+      requirementsProfile.co2Demand === 'medium' &&
+      Number.isFinite(Number(measuredCo2)) &&
+      Number(measuredCo2) < 8
+    ) {
+      issues.push(
+        `CO2 (${Math.round(Number(measuredCo2))} mg/l) moze byc zbyt niskie dla stabilnego wzrostu tej rosliny.`
+      );
+    }
+
+    if (
+      requirementsProfile.fertilizationDemand === 'high' &&
+      !tankProfile.hasActiveRootTabsSupport &&
+      !isNutrientSubstrate(substrateTypes)
+    ) {
+      issues.push(
+        'Roslina ma wysokie zapotrzebowanie nawozowe - przy tym podlozu rozwaz regularne nawozenie i wsparcie strefy korzeniowej.'
+      );
+    }
+  }
+
+  const fishItems = Array.isArray(context?.fishItems)
+    ? context.fishItems
+    : [];
+  const diggerCount = fishItems.filter((fishItem) => isPotentialDiggingFish(fishItem)).length;
+  if (!requirementsProfile.compatibleWithDiggers && diggerCount > 0) {
+    issues.push(
+      `W akwarium sa ryby potencjalnie kopiace w podlozu (${diggerCount}), a ta roslina slabo to toleruje.`
+    );
+  }
+
+  if (issues.length > 0 && requirementsProfile.parameterStabilitySensitivity === 'high') {
+    issues.push(
+      'Ta roslina jest wrazliwa na skoki parametrow - korekty wykonuj stopniowo.'
+    );
+  }
+  if (issues.length > 0 && requirementsProfile.carboSensitivity === 'high') {
+    issues.push(
+      'Roslina moze byc wrazliwa na agresywne dawkowanie carbo - zaczynaj od mniejszych dawek i obserwuj liscie.'
+    );
   }
 
   return issues;
@@ -6097,86 +8624,11 @@ function getIssueCaseDisplayName(item) {
 }
 
 function getFishQuantity(item) {
-  const parsed = Number(item.quantity);
-
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return 1;
-  }
-
-  return Math.max(1, Math.round(parsed));
-}
-
-function estimateBioloadLitersPerFish(minLiters) {
-  const min = Number(minLiters);
-
-  if (!Number.isFinite(min) || min <= 0) {
-    return 3;
-  }
-
-  if (min <= 30) {
-    return 2.6;
-  }
-
-  if (min <= 60) {
-    return 3.8;
-  }
-
-  if (min <= 100) {
-    return 5.6;
-  }
-
-  if (min <= 160) {
-    return 7.3;
-  }
-
-  if (min <= 240) {
-    return 9.6;
-  }
-
-  return 12;
+  return getFishQuantityService(item);
 }
 
 function buildFishStockingSummary(stockItems, tankLiters) {
-  const fishItems = stockItems.filter((item) => item.type === 'fish');
-  const tank = Number(tankLiters);
-
-  if (!Number.isFinite(tank) || tank <= 0 || fishItems.length === 0) {
-    return {
-      hasFish: fishItems.length > 0,
-      hasTankLiters: Number.isFinite(tank) && tank > 0,
-      estimatedLiters: 0,
-      tankLiters: tank,
-      ratio: 0,
-      isOverstocked: false,
-    };
-  }
-
-  const largestSpeciesMinLiters = fishItems.reduce((maxValue, item) => {
-    const minLiters = Number(item.minLiters);
-
-    if (!Number.isFinite(minLiters) || minLiters <= 0) {
-      return maxValue;
-    }
-
-    return Math.max(maxValue, minLiters);
-  }, 0);
-
-  const bioloadLiters = fishItems.reduce((sum, item) => {
-    const quantity = getFishQuantity(item);
-    return sum + estimateBioloadLitersPerFish(item.minLiters) * quantity;
-  }, 0);
-
-  const estimatedLiters = Math.max(largestSpeciesMinLiters, bioloadLiters);
-  const ratio = estimatedLiters / tank;
-
-  return {
-    hasFish: true,
-    hasTankLiters: true,
-    estimatedLiters,
-    tankLiters: tank,
-    ratio,
-    isOverstocked: ratio > 1.05,
-  };
+  return buildFishStockingSummaryService(stockItems, tankLiters);
 }
 
 const ANALYSIS_SEVERITY_PRIORITY = {
@@ -6414,47 +8866,18 @@ function getHomeStatusSeverityFromScore(scoreValue) {
   return 'ok';
 }
 
-function getAggressionCrowdingFactor(stockingSummary) {
-  if (!stockingSummary?.hasFish) {
-    return 0;
-  }
-
-  if (!stockingSummary?.hasTankLiters) {
-    return 1;
-  }
-
-  const ratio = Number(stockingSummary?.ratio);
-
-  if (!Number.isFinite(ratio)) {
-    return 1;
-  }
-
-  if (ratio <= 0.72) {
-    return 0;
-  }
-
-  if (ratio <= 0.9) {
-    return 0.35;
-  }
-
-  if (ratio <= 1.05) {
-    return 0.7;
-  }
-
-  return 1;
-}
-
 function buildAquariumHealthAssessment({
   tank,
   measurement,
   stockItems = [],
   activeIssueCases = [],
+  equipmentCatalog = EQUIPMENT_CATALOG,
 }) {
   const tankLiters = Number(tank?.liters);
   const tankProfile = buildTankEnvironmentProfile(tank);
   const equipmentAssessment = buildTankEquipmentAssessment(
     tank,
-    EQUIPMENT_CATALOG
+    equipmentCatalog
   );
   const fishItems = stockItems.filter((item) => item.type === 'fish');
   const plantItems = stockItems.filter((item) => item.type === 'plant');
@@ -6637,36 +9060,20 @@ function buildAquariumHealthAssessment({
     accuracy += 5;
   }
 
-  const fishCompatibilityResults = fishItems.map((item) => ({
-    id: item.id,
-    issues: checkFishCompatibility(item, measurement, tankLiters, tankProfile),
-  }));
   const plantCompatibilityResults = plantItems.map((item) => ({
     id: item.id,
-    issues: checkPlantCompatibility(item, measurement, tankLiters, tankProfile),
+    issues: checkPlantCompatibility(item, measurement, tankLiters, tankProfile, {
+      fishItems,
+    }),
   }));
-  const fishCompatibilitySummary = summarizeCompatibilityResults(
-    fishCompatibilityResults
-  );
   const plantCompatibilitySummary = summarizeCompatibilityResults(
     plantCompatibilityResults
   );
-
-  const fishCompatibilityPenalty = Math.min(
-    fishCompatibilitySummary.totalMajorIssues * 4 +
-      fishCompatibilitySummary.totalSubstrateIssues * 1,
-    18
+  const stockingCompatibility = evaluateStockingCompatibility(
+    tank,
+    stockItems,
+    measurement
   );
-  if (fishCompatibilityPenalty > 0) {
-    const fishSubstrateHint =
-      fishCompatibilitySummary.totalSubstrateIssues > 0
-        ? ` (w tym podloze: ${fishCompatibilitySummary.totalSubstrateIssues} ostrz.)`
-        : '';
-    applyPenalty(
-      fishCompatibilityPenalty,
-      `Ryby maja ${fishCompatibilitySummary.totalIssues} sygnalow niedopasowania do warunkow${fishSubstrateHint}.`
-    );
-  }
 
   const plantCompatibilityPenalty = Math.min(
     plantCompatibilitySummary.totalMajorIssues * 3 +
@@ -6684,62 +9091,17 @@ function buildAquariumHealthAssessment({
     );
   }
 
-  const schoolingWarningCount = fishItems.filter((item) => {
-    const schoolingProfile = resolveFishSchoolingProfile(item);
-    return schoolingProfile.isSchooling && getFishQuantity(item) < schoolingProfile.minGroupSize;
-  }).length;
-  const schoolingPenalty = Math.min(schoolingWarningCount * 5, 10);
-  if (schoolingPenalty > 0) {
-    applyPenalty(
-      schoolingPenalty,
-      `${schoolingWarningCount} gat. ryb stadnych ma zbyt mala grupe.`
+  if (stockingCompatibility.score < 85) {
+    const dynamicPenalty = Math.min(
+      Math.max(6, Math.round((100 - Number(stockingCompatibility.score)) * 0.34)),
+      34
     );
-  }
-
-  let aggressionConflictCount = 0;
-  for (let index = 0; index < fishItems.length; index += 1) {
-    for (
-      let compareIndex = index + 1;
-      compareIndex < fishItems.length;
-      compareIndex += 1
-    ) {
-      if (
-        getFishAggressionConflict(
-          fishItems[index],
-          fishItems[compareIndex],
-          tankLiters
-        )
-      ) {
-        aggressionConflictCount += 1;
-      }
-    }
-  }
-  const stockingSummary = buildFishStockingSummary(stockItems, tankLiters);
-  const aggressionCrowdingFactor = getAggressionCrowdingFactor(stockingSummary);
-  const effectiveAggressionConflicts = aggressionConflictCount * aggressionCrowdingFactor;
-  const aggressionPenalty = Math.min(Math.round(effectiveAggressionConflicts * 8), 18);
-  if (aggressionPenalty > 0) {
-    const spaceMitigationHint =
-      aggressionCrowdingFactor < 1
-        ? ' Czesciowo lagodzi to zapas miejsca.'
-        : '';
     applyPenalty(
-      aggressionPenalty,
-      `Wykryto ${aggressionConflictCount} potencjalnych konfliktow agresji miedzy rybami.${spaceMitigationHint}`
+      dynamicPenalty,
+      `Kontekstowa zgodnosc obsady jest oceniona na ${stockingCompatibility.score}/100 (${stockingCompatibility.overallUiStatus}).`
     );
-  }
-  if (stockingSummary.hasFish) {
-    if (!stockingSummary.hasTankLiters) {
-      applyPenalty(10, 'Brak litrazu utrudnia ocene przerybienia.');
-    } else if (stockingSummary.ratio > 1.5) {
-      applyPenalty(24, 'Obsada jest wyraznie za duza jak na ten litraz.');
-    } else if (stockingSummary.ratio > 1.2) {
-      applyPenalty(16, 'Obsada jest odczuwalnie za duza jak na ten litraz.');
-    } else if (stockingSummary.ratio > 1.05) {
-      applyPenalty(8, 'Obsada jest lekko za duza jak na ten litraz.');
-    } else if (stockingSummary.ratio >= 0.7 && stockingSummary.ratio <= 1) {
-      score += 2;
-    }
+  } else {
+    applyBonus(3);
   }
 
   const activeFishDiseaseCases = activeIssueCases.filter(
@@ -6918,7 +9280,11 @@ function buildRecommendedRange(minValues, maxValues) {
   };
 }
 
-function buildDiseaseSuggestions(selectedSymptomIds, catalogEntries = []) {
+function buildDiseaseSuggestions(
+  selectedSymptomIds,
+  catalogEntries = [],
+  diagnosisContext = null
+) {
   const selected = [...new Set(selectedSymptomIds)];
 
   if (selected.length === 0) {
@@ -6935,12 +9301,15 @@ function buildDiseaseSuggestions(selectedSymptomIds, catalogEntries = []) {
     const score = precision * 0.7 + coverage * 0.3;
     const confidencePercent = Math.round(score * 100);
 
-    return {
+    const candidate = {
       ...disease,
       matches,
       score,
       confidencePercent,
     };
+    return diagnosisContext
+      ? enrichDiagnosisCandidate('disease', candidate, diagnosisContext)
+      : candidate;
   })
     .filter((item) => item.matches.length >= 2)
     .sort((a, b) => {
@@ -6959,29 +9328,25 @@ function buildDiseaseSuggestions(selectedSymptomIds, catalogEntries = []) {
 }
 
 function buildDiseaseTreatmentSchedule(disease) {
-  const now = new Date();
-  const dayOffsets = [0, 1, 3, 7];
-  const steps = disease.treatment.slice(0, 4);
+  if (Array.isArray(disease?.schedule) && disease.schedule.length > 0) {
+    return disease.schedule.slice(0, 10);
+  }
 
-  return steps.map((text, index) => {
-    const dueDate = new Date(now);
-    dueDate.setDate(
-      dueDate.getDate() +
-        (dayOffsets[index] ?? dayOffsets[dayOffsets.length - 1])
-    );
+  if (disease?.timelinePlan) {
+    return buildDiagnosisSchedule(disease.id, disease.timelinePlan);
+  }
 
-    return {
-      id: `${disease.id}-step-${index + 1}`,
-      step: index + 1,
-      action: text,
-      dueAt: dueDate,
-    };
+  return buildDiagnosisSchedule(disease?.id ?? 'disease', {
+    h24: (disease?.treatment ?? []).slice(0, 2),
+    d7: (disease?.treatment ?? []).slice(2, 4),
+    d30: [],
   });
 }
 
 function buildPlantDiseaseSuggestions(
   selectedSymptomIds,
-  catalogEntries = []
+  catalogEntries = [],
+  diagnosisContext = null
 ) {
   const selected = [...new Set(selectedSymptomIds)];
 
@@ -6999,12 +9364,15 @@ function buildPlantDiseaseSuggestions(
     const score = precision * 0.7 + coverage * 0.3;
     const confidencePercent = Math.round(score * 100);
 
-    return {
+    const candidate = {
       ...disease,
       matches,
       score,
       confidencePercent,
     };
+    return diagnosisContext
+      ? enrichDiagnosisCandidate('plant_disease', candidate, diagnosisContext)
+      : candidate;
   })
     .filter((item) => item.matches.length >= 2)
     .sort((a, b) => {
@@ -7023,27 +9391,26 @@ function buildPlantDiseaseSuggestions(
 }
 
 function buildPlantDiseaseTreatmentSchedule(disease) {
-  const now = new Date();
-  const dayOffsets = [0, 2, 5, 10];
-  const steps = disease.treatment.slice(0, 4);
+  if (Array.isArray(disease?.schedule) && disease.schedule.length > 0) {
+    return disease.schedule.slice(0, 10);
+  }
 
-  return steps.map((text, index) => {
-    const dueDate = new Date(now);
-    dueDate.setDate(
-      dueDate.getDate() +
-        (dayOffsets[index] ?? dayOffsets[dayOffsets.length - 1])
-    );
+  if (disease?.timelinePlan) {
+    return buildDiagnosisSchedule(disease.id, disease.timelinePlan);
+  }
 
-    return {
-      id: `${disease.id}-step-${index + 1}`,
-      step: index + 1,
-      action: text,
-      dueAt: dueDate,
-    };
+  return buildDiagnosisSchedule(disease?.id ?? 'plant_disease', {
+    h24: (disease?.treatment ?? []).slice(0, 2),
+    d7: (disease?.treatment ?? []).slice(2, 4),
+    d30: [],
   });
 }
 
-function buildAlgaeSuggestions(selectedSymptomIds, catalogEntries = []) {
+function buildAlgaeSuggestions(
+  selectedSymptomIds,
+  catalogEntries = [],
+  diagnosisContext = null
+) {
   const selected = [...new Set(selectedSymptomIds)];
 
   if (selected.length === 0) {
@@ -7060,12 +9427,15 @@ function buildAlgaeSuggestions(selectedSymptomIds, catalogEntries = []) {
     const score = precision * 0.7 + coverage * 0.3;
     const confidencePercent = Math.round(score * 100);
 
-    return {
+    const candidate = {
       ...algae,
       matches,
       score,
       confidencePercent,
     };
+    return diagnosisContext
+      ? enrichDiagnosisCandidate('algae', candidate, diagnosisContext)
+      : candidate;
   })
     .filter((item) => item.matches.length >= 2)
     .sort((a, b) => {
@@ -7084,25 +9454,18 @@ function buildAlgaeSuggestions(selectedSymptomIds, catalogEntries = []) {
 }
 
 function buildAlgaeTreatmentSchedule(algae) {
-  const now = new Date();
-  const immediate = algae.removeActions.slice(0, 3);
-  const prevention = algae.preventionActions.slice(0, 3);
-  const actions = [...immediate, ...prevention];
-  const dayOffsets = [0, 1, 3, 5, 7, 14];
+  if (Array.isArray(algae?.schedule) && algae.schedule.length > 0) {
+    return algae.schedule.slice(0, 10);
+  }
 
-  return actions.map((text, index) => {
-    const dueDate = new Date(now);
-    dueDate.setDate(
-      dueDate.getDate() +
-        (dayOffsets[index] ?? dayOffsets[dayOffsets.length - 1])
-    );
+  if (algae?.timelinePlan) {
+    return buildDiagnosisSchedule(algae.id, algae.timelinePlan);
+  }
 
-    return {
-      id: `${algae.id}-step-${index + 1}`,
-      step: index + 1,
-      action: text,
-      dueAt: dueDate,
-    };
+  return buildDiagnosisSchedule(algae?.id ?? 'algae', {
+    h24: (algae?.removeActions ?? []).slice(0, 2),
+    d7: (algae?.preventionActions ?? []).slice(0, 2),
+    d30: [],
   });
 }
 
@@ -7128,6 +9491,313 @@ function getRecentNumericSeries(measurements, key, limit = 5) {
     .slice(0, limit)
     .map((item) => getMeasurementNumericValue(item, key))
     .filter((value) => value !== null);
+}
+
+function normalizeTrendDirection(delta, threshold) {
+  if (!Number.isFinite(delta)) {
+    return 'unknown';
+  }
+  if (delta > threshold) {
+    return 'up';
+  }
+  if (delta < -threshold) {
+    return 'down';
+  }
+  return 'stable';
+}
+
+function getSimpleTrend(series, threshold = 0) {
+  if (!Array.isArray(series) || series.length < 2) {
+    return { direction: 'unknown', delta: 0 };
+  }
+  const newest = Number(series[0]);
+  const oldest = Number(series[series.length - 1]);
+  if (!Number.isFinite(newest) || !Number.isFinite(oldest)) {
+    return { direction: 'unknown', delta: 0 };
+  }
+  const delta = newest - oldest;
+  return {
+    direction: normalizeTrendDirection(delta, Number(threshold) || 0),
+    delta: Math.round(delta * 100) / 100,
+  };
+}
+
+function mapConfidenceLevel(confidencePercent) {
+  const value = Number(confidencePercent) || 0;
+  if (value >= 80) return 'wysoki';
+  if (value >= 60) return 'sredni';
+  if (value >= 40) return 'niski';
+  return 'bardzo niski';
+}
+
+function buildDiagnosisContext({
+  tank = null,
+  measurement = null,
+  measurements = [],
+  stockItems = [],
+  tankProfile = null,
+  onboardingPlan = null,
+} = {}) {
+  const fishItems = (stockItems ?? []).filter((item) => item?.type === 'fish');
+  const plantItems = (stockItems ?? []).filter((item) => item?.type === 'plant');
+  const tankCreatedAtMs = getCreatedAtMs(
+    tank?.onboardingStartAt ?? tank?.createdAt
+  );
+  const tankAgeDaysFromDates = tankCreatedAtMs
+    ? Math.max(1, Math.round((Date.now() - tankCreatedAtMs) / (24 * 60 * 60 * 1000)))
+    : 0;
+  const tankAgeDays = Number(onboardingPlan?.dayNumber) || tankAgeDaysFromDates;
+  const profile = tankProfile ?? buildTankEnvironmentProfile(tank ?? {});
+  const fertilizationSummary = summarizePlantFertilization(
+    tank?.plantFertilizationEntries
+  );
+  const fishStockingSummary = buildFishStockingSummary(
+    stockItems,
+    Number(tank?.liters)
+  );
+  const stockingCompatibility = evaluateStockingCompatibility(
+    tank ?? {},
+    stockItems,
+    measurement
+  );
+  const seriesNo3 = getRecentNumericSeries(measurements, 'no3', 6);
+  const seriesPo4 = getRecentNumericSeries(measurements, 'po4', 6);
+  const seriesCo2 = getRecentNumericSeries(measurements, 'co2', 6);
+  const seriesPh = getRecentNumericSeries(measurements, 'ph', 6);
+  const seriesTemp = getRecentNumericSeries(measurements, 'temperature', 6);
+
+  return {
+    tankAgeDays,
+    measurement,
+    measurements,
+    fishItems,
+    plantItems,
+    fishCount: fishItems.reduce((sum, item) => sum + getFishQuantity(item), 0),
+    plantCount: plantItems.length,
+    plantToFishRatio:
+      fishItems.length > 0 ? plantItems.length / Math.max(1, fishItems.length) : 0,
+    tankProfile: profile,
+    fertilizationSummary,
+    fishStockingSummary,
+    stockingCompatibility,
+    trends: {
+      no3: getSimpleTrend(seriesNo3, 4),
+      po4: getSimpleTrend(seriesPo4, 0.3),
+      co2: getSimpleTrend(seriesCo2, 5),
+      ph: getSimpleTrend(seriesPh, 0.25),
+      temperature: getSimpleTrend(seriesTemp, 1),
+    },
+  };
+}
+
+function dedupeTextList(items = [], maxItems = 6) {
+  const output = [];
+  (items ?? []).forEach((item) => {
+    const text = String(item ?? '').trim();
+    if (!text) return;
+    const exists = output.some(
+      (entry) => String(entry).toLowerCase() === text.toLowerCase()
+    );
+    if (!exists) {
+      output.push(text);
+    }
+  });
+  return output.slice(0, maxItems);
+}
+
+function buildProbableCausesByContext(kind, candidate, context) {
+  const causes = [];
+  const measurement = context?.measurement ?? null;
+  const tankProfile = context?.tankProfile ?? {};
+  const trends = context?.trends ?? {};
+
+  const push = (text) => {
+    if (text) {
+      causes.push(text);
+    }
+  };
+
+  (candidate?.causes ?? []).slice(0, 3).forEach((text) => push(text));
+
+  const no2 = getMeasurementNumericValue(measurement, 'no2');
+  const nh3nh4 = getMeasurementNumericValue(measurement, 'nh3nh4');
+  const no3 = getMeasurementNumericValue(measurement, 'no3');
+  const po4 = getMeasurementNumericValue(measurement, 'po4');
+  const fe = getMeasurementNumericValue(measurement, 'fe');
+  const co2 = getMeasurementNumericValue(measurement, 'co2');
+  const lightHours = Number(tankProfile?.lightHours);
+  const lumensPerLiter = Number(tankProfile?.lumensPerLiter);
+  const tankAgeDays = Number(context?.tankAgeDays || 0);
+
+  if (Number.isFinite(no2) && no2 > 0.1) {
+    push(`NO2 jest podwyzszone (${Math.round(no2 * 100) / 100} mg/l).`);
+  }
+  if (Number.isFinite(nh3nh4) && nh3nh4 > 0.1) {
+    push(`NH3/NH4 jest podwyzszone (${Math.round(nh3nh4 * 100) / 100} mg/l).`);
+  }
+  if (Number.isFinite(no3) && no3 > 30) {
+    push(`NO3 jest wysokie (${Math.round(no3)} mg/l).`);
+  }
+  if (trends?.no3?.direction === 'up') {
+    push('Trend NO3 jest wzrostowy.');
+  }
+  if (trends?.po4?.direction === 'up') {
+    push('Trend PO4 jest wzrostowy.');
+  }
+  if (trends?.ph?.direction !== 'stable' && trends?.ph?.direction !== 'unknown') {
+    push('pH wykazuje niestabilnosc miedzy pomiarami.');
+  }
+  if (
+    trends?.temperature?.direction !== 'stable' &&
+    trends?.temperature?.direction !== 'unknown'
+  ) {
+    push('Temperatura wykazuje wahania miedzy pomiarami.');
+  }
+
+  if (kind === 'algae' || kind === 'plant_disease') {
+    if (Number.isFinite(lightHours) && lightHours > 9) {
+      push(`Dlugie swiecenie (${lightHours} h) moze napedzac nierownowage.`);
+    }
+    if (Number.isFinite(lumensPerLiter) && lumensPerLiter > 50) {
+      push(`Mocne oswietlenie (${Math.round(lumensPerLiter)} lm/l) wymaga stabilnego nawozenia i CO2.`);
+    }
+    if (Number.isFinite(co2) && co2 < 10) {
+      push(`CO2 jest niskie (${Math.round(co2)} mg/l), co moze oslabiac konkurencje roslin.`);
+    }
+    if (Number.isFinite(po4) && po4 > 2) {
+      push(`PO4 jest wysokie (${Math.round(po4 * 100) / 100} mg/l).`);
+    }
+    if (Number.isFinite(po4) && po4 < 0.05 && Number.isFinite(no3) && no3 > 15) {
+      push('Mozliwa nierownowaga NO3/PO4 (wysokie NO3 przy bardzo niskim PO4).');
+    }
+    if (context?.fertilizationSummary?.hasActiveRootTabs === false) {
+      push('Brak aktywnego wsparcia nawozenia strefy korzeniowej.');
+    }
+    if (Number.isFinite(fe) && fe < 0.02 && kind === 'plant_disease') {
+      push(`Niskie Fe (${Math.round(fe * 100) / 100} mg/l) moze ograniczac wzrost roslin.`);
+    }
+  }
+
+  if (kind === 'disease') {
+    const overallStockingStatus = String(
+      context?.stockingCompatibility?.overallStatus ?? ''
+    );
+    if (overallStockingStatus === 'high_risk' || overallStockingStatus === 'incompatible') {
+      push('Obsada jest ryzykowna, co zwieksza stres i podatnosc ryb na choroby.');
+    }
+  }
+
+  if (kind === 'algae' && Number(context?.plantToFishRatio) < 0.25 && Number(context?.fishCount) > 6) {
+    push('Masa roslinna jest relatywnie mala wzgledem obsady ryb.');
+  }
+
+  if (Number.isFinite(tankAgeDays) && tankAgeDays > 0 && tankAgeDays < 30) {
+    push(`Mlody wiek akwarium (${tankAgeDays} dni) moze zwiekszac ryzyko nierownowagi.`);
+  }
+
+  return dedupeTextList(causes, 6);
+}
+
+function buildDiagnosisTimelinePlan(kind, candidate, context) {
+  const baseSteps =
+    kind === 'algae'
+      ? [
+          ...((candidate?.removeActions ?? []).slice(0, 2)),
+          ...((candidate?.preventionActions ?? []).slice(0, 2)),
+        ]
+      : (candidate?.treatment ?? []).slice(0, 4);
+  const causes = buildProbableCausesByContext(kind, candidate, context);
+  const h24 = [];
+  const d7 = [];
+  const d30 = [];
+
+  if (kind === 'disease') {
+    h24.push('Sprawdz NO2, NH3/NH4, temperature i napowietrzanie; popraw warunki zanim wdrozysz leczenie.');
+    h24.push('Oddziel osobniki najslabsze do obserwacji (jesli to bezpieczne).');
+    d7.push('Prowadz codzienna obserwacje zachowania i apetytu; zapisuj zmiany.');
+    d7.push('Wykonaj 2-3 kontrole parametrow i utrzymuj regularne podmiany.');
+    d30.push('Po ustabilizowaniu zbiornika zweryfikuj obsade i ogranicz dlugoterminowy stres.');
+  } else if (kind === 'plant_disease') {
+    h24.push('Sprawdz swiatlo (czas/moc), CO2 i podstawowe makro/mikro; nie zmieniaj wszystkiego naraz.');
+    h24.push('Usun najmocniej uszkodzone liscie.');
+    d7.push('Wprowadz jedna korekte co 2-3 dni i obserwuj nowe przyrosty.');
+    d7.push('Kontroluj NO3/PO4/Fe oraz stabilnosc pH.');
+    d30.push('Ustal staly schemat swiatla, nawozenia i podmian; oceniaj glownie nowe liscie.');
+  } else {
+    h24.push('Mechanicznie usun glony i wykonaj serwis, bez agresywnych dawek preparatow na start.');
+    h24.push('Skoryguj swiatlo do stabilnego zakresu i ogranicz przekarmianie.');
+    d7.push('Monitoruj trendy NO3/PO4/CO2 i poprawiaj jedna zmienna naraz.');
+    d7.push('Wzmocnij konkurencje roslin (masa roslinna, stabilnosc nawozenia).');
+    d30.push('Utrzymaj profilaktyke: regularne podmiany, przycinki i higiena filtra.');
+  }
+
+  baseSteps.slice(0, 2).forEach((step) => h24.push(step));
+  baseSteps.slice(2, 4).forEach((step) => d7.push(step));
+  if (causes.length > 0) {
+    d30.push(`Pracuj nad przyczyna glowna: ${causes[0]}`);
+  }
+
+  return {
+    h24: dedupeTextList(h24, 4),
+    d7: dedupeTextList(d7, 4),
+    d30: dedupeTextList(d30, 4),
+  };
+}
+
+function buildDiagnosisSchedule(itemId, timelinePlan) {
+  const now = new Date();
+  const createEntry = (bucket, action, dayOffset, index) => {
+    const dueDate = new Date(now);
+    dueDate.setDate(dueDate.getDate() + dayOffset);
+    return {
+      id: `${itemId}-${bucket}-${index + 1}`,
+      step: index + 1,
+      action: `[${bucket}] ${action}`,
+      dueAt: dueDate,
+    };
+  };
+  const h24 = (timelinePlan?.h24 ?? []).map((action, index) =>
+    createEntry('24h', action, index === 0 ? 0 : 1, index)
+  );
+  const d7 = (timelinePlan?.d7 ?? []).map((action, index) =>
+    createEntry('7 dni', action, [2, 4, 7, 7][index] ?? 7, index)
+  );
+  const d30 = (timelinePlan?.d30 ?? []).map((action, index) =>
+    createEntry('30 dni', action, [14, 21, 30, 30][index] ?? 30, index)
+  );
+  return [...h24, ...d7, ...d30].slice(0, 10);
+}
+
+function enrichDiagnosisCandidate(kind, item, context) {
+  const probableCauses = buildProbableCausesByContext(kind, item, context);
+  const timelinePlan = buildDiagnosisTimelinePlan(kind, item, context);
+  const supportSignals = probableCauses.length;
+  const contradictionSignals =
+    kind === 'algae' && context?.trends?.no3?.direction === 'down' ? 1 : 0;
+  const baseConfidence = Number(item?.confidencePercent ?? 0);
+  const adjustedConfidencePercent = clampScore(
+    Math.round(baseConfidence + supportSignals * 4 - contradictionSignals * 5),
+    0,
+    99
+  );
+  const confidenceLevel = mapConfidenceLevel(adjustedConfidencePercent);
+  const schedule = buildDiagnosisSchedule(item?.id ?? `diag-${Date.now()}`, timelinePlan);
+  const treatmentPlan = [
+    ...(timelinePlan?.h24 ?? []).map((text) => `[24h] ${text}`),
+    ...(timelinePlan?.d7 ?? []).map((text) => `[7 dni] ${text}`),
+    ...(timelinePlan?.d30 ?? []).map((text) => `[30 dni] ${text}`),
+  ].slice(0, 10);
+  return {
+    ...item,
+    probableCauses,
+    timelinePlan,
+    supportSignals,
+    contradictionSignals,
+    adjustedConfidencePercent,
+    confidenceLevel,
+    schedule,
+    treatmentPlan,
+  };
 }
 
 function formatLatestTrendValue(value, suffix = '') {
@@ -7393,352 +10063,31 @@ function getHistoryChartColorByStatus(status) {
   return '#8dc7ff';
 }
 
-function buildTankOnboardingPlan(tank, measurements, enabledTests = {}) {
-  if (!tank) {
-    return {
-      isActive: false,
-      mode: 'existing_running',
-      rows: [],
-      dueItems: [],
-      todayItems: [],
-      statusText: '',
-      dayNumber: 0,
-      targetEndDay: 0,
-    };
-  }
-
-  const mode = normalizeOnboardingMode(tank.onboardingMode);
-  if (mode !== 'fresh_start') {
-    return {
-      isActive: false,
-      mode,
-      rows: [],
-      dueItems: [],
-      todayItems: [],
-      statusText: '',
-      dayNumber: 0,
-      targetEndDay: 0,
-    };
-  }
-
-  const dayMs = 24 * 60 * 60 * 1000;
-  const startMs = getCreatedAtMs(tank.onboardingStartAt ?? tank.createdAt);
-  if (!startMs) {
-    return {
-      isActive: true,
-      mode,
-      rows: [],
-      dueItems: [],
-      todayItems: [],
-      statusText: 'Brak daty startu cyklu. Zapisz pierwszy pomiar NO2 i NO3.',
-      dayNumber: 1,
-      targetEndDay: 21,
-    };
-  }
-
-  const startDayMs = getDayBucketMs(startMs);
-  const todayDayMs = getDayBucketMs(new Date());
-  const dayNumber = Math.max(1, Math.floor((todayDayMs - startDayMs) / dayMs) + 1);
-
-  const latestMeasurement = measurements[0] ?? null;
-  const latestAnalysis = latestMeasurement
-    ? analyzeMeasurementLogic(
-        latestMeasurement,
-        enabledTests,
-        getWaterAnalysisOptionsForTank(tank)
-      )
-    : null;
-
-  const toNumeric = (value) => {
-    const numeric = Number(value);
-    return Number.isFinite(numeric) ? numeric : null;
-  };
-
-  const no2Series = getRecentNumericSeries(measurements, 'no2', 3);
-  const no3Value = toNumeric(latestMeasurement?.no3);
-  const nh3Value = toNumeric(latestMeasurement?.nh3nh4);
-  const no2Value = toNumeric(latestMeasurement?.no2);
-
-  const stableNo2 =
-    no2Series.length >= 2 && no2Series[0] <= 0.01 && no2Series[1] <= 0.01;
-  const visibleNo3 = no3Value !== null && no3Value >= 5;
-
-  const hasCriticalDrift =
-    (no2Value !== null && no2Value > 0.2) ||
-    (nh3Value !== null && nh3Value > 0.2) ||
-    latestAnalysis?.status === 'critical';
-  const hasWarningDrift =
-    (no2Value !== null && no2Value > 0) ||
-    (nh3Value !== null && nh3Value > 0.05) ||
-    latestAnalysis?.status === 'warning';
-
-  const extensionDays = hasCriticalDrift ? 7 : hasWarningDrift ? 3 : 0;
-  const targetEndDay = 21 + extensionDays;
-  const isStabilized = dayNumber >= 21 && stableNo2 && visibleNo3 && !hasCriticalDrift;
-
-  const buildDueAtMs = (startDay) => startDayMs + (Math.max(1, startDay) - 1) * dayMs;
-  const rows = [];
-  const dueItems = [];
-  const todayItems = [];
-  const addRow = ({
-    id,
-    dayStart,
-    dayEnd = dayStart,
-    level = 'task',
-    text,
-    addToDueList = true,
-  }) => {
-    const status =
-      dayNumber < dayStart
-        ? 'upcoming'
-        : dayNumber > dayEnd
-          ? 'overdue'
-          : 'current';
-    const dueAtMs = buildDueAtMs(dayStart);
-    rows.push({
-      id,
-      dayStart,
-      dayEnd,
-      level,
-      text,
-      status,
-      dueAtMs,
-    });
-
-    if (status === 'current') {
-      todayItems.push(text);
-    }
-
-    if (addToDueList) {
-      dueItems.push({
-        id: `onboarding-${id}`,
-        source: 'Onboarding',
-        text,
-        dueAtMs,
-        dayBucketMs: getDayBucketMs(dueAtMs),
-      });
-    }
-  };
-  const addDailyRows = ({
-    id,
-    dayStart,
-    dayEnd,
-    level = 'task',
-    text,
-    textByDay,
-    addToDueList = true,
-  }) => {
-    for (let day = dayStart; day <= dayEnd; day += 1) {
-      const resolvedText =
-        typeof textByDay === 'function' ? textByDay(day) : text;
-      addRow({
-        id: `${id}-day-${day}`,
-        dayStart: day,
-        dayEnd: day,
-        level,
-        text: resolvedText,
-        addToDueList,
-      });
-    }
-  };
-
-  addRow({
-    id: 'day1-setup',
-    dayStart: 1,
-    level: 'task',
-    text:
-      'Dzien 1: zalej akwarium, dodaj uzdatniacz do nowej wody, uruchom filtr i grzalke (24/7).',
-  });
-  addRow({
-    id: 'day1-plants',
-    dayStart: 1,
-    level: 'task',
-    text:
-      'Dzien 1: od razu dodaj rosliny (najlepiej szybko rosnace), zeby od poczatku zuzywaly nadmiar skladnikow.',
-  });
-  addDailyRows({
-    id: 'day1-10-bacteria',
-    dayStart: 1,
-    dayEnd: 10,
-    level: 'task',
-    textByDay: (day) =>
-      `Dzien ${day}: dodaj dzienna dawke bakterii startowych zgodnie z etykieta produktu.`,
-  });
-  addRow({
-    id: 'day1-plus-conditioner',
-    dayStart: 1,
-    level: 'info',
-    text:
-      'Uzdatniacz dodawaj przy kazdym dolaniu nowej wody (start i kazda podmiana), nie tylko pierwszego dnia.',
-    addToDueList: false,
-  });
-  addRow({
-    id: 'day1-7-bacteria-booster',
-    dayStart: 1,
-    dayEnd: 7,
-    level: 'info',
-    text:
-      'Jesli uzywasz pozywki dla bakterii lub innych starterow, dawkuj je tylko wedlug etykiety.',
-    addToDueList: false,
-  });
-  addRow({
-    id: 'day2-3-pause',
-    dayStart: 2,
-    dayEnd: 3,
-    level: 'info',
-    text: 'Dni 2-3: nic nie rob, to normalne. Daj biologii czas na start.',
-  });
-  addRow({
-    id: 'day4-7-first-tests',
-    dayStart: 4,
-    dayEnd: 7,
-    level: 'task',
-    text: `Dni 4-7: pierwszy pomiar NO2${enabledTests?.nh3nh4 ? ' + NH3/NH4' : ''}.`,
-  });
-  addRow({
-    id: 'day7-14-spike',
-    dayStart: 7,
-    dayEnd: 14,
-    level: 'warning',
-    text:
-      'Dni 7-14: mozliwy skok NO2. Bez podmian, chyba ze wartosci sa ekstremalne.',
-  });
-  addRow({
-    id: 'day14-21-drop',
-    dayStart: 14,
-    dayEnd: 21,
-    level: 'info',
-    text: 'Dni 14-21: NO2 powinno spadac, a NO3 zaczyna byc widoczne.',
-  });
-  addRow({
-    id: 'day18-21-water-change-before-fish',
-    dayStart: 18,
-    dayEnd: 21,
-    level: 'task',
-    text:
-      'Dni 18-21: po stabilizacji NO2 wykonaj podmiane 30-40% i dodaj uzdatniacz do nowej wody.',
-  });
-  addRow({
-    id: 'day21-first-fish-rule',
-    dayStart: 21,
-    level: 'task',
-    text:
-      'Pierwsze ryby dodaj po min. 21 dniach i dopiero gdy NO2 jest 0 w co najmniej 2 pomiarach pod rzad.',
-  });
-  addRow({
-    id: 'day21-first-fish-portion',
-    dayStart: 21,
-    dayEnd: 28,
-    level: 'info',
-    text:
-      'Startuj od malej partii ryb (ok. 20-30% docelowej obsady), potem obserwuj zbiornik przez 7 dni.',
-  });
-  addRow({
-    id: 'day28-next-fish-portion',
-    dayStart: 28,
-    level: 'task',
-    text:
-      'Jesli parametry sa stabilne po 7 dniach, dodaj kolejna mala partie ryb zamiast calej obsady naraz.',
-  });
-
-  if (!enabledTests?.no2) {
-    addRow({
-      id: 'no2-required',
-      dayStart: dayNumber,
-      level: 'warning',
-      text: 'Wlacz test NO2 w ustawieniach - bez niego nie zweryfikujesz dojrzewania cyklu.',
-      addToDueList: false,
-    });
-  }
-  if (!enabledTests?.no3) {
-    addRow({
-      id: 'no3-required',
-      dayStart: dayNumber,
-      level: 'warning',
-      text: 'Wlacz test NO3 w ustawieniach - to kluczowy sygnal, ze cykl dojrzewa.',
-      addToDueList: false,
-    });
-  }
-
-  if (hasCriticalDrift) {
-    addRow({
-      id: 'critical-drift',
-      dayStart: dayNumber,
-      level: 'warning',
-      text:
-        'Parametry mocno odchylone - cykl wydluzony. Skup sie na korektach i pomiarach codziennych.',
-      addToDueList: false,
-    });
-  } else if (hasWarningDrift) {
-    addRow({
-      id: 'warning-drift',
-      dayStart: dayNumber,
-      level: 'info',
-      text:
-        'Widoczne odchylenia parametrow - cykl moze sie wydluzyc o kilka dni.',
-      addToDueList: false,
-    });
-  }
-
-  (latestAnalysis?.recommendations ?? []).slice(0, 3).forEach((item, index) => {
-    const dueAtMs = getRecommendationDueAtMsLogic(item);
-    const actionableText = `${item.parameter}: ${item.action}`;
-    rows.push({
-      id: `dynamic-${index}`,
-      dayStart: dayNumber,
-      dayEnd: dayNumber,
-      level: item.severity === 'critical' ? 'warning' : 'info',
-      text: `Korekta parametru: ${actionableText}`,
-      status: 'current',
-      dueAtMs,
-    });
-    dueItems.push({
-      id: `onboarding-dynamic-${index}`,
-      source: 'Onboarding',
-      text: actionableText,
-      dueAtMs,
-      dayBucketMs: getDayBucketMs(dueAtMs),
-    });
-    todayItems.push(actionableText);
-  });
-
-  if (isStabilized) {
-    addRow({
-      id: 'stable',
-      dayStart: Math.max(14, dayNumber),
-      level: 'task',
-      text:
-        'Cykl stabilny: mozesz dodac pierwsza mala partie ryb i obserwowac zbiornik przez kolejne 7 dni.',
-      addToDueList: false,
-    });
-  } else if (dayNumber > targetEndDay) {
-    addRow({
-      id: 'extended',
-      dayStart: dayNumber,
-      level: 'warning',
-      text: `Cykl wydluzony ponad 21 dni (aktualny cel: do dnia ${targetEndDay}). Kontynuuj pomiary i korekty.`,
-      addToDueList: false,
-    });
-  }
-
-  const statusText = isStabilized
-    ? 'Akwarium wyglada na ustabilizowane. Mozesz dodac pierwsze ryby.'
-    : dayNumber <= 21
-      ? `Trwa dojrzewanie akwarium (dzien ${dayNumber}/${targetEndDay}).`
-      : `Trwa dojrzewanie akwarium (dzien ${dayNumber}/${targetEndDay}, cykl wydluzony).`;
-
-  return {
-    isActive: true,
-    mode,
-    rows,
-    dueItems,
-    todayItems: [...new Set(todayItems)],
-    statusText,
-    dayNumber,
-    targetEndDay,
-    isStabilized,
-  };
+function buildTodayActionPlan(tank, context = {}) {
+  return buildTodayActionPlanService(tank, context);
 }
+
+function buildAdaptiveTaskSchedule(tank, context = {}) {
+  return generateAdaptiveTaskSchedule(tank, context);
+}
+
+function buildTankOnboardingPlan(tank, measurements, enabledTests = {}) {
+  return buildTankOnboardingPlanService(
+    tank,
+    measurements,
+    enabledTests,
+    {
+      normalizeOnboardingMode,
+      getCreatedAtMs,
+      getDayBucketMs,
+      analyzeMeasurementLogic,
+      getWaterAnalysisOptionsForTank,
+      getRecentNumericSeries,
+      getRecommendationDueAtMsLogic,
+    }
+  );
+}
+
 
 export default function HomeScreen() {
   const navigation = useNavigation();
@@ -7754,10 +10103,15 @@ export default function HomeScreen() {
     sectionEntrySource,
     appSettings,
     subscription,
+    currentPlan,
+    planLimits,
     subscriptionPlan,
     subscriptionEntitlements,
     subscriptionActive,
     canAccessMeasurementKey,
+    canCreateTank,
+    canUseFeature,
+    isFeatureLocked,
     getSubscriptionLimit,
     updateAppSettings,
     setSubscriptionTier,
@@ -7867,6 +10221,9 @@ export default function HomeScreen() {
   const [plantDiseaseCatalog, setPlantDiseaseCatalog] = useState([]);
   const [plantDiseaseCatalogLoading, setPlantDiseaseCatalogLoading] =
     useState(false);
+  const [equipmentCatalog, setEquipmentCatalog] = useState([]);
+  const [equipmentCatalogLoading, setEquipmentCatalogLoading] = useState(false);
+  const [equipmentCatalogHydrated, setEquipmentCatalogHydrated] = useState(false);
   const [stockFishSearch, setStockFishSearch] = useState('');
   const [stockPlantSearch, setStockPlantSearch] = useState('');
   const [fishCatalogMenuSearch, setFishCatalogMenuSearch] = useState('');
@@ -7875,6 +10232,7 @@ export default function HomeScreen() {
   const [expandedPlantCatalogId, setExpandedPlantCatalogId] = useState(null);
   const [fishQuantity, setFishQuantity] = useState('1');
   const [fishQuantityDrafts, setFishQuantityDrafts] = useState({});
+  const [plantQuantityDrafts, setPlantQuantityDrafts] = useState({});
   const [selectedCatalogFishId, setSelectedCatalogFishId] = useState(null);
   const [selectedCatalogPlantIds, setSelectedCatalogPlantIds] = useState([]);
   const [stockBusy, setStockBusy] = useState(false);
@@ -7918,6 +10276,9 @@ export default function HomeScreen() {
       DEFAULT_WATER_PROFILE
     )
   );
+  const [tankTargetTemperatureC, setTankTargetTemperatureC] = useState('25');
+  const [tankAmbientTemperatureC, setTankAmbientTemperatureC] = useState('');
+  const [tankRoomTemperatureMode, setTankRoomTemperatureMode] = useState('normal');
   const [tankOnboardingMode, setTankOnboardingMode] = useState('existing_running');
   const [addTankBusy, setAddTankBusy] = useState(false);
   const [isAddingTankModalVisible, setIsAddingTankModalVisible] = useState(false);
@@ -7926,6 +10287,14 @@ export default function HomeScreen() {
     useState(false);
   const [equipmentCatalogType, setEquipmentCatalogType] = useState('');
   const [equipmentCatalogSearch, setEquipmentCatalogSearch] = useState('');
+  const [isCustomEquipmentFormVisible, setIsCustomEquipmentFormVisible] =
+    useState(false);
+  const [customEquipmentBrand, setCustomEquipmentBrand] = useState('');
+  const [customEquipmentModel, setCustomEquipmentModel] = useState('');
+  const [customFilterType, setCustomFilterType] = useState('internal');
+  const [customEquipmentPrimaryValue, setCustomEquipmentPrimaryValue] = useState('');
+  const [customEquipmentTankMinLiters, setCustomEquipmentTankMinLiters] = useState('');
+  const [customEquipmentTankMaxLiters, setCustomEquipmentTankMaxLiters] = useState('');
   const [equipmentLightHoursDraft, setEquipmentLightHoursDraft] = useState('');
   const [equipmentSavingBusy, setEquipmentSavingBusy] = useState(false);
   const [, setTanksLoading] = useState(false);
@@ -7945,6 +10314,12 @@ export default function HomeScreen() {
   const [isAddMeasurementModalVisible, setIsAddMeasurementModalVisible] =
     useState(false);
   const [selectedHomeScoreSummary, setSelectedHomeScoreSummary] = useState(null);
+  const [adaptiveTaskChecks, setAdaptiveTaskChecks] = useState({});
+  const [adaptiveTaskExpandedBuckets, setAdaptiveTaskExpandedBuckets] = useState({
+    today: false,
+    week: false,
+    month: false,
+  });
   const [selectedMeasurementTileDetails, setSelectedMeasurementTileDetails] =
     useState(null);
   const [isCurrentParametersExpanded, setIsCurrentParametersExpanded] =
@@ -7963,12 +10338,10 @@ export default function HomeScreen() {
     useState(null);
   const [isWaterTestingExpanded, setIsWaterTestingExpanded] =
     useState(false);
+  const [maintenanceActionBusyId, setMaintenanceActionBusyId] = useState('');
   const [onboardingTaskBusy, setOnboardingTaskBusy] = useState(false);
   const [isCompletedOnboardingVisible, setIsCompletedOnboardingVisible] =
     useState(false);
-  const [isSuggestionsExpanded, setIsSuggestionsExpanded] = useState(true);
-  const [isGuidedPlanExpanded, setIsGuidedPlanExpanded] = useState(true);
-  const [expandedGuidedStepIds, setExpandedGuidedStepIds] = useState({});
   const [expandedHistoryIssueId, setExpandedHistoryIssueId] = useState(null);
   const [historyIssueDeleteBusyId, setHistoryIssueDeleteBusyId] = useState(null);
   const [isSettingsTestsExpanded, setIsSettingsTestsExpanded] = useState(false);
@@ -8014,6 +10387,62 @@ export default function HomeScreen() {
   const [tankDiseaseHistoryCases, setTankDiseaseHistoryCases] = useState([]);
   const [diseaseCaseBusy, setDiseaseCaseBusy] = useState(false);
 
+  const mergedEquipmentCatalog = useMemo(() => {
+    const catalogById = new Map();
+
+    EQUIPMENT_CATALOG.forEach((item) => {
+      const normalizedItem = normalizeEquipmentCatalogEntry(item, item?.id);
+      if (normalizedItem) {
+        catalogById.set(normalizedItem.id, normalizedItem);
+      }
+    });
+
+    equipmentCatalog.forEach((item) => {
+      const normalizedItem = normalizeEquipmentCatalogEntry(item, item?.id);
+      if (normalizedItem) {
+        catalogById.set(normalizedItem.id, normalizedItem);
+      }
+    });
+
+    return Array.from(catalogById.values());
+  }, [equipmentCatalog]);
+  const mergedEquipmentCatalogById = useMemo(
+    () =>
+      new Map(
+        mergedEquipmentCatalog.map((item) => [
+          String(item?.id ?? '').trim().toLowerCase(),
+          item,
+        ])
+      ),
+    [mergedEquipmentCatalog]
+  );
+
+  const equipmentCatalogForAnalysis = useMemo(
+    () => mergedEquipmentCatalog.filter((item) => item.type === 'heater' || item.type === 'filter'),
+    [mergedEquipmentCatalog]
+  );
+
+  const lightLampCatalog = useMemo(
+    () =>
+      mergedEquipmentCatalog
+        .filter((item) => item.type === 'light')
+        .map((item) => ({
+          id: String(item.id ?? '').trim().toLowerCase(),
+          brand: String(item.brand ?? '').trim(),
+          model: String(item.model ?? '').trim(),
+          name: `${item.brand ?? ''} ${item.model ?? ''}`.trim(),
+          lumens: Number(item.lumens),
+        }))
+        .filter(
+          (item) =>
+            item.id &&
+            item.name &&
+            Number.isFinite(item.lumens) &&
+            item.lumens > 0
+        ),
+    [mergedEquipmentCatalog]
+  );
+
   const skipNextUnverifiedAlertRef = useRef(false);
   const lastUnverifiedAlertAtMsRef = useRef(0);
   const deleteAccountConfirmedRef = useRef(null);
@@ -8030,6 +10459,10 @@ export default function HomeScreen() {
     lastUnverifiedAlertAtMsRef.current = now;
     alert(message);
   }, []);
+
+  useEffect(() => {
+    setRuntimeLightLampCatalog(lightLampCatalog);
+  }, [lightLampCatalog]);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (nextUser) => {
@@ -8081,6 +10514,10 @@ export default function HomeScreen() {
         setActiveSection('home');
         setFishCatalog([]);
         setPlantCatalog([]);
+        setEquipmentCatalog([]);
+        setEquipmentCatalogLoading(false);
+        setEquipmentCatalogHydrated(false);
+        setRuntimeLightLampCatalog([]);
         setSelectedCatalogFishId(null);
         setSelectedCatalogPlantIds([]);
         setStockItems([]);
@@ -8115,6 +10552,7 @@ export default function HomeScreen() {
         setExpandedPlantDiseaseCaseId(null);
         setExpandedAlgaeCaseId(null);
         setIsWaterTestingExpanded(false);
+        setMaintenanceActionBusyId('');
         setOnboardingTaskBusy(false);
         setIsCompletedOnboardingVisible(false);
         setIsAddingTankModalVisible(false);
@@ -8122,6 +10560,13 @@ export default function HomeScreen() {
         setIsEquipmentCatalogModalVisible(false);
         setEquipmentCatalogType('');
         setEquipmentCatalogSearch('');
+        setIsCustomEquipmentFormVisible(false);
+        setCustomEquipmentBrand('');
+        setCustomEquipmentModel('');
+        setCustomFilterType('internal');
+        setCustomEquipmentPrimaryValue('');
+        setCustomEquipmentTankMinLiters('');
+        setCustomEquipmentTankMaxLiters('');
         setEquipmentSavingBusy(false);
         setTankAquariumType('');
         setTankOnboardingMode('existing_running');
@@ -8209,6 +10654,7 @@ export default function HomeScreen() {
           setMeasurements([]);
           setIsAddMeasurementModalVisible(false);
           setIsWaterTestingExpanded(false);
+          setMaintenanceActionBusyId('');
           setEditingTankId(null);
           setSelectedMeasurementId(null);
           setEditingMeasurementId(null);
@@ -8554,6 +11000,20 @@ export default function HomeScreen() {
           patch.aggressionLevel = normalizeAggressionLevel(fish.aggressionLevel);
         }
 
+        const existingWasteProductionLevel = normalizeWasteProductionLevelValue(
+          existingItem.wasteProductionLevel
+        );
+        const nextWasteProductionLevel = normalizeWasteProductionLevelValue(
+          fish.wasteProductionLevel
+        );
+        if (
+          Number.isFinite(nextWasteProductionLevel) &&
+          nextWasteProductionLevel >= 0 &&
+          existingWasteProductionLevel !== nextWasteProductionLevel
+        ) {
+          patch.wasteProductionLevel = nextWasteProductionLevel;
+        }
+
         const existingFishProfile = getFishSpeciesProfile(existingItem);
         const nextFishProfile = getFishSpeciesProfile(fish);
         if (
@@ -8686,12 +11146,81 @@ export default function HomeScreen() {
         catalogLanguageRef.current
       );
 
-      setFishCatalog(data);
+      const hydratedData = data.map((item) => {
+        const explicitWasteProductionLevel = Number(item?.wasteProductionLevel);
+        if (
+          Number.isFinite(explicitWasteProductionLevel) &&
+          explicitWasteProductionLevel >= 0
+        ) {
+          return item;
+        }
+
+        const derivedWasteProductionLevel = Number(
+          getFishSpeciesProfile(item)?.wasteProductionLevel
+        );
+        if (
+          Number.isFinite(derivedWasteProductionLevel) &&
+          derivedWasteProductionLevel >= 0
+        ) {
+          return {
+            ...item,
+            wasteProductionLevel: derivedWasteProductionLevel,
+          };
+        }
+
+        return item;
+      });
+
+      setFishCatalog(hydratedData);
     } catch (error) {
-      alert(
-        'Blad pobierania katalogu ryb: ' +
-          (error instanceof Error ? error.message : '')
-      );
+      if (isFirestorePermissionDeniedError(error)) {
+        const fallbackData = sortCatalogEntriesByCommonName(
+          localizeFishCatalogEntriesForLanguage(
+            FISH_CATALOG_SEED.filter((item) =>
+              isAllowedFishCatalogLatinName(item.latinName)
+            ),
+            catalogLanguageRef.current
+          ),
+          catalogLanguageRef.current
+        );
+
+        const hydratedFallbackData = fallbackData.map((item) => {
+          const explicitWasteProductionLevel = normalizeWasteProductionLevelValue(
+            item?.wasteProductionLevel
+          );
+          if (
+            Number.isFinite(explicitWasteProductionLevel) &&
+            explicitWasteProductionLevel >= 0
+          ) {
+            return {
+              ...item,
+              wasteProductionLevel: explicitWasteProductionLevel,
+            };
+          }
+
+          const derivedWasteProductionLevel = normalizeWasteProductionLevelValue(
+            getFishSpeciesProfile(item)?.wasteProductionLevel
+          );
+          if (
+            Number.isFinite(derivedWasteProductionLevel) &&
+            derivedWasteProductionLevel >= 0
+          ) {
+            return {
+              ...item,
+              wasteProductionLevel: derivedWasteProductionLevel,
+            };
+          }
+
+          return item;
+        });
+
+        setFishCatalog(hydratedFallbackData);
+      } else {
+        alert(
+          'Blad pobierania katalogu ryb: ' +
+            (error instanceof Error ? error.message : '')
+        );
+      }
     } finally {
       setFishCatalogLoading(false);
     }
@@ -8848,6 +11377,59 @@ export default function HomeScreen() {
           patch.lightHoursMax = Number.isFinite(Number(normalizedPayload.lightHoursMax))
             ? Number(normalizedPayload.lightHoursMax)
             : null;
+        }
+
+        if (String(existingItem.lightDemand ?? '') !== String(normalizedPayload.lightDemand ?? '')) {
+          patch.lightDemand = String(normalizedPayload.lightDemand ?? '');
+        }
+        if (String(existingItem.co2Demand ?? '') !== String(normalizedPayload.co2Demand ?? '')) {
+          patch.co2Demand = String(normalizedPayload.co2Demand ?? '');
+        }
+        if (String(existingItem.growthRate ?? '') !== String(normalizedPayload.growthRate ?? '')) {
+          patch.growthRate = String(normalizedPayload.growthRate ?? '');
+        }
+        if (String(existingItem.difficulty ?? '') !== String(normalizedPayload.difficulty ?? '')) {
+          patch.difficulty = String(normalizedPayload.difficulty ?? '');
+        }
+        if (
+          String(existingItem.fertilizationDemand ?? '') !==
+          String(normalizedPayload.fertilizationDemand ?? '')
+        ) {
+          patch.fertilizationDemand = String(normalizedPayload.fertilizationDemand ?? '');
+        }
+        if (String(existingItem.plantType ?? '') !== String(normalizedPayload.plantType ?? '')) {
+          patch.plantType = String(normalizedPayload.plantType ?? '');
+        }
+        if (
+          String(existingItem.placementZone ?? '') !==
+          String(normalizedPayload.placementZone ?? '')
+        ) {
+          patch.placementZone = String(normalizedPayload.placementZone ?? '');
+        }
+        if (
+          String(existingItem.carboSensitivity ?? '') !==
+          String(normalizedPayload.carboSensitivity ?? '')
+        ) {
+          patch.carboSensitivity = String(normalizedPayload.carboSensitivity ?? '');
+        }
+        if (
+          String(existingItem.parameterStabilitySensitivity ?? '') !==
+          String(normalizedPayload.parameterStabilitySensitivity ?? '')
+        ) {
+          patch.parameterStabilitySensitivity = String(
+            normalizedPayload.parameterStabilitySensitivity ?? ''
+          );
+        }
+        if (Number(existingItem.minTankHeightCm) !== Number(normalizedPayload.minTankHeightCm)) {
+          patch.minTankHeightCm = Number(normalizedPayload.minTankHeightCm);
+        }
+        if (Number(existingItem.minTankVolumeL) !== Number(normalizedPayload.minTankVolumeL)) {
+          patch.minTankVolumeL = Number(normalizedPayload.minTankVolumeL);
+        }
+        if (existingItem.compatibleWithDiggers !== normalizedPayload.compatibleWithDiggers) {
+          patch.compatibleWithDiggers = Boolean(
+            normalizedPayload.compatibleWithDiggers
+          );
         }
 
         if (existingItem.source !== plant.source) {
@@ -9061,6 +11643,37 @@ export default function HomeScreen() {
     );
   }, [fetchIssueCatalog]);
 
+  const fetchEquipmentCatalog = useCallback(async () => {
+    setEquipmentCatalogLoading(true);
+
+    try {
+      const catalogCollection = collection(db, 'equipmentCatalog');
+      const snapshot = await getDocs(catalogCollection);
+      const dedupedById = new Map();
+
+      snapshot.docs.forEach((item) => {
+        const normalized = normalizeEquipmentCatalogEntry(
+          item.data(),
+          String(item.id ?? '').trim()
+        );
+        if (normalized) {
+          dedupedById.set(normalized.id, normalized);
+        }
+      });
+
+      setEquipmentCatalog(Array.from(dedupedById.values()));
+    } catch (error) {
+      setEquipmentCatalog([]);
+      alert(
+        'Blad pobierania katalogu sprzetu: ' +
+          (error instanceof Error ? error.message : '')
+      );
+    } finally {
+      setEquipmentCatalogHydrated(true);
+      setEquipmentCatalogLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (loading) {
       return;
@@ -9213,6 +11826,30 @@ export default function HomeScreen() {
   ]);
 
   useEffect(() => {
+    setEquipmentCatalog([]);
+    setEquipmentCatalogHydrated(false);
+  }, [user?.uid]);
+
+  useEffect(() => {
+    if (
+      !user?.uid ||
+      activeSection !== 'equipment' ||
+      equipmentCatalogLoading ||
+      equipmentCatalogHydrated
+    ) {
+      return;
+    }
+
+    fetchEquipmentCatalog().catch(() => null);
+  }, [
+    user?.uid,
+    activeSection,
+    equipmentCatalogLoading,
+    equipmentCatalogHydrated,
+    fetchEquipmentCatalog,
+  ]);
+
+  useEffect(() => {
     catalogLanguageRef.current = appSettings.language;
   }, [appSettings.language]);
 
@@ -9257,15 +11894,20 @@ export default function HomeScreen() {
   }, [user?.uid, selectedTank?.id, fetchTankDiseaseCases]);
 
   useEffect(() => {
-    const nextDrafts = {};
+    const nextFishDrafts = {};
+    const nextPlantDrafts = {};
 
-    stockItems
-      .filter((item) => item.type === 'fish' || item.type === 'plant')
-      .forEach((item) => {
-        nextDrafts[item.id] = String(Math.max(1, Number(item.quantity) || 1));
-      });
+    stockItems.forEach((item) => {
+      const draftValue = String(Math.max(1, Number(item.quantity) || 1));
+      if (item.type === 'fish') {
+        nextFishDrafts[item.id] = draftValue;
+      } else if (item.type === 'plant') {
+        nextPlantDrafts[item.id] = draftValue;
+      }
+    });
 
-    setFishQuantityDrafts(nextDrafts);
+    setFishQuantityDrafts(nextFishDrafts);
+    setPlantQuantityDrafts(nextPlantDrafts);
   }, [stockItems, selectedTank?.id]);
 
   useEffect(() => {
@@ -9285,6 +11927,9 @@ export default function HomeScreen() {
           resetProfile
         )
       );
+      setTankTargetTemperatureC('25');
+      setTankAmbientTemperatureC('');
+      setTankRoomTemperatureMode('normal');
     }
 
     setStockFishSearch('');
@@ -9314,6 +11959,7 @@ export default function HomeScreen() {
     setExpandedDiseaseCaseId(null);
     setExpandedAlgaeCaseId(null);
     setIsWaterTestingExpanded(false);
+    setMaintenanceActionBusyId('');
     setOnboardingTaskBusy(false);
     setIsCompletedOnboardingVisible(false);
     setIsEquipmentCatalogModalVisible(false);
@@ -9375,7 +12021,6 @@ export default function HomeScreen() {
   }, [activeSection]);
 
   useEffect(() => {
-    setExpandedGuidedStepIds({});
     setExpandedHistoryIssueId(null);
     setHistoryIssueDeleteBusyId(null);
   }, [selectedTank?.id]);
@@ -9794,6 +12439,10 @@ export default function HomeScreen() {
       alert('Najpierw wybierz aktywne akwarium.');
       return;
     }
+    if (selectedTankLockedByPlan) {
+      alert('To akwarium jest w trybie tylko do odczytu w obecnym planie.');
+      return;
+    }
 
     setEditingMeasurementId(null);
     if (appSettings.prefillMeasurementFromLast && currentMeasurement) {
@@ -9830,10 +12479,23 @@ export default function HomeScreen() {
       : 0;
     const safeIndex = currentIndex >= 0 ? currentIndex : 0;
     const offset = direction === 'prev' ? -1 : 1;
-    const nextIndex = (safeIndex + offset + tanks.length) % tanks.length;
-    const nextTank = tanks[nextIndex];
+    let nextTank = null;
+    for (let step = 1; step <= tanks.length; step += 1) {
+      const nextIndex = (safeIndex + step * offset + tanks.length) % tanks.length;
+      const candidate = tanks[nextIndex];
+      if (!candidate) {
+        continue;
+      }
+      if (!isTankLockedByPlan(currentPlan, nextIndex)) {
+        nextTank = candidate;
+        break;
+      }
+    }
 
     if (!nextTank) {
+      alert(
+        'W obecnym planie nie ma kolejnych aktywnych akwariow do przelaczenia.'
+      );
       return;
     }
 
@@ -9852,6 +12514,14 @@ export default function HomeScreen() {
 
   const handleOpenTankFromHome = async (tank) => {
     if (!user?.uid || !tank?.id) {
+      return;
+    }
+
+    const tankIndex = tanks.findIndex((item) => item?.id === tank?.id);
+    if (tankIndex >= 0 && isTankLockedByPlan(currentPlan, tankIndex)) {
+      alert(
+        'W planie Free mozesz aktywnie prowadzic 1 akwarium. Pozostale akwaria sa bezpiecznie zapisane i odblokuja sie po powrocie do Premium.'
+      );
       return;
     }
 
@@ -9917,6 +12587,12 @@ export default function HomeScreen() {
       alert('Najpierw wybierz aktywne akwarium do edycji');
       return;
     }
+    if (selectedTankLockedByPlan) {
+      alert(
+        'To akwarium jest zablokowane przez obecny plan i jest dostepne tylko do odczytu.'
+      );
+      return;
+    }
 
     const defaultProfile = getDefaultWaterProfileForAquariumType(
       selectedTank.aquariumType
@@ -9963,16 +12639,29 @@ export default function HomeScreen() {
     setTankTargetRangeDraft(
       buildTargetRangeInputDraftFromRanges(resolvedTargetRanges, profile)
     );
+    setTankTargetTemperatureC(
+      Number.isFinite(Number(selectedTank.targetTemperatureC))
+        ? String(selectedTank.targetTemperatureC)
+        : '25'
+    );
+    setTankAmbientTemperatureC(
+      Number.isFinite(Number(selectedTank.ambientTemperatureC))
+        ? String(selectedTank.ambientTemperatureC)
+        : ''
+    );
+    setTankRoomTemperatureMode(
+      normalizeRoomTemperatureMode(selectedTank.roomTemperatureMode)
+    );
     setTankOnboardingMode(normalizeOnboardingMode(selectedTank.onboardingMode));
   };
 
   const handleStartAddTank = () => {
     if (!canAddTank) {
       alert(
-        t('subscriptionTankLimitReached', {
+        `${t('subscriptionTankLimitReached', {
           plan: currentSubscriptionTierLabel,
           limit: tankLimit,
-        })
+        })}\n\nW planie Free mozesz aktywnie prowadzic 1 akwarium. Pozostale akwaria sa bezpiecznie zapisane i odblokuja sie po powrocie do Premium.`
       );
       return;
     }
@@ -9994,6 +12683,9 @@ export default function HomeScreen() {
         defaultProfile
       )
     );
+    setTankTargetTemperatureC('25');
+    setTankAmbientTemperatureC('');
+    setTankRoomTemperatureMode('normal');
     setTankOnboardingMode('existing_running');
     setIsAddingTankModalVisible(true);
   };
@@ -10016,6 +12708,9 @@ export default function HomeScreen() {
         defaultProfile
       )
     );
+    setTankTargetTemperatureC('25');
+    setTankAmbientTemperatureC('');
+    setTankRoomTemperatureMode('normal');
     setTankOnboardingMode('existing_running');
   };
 
@@ -10037,6 +12732,9 @@ export default function HomeScreen() {
         defaultProfile
       )
     );
+    setTankTargetTemperatureC('25');
+    setTankAmbientTemperatureC('');
+    setTankRoomTemperatureMode('normal');
     setTankOnboardingMode('existing_running');
   };
 
@@ -10321,6 +13019,124 @@ export default function HomeScreen() {
     </View>
   );
 
+  const renderTankHeaterContextSection = (scopeKey) => {
+    const selectedRoomMode = normalizeRoomTemperatureMode(tankRoomTemperatureMode);
+    const modeHint =
+      selectedRoomMode === 'cold'
+        ? '18 C'
+        : selectedRoomMode === 'warm'
+          ? '22 C'
+          : selectedRoomMode === 'very_warm'
+            ? '24 C'
+            : selectedRoomMode === 'custom'
+              ? 'Wlasna'
+              : '20 C';
+    return (
+      <View
+        style={{
+          borderWidth: 1,
+          borderColor: themeBorder,
+          borderRadius: 12,
+          padding: 10,
+          marginBottom: 10,
+          backgroundColor: themeCardBgAlt,
+        }}>
+        <Text
+          style={{
+            color: themeTextPrimary,
+            marginBottom: 6,
+            fontSize: 13,
+            fontWeight: '700',
+          }}>
+          Temperatura i grzalka (zaawansowane)
+        </Text>
+        <Text
+          style={{
+            color: themeTextSecondary,
+            marginBottom: 8,
+            fontSize: 12,
+            lineHeight: 17,
+          }}>
+          Temperatura pomieszczenia jest opcjonalna. Jesli jej nie podasz, aplikacja przyjmie 20 C.
+        </Text>
+        <TextInput
+          key={`${scopeKey}-target-temp`}
+          placeholder="Temperatura docelowa wody (C), np. 25"
+          placeholderTextColor={themePlaceholder}
+          value={tankTargetTemperatureC}
+          onChangeText={setTankTargetTemperatureC}
+          keyboardType="numeric"
+          style={{
+            borderWidth: 1,
+            borderColor: themeInputBorder,
+            color: themeInputText,
+            paddingHorizontal: 10,
+            paddingVertical: 9,
+            borderRadius: 8,
+            backgroundColor: themeInputBg,
+            marginBottom: 8,
+          }}
+        />
+        <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 6 }}>
+          Tryb temperatury pomieszczenia ({modeHint})
+        </Text>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+          {ROOM_TEMPERATURE_MODE_OPTIONS.map((option) => (
+            <Pressable
+              key={`${scopeKey}-room-mode-${option.value}`}
+              onPress={() => setTankRoomTemperatureMode(option.value)}
+              style={{
+                borderWidth: 1,
+                borderColor:
+                  tankRoomTemperatureMode === option.value
+                    ? themeAccent
+                    : themeBorderStrong,
+                backgroundColor:
+                  tankRoomTemperatureMode === option.value
+                    ? '#102235'
+                    : isLightTheme
+                      ? '#ffffff'
+                      : '#111',
+                borderRadius: 999,
+                paddingVertical: 6,
+                paddingHorizontal: 10,
+              }}>
+              <Text
+                style={{
+                  color:
+                    tankRoomTemperatureMode === option.value
+                      ? 'white'
+                      : themeTextPrimary,
+                  fontSize: 11,
+                }}>
+                {option.label}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+        {tankRoomTemperatureMode === 'custom' ? (
+          <TextInput
+            key={`${scopeKey}-ambient-temp`}
+            placeholder="Temperatura pomieszczenia (C), np. 20"
+            placeholderTextColor={themePlaceholder}
+            value={tankAmbientTemperatureC}
+            onChangeText={setTankAmbientTemperatureC}
+            keyboardType="numeric"
+            style={{
+              borderWidth: 1,
+              borderColor: themeInputBorder,
+              color: themeInputText,
+              paddingHorizontal: 10,
+              paddingVertical: 9,
+              borderRadius: 8,
+              backgroundColor: themeInputBg,
+            }}
+          />
+        ) : null}
+      </View>
+    );
+  };
+
   useEffect(() => {
     if (tankWaterProfileCustomized) {
       return;
@@ -10335,6 +13151,16 @@ export default function HomeScreen() {
       )
     );
   }, [tankAquariumType, tankWaterProfileCustomized]);
+
+  const resetCustomEquipmentForm = useCallback(() => {
+    setIsCustomEquipmentFormVisible(false);
+    setCustomEquipmentBrand('');
+    setCustomEquipmentModel('');
+    setCustomFilterType('internal');
+    setCustomEquipmentPrimaryValue('');
+    setCustomEquipmentTankMinLiters('');
+    setCustomEquipmentTankMaxLiters('');
+  }, []);
 
   const handleOpenEquipmentCatalog = (type) => {
     if (!selectedTank?.id || !user?.uid) {
@@ -10351,16 +13177,22 @@ export default function HomeScreen() {
       return;
     }
 
+    if (!equipmentCatalogLoading && equipmentCatalog.length === 0) {
+      fetchEquipmentCatalog().catch(() => null);
+    }
+
+    resetCustomEquipmentForm();
     setEquipmentCatalogType(normalizedType);
     setEquipmentCatalogSearch('');
     setIsEquipmentCatalogModalVisible(true);
   };
 
-  const handleCloseEquipmentCatalog = () => {
+  const handleCloseEquipmentCatalog = useCallback(() => {
+    resetCustomEquipmentForm();
     setIsEquipmentCatalogModalVisible(false);
     setEquipmentCatalogType('');
     setEquipmentCatalogSearch('');
-  };
+  }, [resetCustomEquipmentForm]);
 
   const handleAssignEquipmentToTank = async (equipmentItem) => {
     if (
@@ -10413,6 +13245,7 @@ export default function HomeScreen() {
         });
 
         await fetchTanks(user.uid, selectedTank.id);
+        resetCustomEquipmentForm();
         setIsEquipmentCatalogModalVisible(false);
         setEquipmentCatalogType('');
         setEquipmentCatalogSearch('');
@@ -10445,12 +13278,153 @@ export default function HomeScreen() {
       });
 
       await fetchTanks(user.uid, selectedTank.id);
+      resetCustomEquipmentForm();
       setIsEquipmentCatalogModalVisible(false);
       setEquipmentCatalogType('');
       setEquipmentCatalogSearch('');
     } catch (error) {
       alert(
         'Blad zapisu sprzetu: ' +
+          (error instanceof Error ? error.message : '')
+      );
+    } finally {
+      setEquipmentSavingBusy(false);
+    }
+  };
+
+  const handleAssignCustomEquipmentToTank = async () => {
+    if (!selectedTank?.id || !user?.uid || equipmentSavingBusy) {
+      return;
+    }
+    if (!hasEquipmentSaveAccess) {
+      alert(t('subscriptionEquipmentLocked'));
+      return;
+    }
+
+    const normalizedType = normalizeEquipmentCatalogType(equipmentCatalogType);
+    if (!normalizedType) {
+      return;
+    }
+
+    const brand = String(customEquipmentBrand ?? '').trim();
+    const model = String(customEquipmentModel ?? '').trim();
+    if (!model) {
+      alert('Podaj model lub nazwe sprzetu.');
+      return;
+    }
+
+    const customId = `custom-${normalizedType}-${Date.now().toString(36)}-${Math.random()
+      .toString(36)
+      .slice(2, 7)}`;
+
+    setEquipmentSavingBusy(true);
+    try {
+      if (normalizedType === 'light') {
+        const lightLumens = parsePositiveNumberOrThrow(
+          'lumeny lampy',
+          customEquipmentPrimaryValue
+        );
+        const tankLiters = Number(selectedTank?.liters);
+        const lightIntensity = estimateLightIntensityFromLumens(
+          lightLumens,
+          tankLiters
+        );
+        const customLampName = `${brand} ${model}`.trim();
+
+        await updateDoc(doc(db, 'tanks', selectedTank.id), {
+          ...buildTankRuleSanitizationPatch(selectedTank),
+          lightModelId: customId,
+          lightModelName: customLampName || 'Lampa inna',
+          lightLumens,
+          lightIntensity:
+            lightIntensity || normalizeLightIntensity(selectedTank?.lightIntensity) || 'low',
+          updatedAt: new Date(),
+        });
+
+        await fetchTanks(user.uid, selectedTank.id);
+        resetCustomEquipmentForm();
+        setIsEquipmentCatalogModalVisible(false);
+        setEquipmentCatalogType('');
+        setEquipmentCatalogSearch('');
+        return;
+      }
+
+      const equipmentType = normalizeEquipmentType(normalizedType);
+      if (!equipmentType) {
+        return;
+      }
+      const normalizedFilterType =
+        equipmentType === 'filter' ? normalizeFilterType(customFilterType) : '';
+      const filterEfficiencyFactor =
+        equipmentType === 'filter'
+          ? getFilterRealFlowFactor(normalizedFilterType)
+          : null;
+      if (equipmentType === 'filter' && !normalizedFilterType) {
+        throw new Error('Wybierz typ filtra.');
+      }
+
+      const primaryValue =
+        equipmentType === 'heater'
+          ? parsePositiveNumberOrThrow('moc grzalki (W)', customEquipmentPrimaryValue)
+          : parsePositiveNumberOrThrow('wydajnosc filtra (l/h)', customEquipmentPrimaryValue);
+      const tankMinLiters = parseOptionalNonNegativeNumberOrThrow(
+        'min litraz',
+        customEquipmentTankMinLiters
+      );
+      const tankMaxLiters = parseOptionalNonNegativeNumberOrThrow(
+        'max litraz',
+        customEquipmentTankMaxLiters
+      );
+
+      if (
+        Number.isFinite(Number(tankMinLiters)) &&
+        Number.isFinite(Number(tankMaxLiters)) &&
+        Number(tankMaxLiters) < Number(tankMinLiters)
+      ) {
+        throw new Error('Maksymalny litraz nie moze byc mniejszy niz minimalny.');
+      }
+
+      const customEquipmentItem = {
+        id: customId,
+        assignmentId: `${customId}-${Date.now()}`,
+        type: equipmentType,
+        brand,
+        model,
+        source: 'custom',
+        ...(equipmentType === 'filter'
+          ? {
+              filterType: normalizedFilterType,
+              filterEfficiencyFactor,
+            }
+          : {}),
+        tankMinLiters,
+        tankMaxLiters,
+        ...(equipmentType === 'heater'
+          ? { powerW: primaryValue }
+          : { flowLh: primaryValue }),
+      };
+
+      const listField = getTankEquipmentListField(equipmentType);
+      const legacyField = getTankEquipmentLegacyField(equipmentType);
+      const currentList = getTankEquipmentList(selectedTank, equipmentType);
+      const nextList = [...currentList, customEquipmentItem];
+      const nextLegacyValue = nextList[0] ?? deleteField();
+
+      await updateDoc(doc(db, 'tanks', selectedTank.id), {
+        ...buildTankRuleSanitizationPatch(selectedTank),
+        [listField]: nextList,
+        [legacyField]: nextLegacyValue,
+        updatedAt: new Date(),
+      });
+
+      await fetchTanks(user.uid, selectedTank.id);
+      resetCustomEquipmentForm();
+      setIsEquipmentCatalogModalVisible(false);
+      setEquipmentCatalogType('');
+      setEquipmentCatalogSearch('');
+    } catch (error) {
+      alert(
+        'Blad zapisu innego sprzetu: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -10656,6 +13630,7 @@ export default function HomeScreen() {
     setPlantFertilizationBusy(true);
     try {
       await updateDoc(doc(db, 'tanks', selectedTank.id), {
+        ...buildTankRuleSanitizationPatch(selectedTank),
         plantFertilizationEntries: nextEntries,
         updatedAt: new Date(),
       });
@@ -10772,6 +13747,7 @@ export default function HomeScreen() {
     setPlantFertilizationBusy(true);
     try {
       await updateDoc(doc(db, 'tanks', selectedTank.id), {
+        ...buildTankRuleSanitizationPatch(selectedTank),
         plantFertilizationEntries: nextEntries,
         updatedAt: new Date(),
       });
@@ -10808,6 +13784,7 @@ export default function HomeScreen() {
     setPlantFertilizationBusy(true);
     try {
       await updateDoc(doc(db, 'tanks', selectedTank.id), {
+        ...buildTankRuleSanitizationPatch(selectedTank),
         plantFertilizationEntries: nextEntries,
         updatedAt: new Date(),
       });
@@ -10836,10 +13813,10 @@ export default function HomeScreen() {
 
     if (!editingTankId && !canAddTank) {
       alert(
-        t('subscriptionTankLimitReached', {
+        `${t('subscriptionTankLimitReached', {
           plan: currentSubscriptionTierLabel,
           limit: tankLimit,
-        })
+        })}\n\nW planie Free mozesz aktywnie prowadzic 1 akwarium. Pozostale akwaria sa bezpiecznie zapisane i odblokuja sie po powrocie do Premium.`
       );
       return;
     }
@@ -10857,6 +13834,22 @@ export default function HomeScreen() {
 
       const liters = parsePositiveNumberOrThrow('litraz', tankLiters);
       const aquariumType = normalizeAquariumType(tankAquariumType);
+      if (!aquariumType) {
+        throw new Error('Wybierz typ akwarium przed zapisaniem onboardingu.');
+      }
+      const targetTemperatureC = parsePositiveNumberOrThrow(
+        'temperatura docelowa',
+        tankTargetTemperatureC || '25'
+      );
+      const ambientTemperatureC = String(tankAmbientTemperatureC ?? '').trim()
+        ? parseOptionalNonNegativeNumberOrThrow(
+            'temperatura pomieszczenia',
+            tankAmbientTemperatureC
+          )
+        : null;
+      const roomTemperatureMode = normalizeRoomTemperatureMode(
+        tankRoomTemperatureMode
+      );
       const substrateTypes = normalizeSubstrateTypes(
         tankSubstrateTypes.length > 0 ? tankSubstrateTypes : tankSubstrateType
       );
@@ -10909,7 +13902,10 @@ export default function HomeScreen() {
             key === 'lightHours' ||
             key === 'lightModelId' ||
             key === 'lightModelName' ||
-            key === 'lightLumens'
+            key === 'lightLumens' ||
+            key === 'targetTemperatureC' ||
+            key === 'ambientTemperatureC' ||
+            key === 'roomTemperatureMode'
           ) {
             return acc;
           }
@@ -10922,6 +13918,15 @@ export default function HomeScreen() {
       let preferredTankId = editingTankId;
 
       if (editingTankId) {
+        const currentOnboardingMode = normalizeOnboardingMode(
+          selectedTank?.onboardingMode
+        );
+        const shouldResetOnboardingPlan =
+          onboardingMode !== currentOnboardingMode ||
+          !selectedTank?.onboardingStartAt;
+        const nextOnboardingStartAt = shouldResetOnboardingPlan
+          ? now
+          : selectedTank?.onboardingStartAt ?? now;
         const fullUpdatePayload = {
           ...tankSanitizationPatch,
           name,
@@ -10931,10 +13936,27 @@ export default function HomeScreen() {
           substrateTypes,
           waterProfile,
           targetRanges,
+          targetTemperatureC,
+          roomTemperatureMode,
+          ambientTemperatureC:
+            ambientTemperatureC === null ? deleteField() : ambientTemperatureC,
           singleSpeciesFishId:
             waterProfile === 'single_species'
               ? singleSpeciesFishId
               : deleteField(),
+          onboardingMode,
+          onboardingStartAt: nextOnboardingStartAt,
+          ...(shouldResetOnboardingPlan ? { onboardingTaskChecks: {} } : {}),
+          updatedAt: now,
+        };
+        const compatibilityUpdatePayload = {
+          ...tankSanitizationPatch,
+          name,
+          liters,
+          aquariumType,
+          substrateType,
+          onboardingMode,
+          onboardingStartAt: nextOnboardingStartAt,
           updatedAt: now,
         };
 
@@ -10945,7 +13967,10 @@ export default function HomeScreen() {
             throw error;
           }
 
-          await updateDoc(doc(db, 'tanks', editingTankId), fullUpdatePayload);
+          await updateDoc(
+            doc(db, 'tanks', editingTankId),
+            compatibilityUpdatePayload
+          );
           savedInCompatibilityMode = true;
         }
       } else {
@@ -10958,11 +13983,16 @@ export default function HomeScreen() {
           substrateTypes,
           waterProfile,
           targetRanges,
+          targetTemperatureC,
+          roomTemperatureMode,
+          ...(ambientTemperatureC === null
+            ? {}
+            : { ambientTemperatureC }),
           ...(waterProfile === 'single_species' && singleSpeciesFishId
             ? { singleSpeciesFishId }
             : {}),
           onboardingMode,
-          onboardingStartAt: onboardingMode === 'fresh_start' ? now : null,
+          onboardingStartAt: now,
           createdAt: now,
         };
         const legacyCreatePayload = {
@@ -10972,7 +14002,7 @@ export default function HomeScreen() {
           aquariumType,
           substrateType,
           onboardingMode,
-          onboardingStartAt: onboardingMode === 'fresh_start' ? now : null,
+          onboardingStartAt: now,
           createdAt: now,
         };
 
@@ -11007,6 +14037,9 @@ export default function HomeScreen() {
           resetProfile
         )
       );
+      setTankTargetTemperatureC('25');
+      setTankAmbientTemperatureC('');
+      setTankRoomTemperatureMode('normal');
       setTankOnboardingMode('existing_running');
       await fetchTanks(user.uid, preferredTankId ?? undefined);
       await fetchHomeData(user.uid);
@@ -11015,7 +14048,7 @@ export default function HomeScreen() {
         setEditingTankId(null);
         if (savedInCompatibilityMode) {
           alert(
-            'Akwarium zaktualizowane. Czesc nowych ustawien zapisze sie po aktualizacji reguł bazy.'
+            'Akwarium zaktualizowane w trybie zgodnosci. Aby wszystkie nowe ustawienia zapisywaly sie od razu, opublikuj aktualne reguly Firestore.'
           );
         } else {
           alert('Akwarium zaktualizowane');
@@ -11024,13 +14057,17 @@ export default function HomeScreen() {
         setIsAddingTankModalVisible(false);
         if (savedInCompatibilityMode) {
           alert(
-            'Akwarium dodane. Czesc nowych ustawien zapisze sie po aktualizacji reguł bazy.'
+            'Akwarium dodane w trybie zgodnosci. Aby wszystkie nowe ustawienia zapisywaly sie od razu, opublikuj aktualne reguly Firestore.'
           );
         } else {
           alert(
             onboardingMode === 'fresh_start'
-              ? 'Akwarium dodane. Wlaczylismy onboarding dojrzewania (dzien 1).'
-              : 'Akwarium dodane'
+              ? 'Akwarium dodane. Wlaczylismy onboarding fresh start (dzien 1/14).'
+              : onboardingMode === 'restart'
+                ? 'Akwarium dodane. Wlaczylismy onboarding restartu (dzien 1/14).'
+                : onboardingMode === 'mature_media_start'
+                  ? 'Akwarium dodane. Wlaczylismy onboarding startu na dojrzalym medium (dzien 1/14).'
+                  : 'Akwarium dodane. Wlaczylismy onboarding dla dzialajacego zbiornika (dzien 1/14).'
           );
         }
       }
@@ -11211,10 +14248,11 @@ export default function HomeScreen() {
             tankId: selectedTank.id,
             tankName: selectedTank.name,
             type: 'fish',
+            source: 'manual',
             name: manualFishName,
             commonName: manualFishName,
             latinName: manualFishName,
-            catalogFishId: null,
+            catalogFishId: buildManualCatalogFishId(manualFishName),
             phMin: EXPANDED_FISH_DEFAULTS.phMin,
             phMax: EXPANDED_FISH_DEFAULTS.phMax,
             ghMin: EXPANDED_FISH_DEFAULTS.ghMin,
@@ -11274,6 +14312,7 @@ export default function HomeScreen() {
 
         plantPayloads = selectedPlants.map((selectedPlant) => {
           const requirements = getPlantLightRequirements(selectedPlant);
+          const requirementsProfile = inferPlantRequirementProfile(selectedPlant);
           return {
             userId: user.uid,
             tankId: selectedTank.id,
@@ -11299,6 +14338,19 @@ export default function HomeScreen() {
             lightHoursMax: Number.isFinite(Number(requirements.maxHours))
               ? Number(requirements.maxHours)
               : null,
+            lightDemand: requirementsProfile.lightDemand,
+            co2Demand: requirementsProfile.co2Demand,
+            growthRate: requirementsProfile.growthRate,
+            difficulty: requirementsProfile.difficulty,
+            fertilizationDemand: requirementsProfile.fertilizationDemand,
+            plantType: requirementsProfile.plantType,
+            placementZone: requirementsProfile.placementZone,
+            carboSensitivity: requirementsProfile.carboSensitivity,
+            parameterStabilitySensitivity:
+              requirementsProfile.parameterStabilitySensitivity,
+            minTankHeightCm: requirementsProfile.minTankHeightCm,
+            minTankVolumeL: requirementsProfile.minTankVolumeL,
+            compatibleWithDiggers: requirementsProfile.compatibleWithDiggers,
             notes: selectedPlant.notes ?? '',
             createdAt: new Date(),
           };
@@ -11318,7 +14370,9 @@ export default function HomeScreen() {
             throw error;
           }
 
-          const { fishProfile, ...legacyPayload } = payload;
+          const legacyPayload = { ...payload };
+          delete legacyPayload.fishProfile;
+          delete legacyPayload.source;
           await addDoc(collection(db, 'stockItems'), legacyPayload);
         }
       } else if (payload.type === 'plant') {
@@ -11379,6 +14433,25 @@ export default function HomeScreen() {
           );
           if (reasons.length > 0) {
             addWarnings.push(`Powody: ${reasons.join(' ')}`);
+          }
+        }
+
+        const dynamicAssessment = evaluateStockingCompatibility(
+          selectedTank,
+          [...existingTankFishItems, payload],
+          currentMeasurement
+        );
+        if (['caution', 'high_risk', 'incompatible'].includes(dynamicAssessment.overallStatus)) {
+          addWarnings.push(
+            `Wplyw na obsade: ${dynamicAssessment.overallUiStatus} (${dynamicAssessment.score}/100).`
+          );
+          const topWarnings = (dynamicAssessment.warnings ?? []).slice(0, 2);
+          if (topWarnings.length > 0) {
+            addWarnings.push(`Powody: ${topWarnings.join(' ')}`);
+          }
+          const topRecommendations = (dynamicAssessment.recommendations ?? []).slice(0, 1);
+          if (topRecommendations.length > 0) {
+            addWarnings.push(`Rekomendacja: ${topRecommendations[0]}`);
           }
         }
       }
@@ -11606,6 +14679,7 @@ export default function HomeScreen() {
   }, [
     activeSection,
     editingTankId,
+    handleCloseEquipmentCatalog,
     handleCloseDeleteAccountReauthModal,
     handleCloseFishAddModal,
     handleCloseHomeScoreDetails,
@@ -11629,6 +14703,10 @@ export default function HomeScreen() {
 
     if (!selectedTank?.id) {
       alert('Najpierw dodaj i wybierz aktywne akwarium');
+      return;
+    }
+    if (selectedTankLockedByPlan) {
+      alert('To akwarium jest w trybie tylko do odczytu w obecnym planie.');
       return;
     }
 
@@ -11675,14 +14753,17 @@ export default function HomeScreen() {
         tank: selectedTank,
         equipmentAssessment: buildTankEquipmentAssessment(
           selectedTank,
-          EQUIPMENT_CATALOG
+          equipmentCatalogForAnalysis
         ),
         targetRanges: selectedTankWaterAnalysisOptions?.targetRanges,
       });
       const analysis = mergeWaterAnalysisWithContext(baseAnalysis, contextInsights);
 
       if (editingMeasurementId) {
+        const currentMeasurementItem =
+          measurements.find((item) => item.id === editingMeasurementId) ?? null;
         await updateDoc(doc(db, 'measurements', editingMeasurementId), {
+          ...buildMeasurementRuleSanitizationPatch(currentMeasurementItem),
           ...measurement,
           updatedAt: new Date(),
         });
@@ -11742,6 +14823,10 @@ export default function HomeScreen() {
 
   const handleDeleteMeasurement = (measurementId) => {
     if (!user?.uid || !selectedTank?.id || !measurementId || measurementDeleteBusy) {
+      return;
+    }
+    if (selectedTankLockedByPlan) {
+      alert('To akwarium jest w trybie tylko do odczytu w obecnym planie.');
       return;
     }
 
@@ -11858,6 +14943,7 @@ export default function HomeScreen() {
     setOnboardingTaskBusy(true);
     try {
       await updateDoc(doc(db, 'tanks', selectedTank.id), {
+        ...buildTankRuleSanitizationPatch(selectedTank),
         onboardingTaskChecks: nextChecks,
         updatedAt: new Date(),
       });
@@ -11880,6 +14966,103 @@ export default function HomeScreen() {
       setOnboardingTaskBusy(false);
     }
   };
+
+  const handleUpdateMaintenanceActionState = useCallback(
+    async (action, mode) => {
+      if (
+        !selectedTank?.id ||
+        !user?.uid ||
+        !action?.stateKey ||
+        !mode ||
+        maintenanceActionBusyId
+      ) {
+        return;
+      }
+
+      const actionStateKey = String(action.stateKey ?? '').trim().toLowerCase();
+      if (!actionStateKey) {
+        return;
+      }
+
+      const actionBusyId = `${actionStateKey}-${String(mode ?? '')}`;
+      setMaintenanceActionBusyId(actionBusyId);
+
+      try {
+        const nowDayBucketMs = getDayBucketMs(new Date());
+        const dayMs = 24 * 60 * 60 * 1000;
+        const sourceDueDayBucketMs =
+          Number.isFinite(Number(action?.sourceDueDayBucketMs)) &&
+          Number(action.sourceDueDayBucketMs) > 0
+            ? Number(action.sourceDueDayBucketMs)
+            : nowDayBucketMs;
+        const currentState = normalizeMaintenanceActionState(
+          selectedTank?.maintenanceActionState
+        );
+        const currentEntry = currentState[actionStateKey] ?? {};
+        const nextEntry = {
+          ...currentEntry,
+          updatedAtMs: Date.now(),
+        };
+
+        if (mode === 'done') {
+          const latestMeasurementDayBucketMs = getDayBucketMs(
+            getMeasurementRecordedAtMs(measurements?.[0])
+          );
+          nextEntry.lastCompletedAtMs =
+            actionStateKey === 'water_tests'
+              ? Math.max(nowDayBucketMs, latestMeasurementDayBucketMs || 0)
+              : nowDayBucketMs;
+          nextEntry.postponedUntilMs = null;
+        } else if (mode === 'skip') {
+          nextEntry.lastSkippedAtMs = Math.max(nowDayBucketMs, sourceDueDayBucketMs);
+          nextEntry.postponedUntilMs = null;
+        } else if (mode === 'postpone') {
+          const baseDayBucketMs = Math.max(nowDayBucketMs, sourceDueDayBucketMs);
+          nextEntry.postponedUntilMs = baseDayBucketMs + dayMs;
+        } else {
+          return;
+        }
+
+        const nextState = {
+          ...currentState,
+          [actionStateKey]: nextEntry,
+        };
+
+        await updateDoc(doc(db, 'tanks', selectedTank.id), {
+          ...buildTankRuleSanitizationPatch(selectedTank),
+          maintenanceActionState: nextState,
+          updatedAt: new Date(),
+        });
+
+        setTanks((prev) =>
+          prev.map((tank) =>
+            tank.id === selectedTank.id
+              ? { ...tank, maintenanceActionState: nextState }
+              : tank
+          )
+        );
+        setSelectedTank({
+          ...selectedTank,
+          maintenanceActionState: nextState,
+        });
+      } catch (error) {
+        alert(
+          'Blad zapisu akcji kalendarza: ' +
+            (error instanceof Error ? error.message : '')
+        );
+      } finally {
+        setMaintenanceActionBusyId('');
+      }
+    },
+    [
+      maintenanceActionBusyId,
+      measurements,
+      selectedTank,
+      setSelectedTank,
+      setTanks,
+      user?.uid,
+    ]
+  );
 
   const toggleDiseaseSymptom = (symptomId) => {
     setSelectedDiseaseSymptoms((prev) => ({
@@ -11937,9 +15120,13 @@ export default function HomeScreen() {
       );
       const newFishCandidate = {
         type: 'fish',
+        speciesId: selectedFish.id,
         name: sanitizedFish.commonName,
         commonName: sanitizedFish.commonName,
         latinName: sanitizedFish.latinName,
+        quantity,
+        sexRatio: 'unknown',
+        lifeStage: 'unknown',
         aggressionLevel,
         fishProfile,
         notes: String(selectedFish.notes ?? '').slice(0, 1000),
@@ -11991,7 +15178,9 @@ export default function HomeScreen() {
           throw error;
         }
 
-        const { fishProfile: legacyFishProfile, ...legacyPayload } = fishPayload;
+        const legacyPayload = { ...fishPayload };
+        delete legacyPayload.fishProfile;
+        delete legacyPayload.source;
         await addDoc(collection(db, 'stockItems'), legacyPayload);
       }
 
@@ -12037,6 +15226,24 @@ export default function HomeScreen() {
           addWarnings.push(`Powody: ${reasons.join(' ')}`);
         }
       }
+      const dynamicAssessment = evaluateStockingCompatibility(
+        tank,
+        [...existingTankFishItems, newFishCandidate],
+        null
+      );
+      if (['caution', 'high_risk', 'incompatible'].includes(dynamicAssessment.overallStatus)) {
+        addWarnings.push(
+          `Wplyw na obsade: ${dynamicAssessment.overallUiStatus} (${dynamicAssessment.score}/100).`
+        );
+        const topWarnings = (dynamicAssessment.warnings ?? []).slice(0, 2);
+        if (topWarnings.length > 0) {
+          addWarnings.push(`Powody: ${topWarnings.join(' ')}`);
+        }
+        const topRecommendations = (dynamicAssessment.recommendations ?? []).slice(0, 1);
+        if (topRecommendations.length > 0) {
+          addWarnings.push(`Rekomendacja: ${topRecommendations[0]}`);
+        }
+      }
 
       if (Number(tank?.liters) < minLiters) {
         addWarnings.push(
@@ -12067,7 +15274,7 @@ export default function HomeScreen() {
     setStockBusy(true);
 
     try {
-      const draft = fishQuantityDrafts[itemId] ?? '';
+      const draft = plantQuantityDrafts[itemId] ?? '';
       const quantity = parseNonNegativeNumberOrThrow('ilosc', String(draft));
 
       if (!Number.isInteger(quantity)) {
@@ -12113,6 +15320,7 @@ export default function HomeScreen() {
 
       const minLiters = Number(selectedPlant.minLiters);
       const lightRequirements = getPlantLightRequirements(selectedPlant);
+      const requirementsProfile = inferPlantRequirementProfile(selectedPlant);
 
       await addDoc(collection(db, 'stockItems'), {
         userId: user.uid,
@@ -12139,6 +15347,19 @@ export default function HomeScreen() {
         lightHoursMax: Number.isFinite(Number(lightRequirements.maxHours))
           ? Number(lightRequirements.maxHours)
           : null,
+        lightDemand: requirementsProfile.lightDemand,
+        co2Demand: requirementsProfile.co2Demand,
+        growthRate: requirementsProfile.growthRate,
+        difficulty: requirementsProfile.difficulty,
+        fertilizationDemand: requirementsProfile.fertilizationDemand,
+        plantType: requirementsProfile.plantType,
+        placementZone: requirementsProfile.placementZone,
+        carboSensitivity: requirementsProfile.carboSensitivity,
+        parameterStabilitySensitivity:
+          requirementsProfile.parameterStabilitySensitivity,
+        minTankHeightCm: requirementsProfile.minTankHeightCm,
+        minTankVolumeL: requirementsProfile.minTankVolumeL,
+        compatibleWithDiggers: requirementsProfile.compatibleWithDiggers,
         notes: selectedPlant.notes ?? '',
         createdAt: new Date(),
       });
@@ -12251,6 +15472,17 @@ export default function HomeScreen() {
 
     try {
       const schedule = buildDiseaseTreatmentSchedule(disease);
+      const treatmentPlan =
+        Array.isArray(disease?.treatmentPlan) && disease.treatmentPlan.length > 0
+          ? disease.treatmentPlan.slice(0, 10)
+          : (disease?.treatment ?? []).slice(0, 4);
+      const probableCauses =
+        Array.isArray(disease?.probableCauses) && disease.probableCauses.length > 0
+          ? disease.probableCauses
+          : [];
+      const confidenceSuffix = Number.isFinite(Number(disease?.adjustedConfidencePercent))
+        ? ` Pewnosc: ${Math.round(Number(disease.adjustedConfidencePercent))}% (${disease?.confidenceLevel ?? 'ocena orientacyjna'}).`
+        : '';
       const nextReviewAt =
         schedule[1]?.dueAt ??
         (() => {
@@ -12269,10 +15501,10 @@ export default function HomeScreen() {
         diseaseId: disease.id,
         diseaseName: disease.name,
         severity: disease.severity,
-        diseaseSummary: disease.summary,
-        causes: [],
+        diseaseSummary: `${disease.summary}${confidenceSuffix}`.slice(0, 3000),
+        causes: probableCauses.slice(0, 30),
         caution: disease.caution,
-        treatmentPlan: disease.treatment.slice(0, 4),
+        treatmentPlan,
         schedule,
         status: 'active',
         createdAt: new Date(),
@@ -12308,6 +15540,17 @@ export default function HomeScreen() {
 
     try {
       const schedule = buildPlantDiseaseTreatmentSchedule(disease);
+      const treatmentPlan =
+        Array.isArray(disease?.treatmentPlan) && disease.treatmentPlan.length > 0
+          ? disease.treatmentPlan.slice(0, 10)
+          : (disease?.treatment ?? []).slice(0, 4);
+      const probableCauses =
+        Array.isArray(disease?.probableCauses) && disease.probableCauses.length > 0
+          ? disease.probableCauses
+          : [];
+      const confidenceSuffix = Number.isFinite(Number(disease?.adjustedConfidencePercent))
+        ? ` Pewnosc: ${Math.round(Number(disease.adjustedConfidencePercent))}% (${disease?.confidenceLevel ?? 'ocena orientacyjna'}).`
+        : '';
       const nextReviewAt =
         schedule[1]?.dueAt ??
         (() => {
@@ -12326,10 +15569,10 @@ export default function HomeScreen() {
         diseaseId: disease.id,
         diseaseName: disease.name,
         severity: disease.severity,
-        diseaseSummary: disease.summary,
-        causes: [],
+        diseaseSummary: `${disease.summary}${confidenceSuffix}`.slice(0, 3000),
+        causes: probableCauses.slice(0, 30),
         caution: disease.caution,
-        treatmentPlan: disease.treatment.slice(0, 4),
+        treatmentPlan,
         schedule,
         status: 'active',
         createdAt: new Date(),
@@ -12365,6 +15608,22 @@ export default function HomeScreen() {
 
     try {
       const schedule = buildAlgaeTreatmentSchedule(algae);
+      const treatmentPlan =
+        Array.isArray(algae?.treatmentPlan) && algae.treatmentPlan.length > 0
+          ? algae.treatmentPlan.slice(0, 10)
+          : [
+              ...((algae?.removeActions ?? []).slice(0, 3)),
+              ...((algae?.preventionActions ?? []).slice(0, 3)),
+            ];
+      const probableCauses =
+        Array.isArray(algae?.probableCauses) && algae.probableCauses.length > 0
+          ? algae.probableCauses
+          : Array.isArray(algae?.causes)
+            ? algae.causes
+            : [];
+      const confidenceSuffix = Number.isFinite(Number(algae?.adjustedConfidencePercent))
+        ? ` Pewnosc: ${Math.round(Number(algae.adjustedConfidencePercent))}% (${algae?.confidenceLevel ?? 'ocena orientacyjna'}).`
+        : '';
       const nextReviewAt =
         schedule[1]?.dueAt ??
         (() => {
@@ -12372,11 +15631,6 @@ export default function HomeScreen() {
           review.setDate(review.getDate() + 2);
           return review;
         })();
-
-      const treatmentPlan = [
-        ...algae.removeActions.slice(0, 3),
-        ...algae.preventionActions.slice(0, 3),
-      ];
 
       await addDoc(collection(db, 'tankDiseaseCases'), {
         userId: user.uid,
@@ -12388,8 +15642,8 @@ export default function HomeScreen() {
         diseaseId: algae.id,
         diseaseName: algae.name,
         severity: algae.severity,
-        diseaseSummary: algae.summary,
-        causes: algae.causes,
+        diseaseSummary: `${algae.summary}${confidenceSuffix}`.slice(0, 3000),
+        causes: probableCauses.slice(0, 30),
         caution: algae.caution,
         treatmentPlan,
         schedule,
@@ -12856,19 +16110,30 @@ export default function HomeScreen() {
     );
   };
 
-  const isHomeSection = activeSection === 'home';
-  const isReviewSection = activeSection === 'review';
-  const isHistorySection = activeSection === 'history';
-  const isTankSection = activeSection === 'tank';
-  const isTankInfoSection = activeSection === 'tankInfo';
-  const isEquipmentSection = activeSection === 'equipment';
-  const isFishSection = activeSection === 'fish';
-  const isPlantSection = activeSection === 'plant';
-  const isIssuesSection = activeSection === 'issues';
-  const isDiseaseSection = activeSection === 'disease';
-  const isPlantDiseaseSection = activeSection === 'plantDisease';
-  const isAlgaeSection = activeSection === 'algae';
-  const isSettingsSection = activeSection === 'settings';
+  const {
+    isHomeSection,
+    isReviewSection,
+    isHistorySection,
+    isTankSection,
+    isTankInfoSection,
+    isEquipmentSection,
+    isFishSection,
+    isPlantSection,
+    isIssuesSection,
+    isDiseaseSection,
+    isPlantDiseaseSection,
+    isAlgaeSection,
+    isSettingsSection,
+    isAquariumSection,
+    isHealthSection,
+    isFishCatalogMenuMode,
+    isPlantCatalogMenuMode,
+    isHealthCatalogMode,
+    isHealthTankMode,
+  } = useSectionVisibility({
+    activeSection,
+    sectionEntrySource,
+  });
   const availableMeasurementTests = useMemo(
     () =>
       TEST_PARAMETER_OPTIONS.reduce((acc, option) => {
@@ -12928,18 +16193,6 @@ export default function HomeScreen() {
 
     return map;
   }, [subscriptionPlans]);
-  const isAquariumSection =
-    isReviewSection ||
-    isTankInfoSection ||
-    isEquipmentSection ||
-    isFishSection ||
-    isPlantSection;
-  const isHealthSection =
-    isIssuesSection || isDiseaseSection || isPlantDiseaseSection || isAlgaeSection;
-  const isFishCatalogMenuMode = isFishSection && sectionEntrySource === 'menu';
-  const isPlantCatalogMenuMode = isPlantSection && sectionEntrySource === 'menu';
-  const isHealthCatalogMode = isHealthSection && sectionEntrySource === 'menu';
-  const isHealthTankMode = isHealthSection && !isHealthCatalogMode;
   const isFishDiseaseCatalogMode =
     isHealthCatalogMode && (isIssuesSection || isDiseaseSection);
   const isPlantDiseaseCatalogMode =
@@ -12979,20 +16232,32 @@ export default function HomeScreen() {
     [selectedTankTargetRanges]
   );
   const currentMeasurement = useMemo(
-    () => buildLatestMeasurementSnapshot(measurements),
-    [measurements]
+    () => {
+      const latest = buildLatestMeasurementSnapshot(measurements);
+      if (!latest) {
+        return null;
+      }
+      return filterMeasurementFieldsByPlan(latest, currentPlan);
+    },
+    [currentPlan, measurements]
   );
   const currentMeasurementDisplay = useMemo(
-    () => buildLatestMeasurementDisplaySnapshot(measurements),
-    [measurements]
+    () => {
+      const latest = buildLatestMeasurementDisplaySnapshot(measurements);
+      if (!latest) {
+        return null;
+      }
+      return filterMeasurementFieldsByPlan(latest, currentPlan);
+    },
+    [currentPlan, measurements]
   );
   const selectedTankEnvironmentProfile = useMemo(
     () => buildTankEnvironmentProfile(selectedTank),
     [selectedTank]
   );
   const currentEquipmentAssessmentForContext = useMemo(
-    () => buildTankEquipmentAssessment(selectedTank, EQUIPMENT_CATALOG),
-    [selectedTank]
+    () => buildTankEquipmentAssessment(selectedTank, equipmentCatalogForAnalysis),
+    [selectedTank, equipmentCatalogForAnalysis]
   );
   const currentContextInsights = useMemo(
     () =>
@@ -13428,9 +16693,33 @@ export default function HomeScreen() {
       ),
     [selectedDiseaseSymptoms]
   );
+  const diagnosisContext = useMemo(
+    () =>
+      buildDiagnosisContext({
+        tank: selectedTank,
+        measurement: currentMeasurement,
+        measurements,
+        stockItems,
+        tankProfile: selectedTankEnvironmentProfile,
+        onboardingPlan: tankOnboardingPlan,
+      }),
+    [
+      currentMeasurement,
+      measurements,
+      selectedTank,
+      selectedTankEnvironmentProfile,
+      stockItems,
+      tankOnboardingPlan,
+    ]
+  );
   const diseaseSuggestions = useMemo(
-    () => buildDiseaseSuggestions(selectedDiseaseSymptomIds, diseaseCatalog),
-    [selectedDiseaseSymptomIds, diseaseCatalog]
+    () =>
+      buildDiseaseSuggestions(
+        selectedDiseaseSymptomIds,
+        diseaseCatalog,
+        diagnosisContext
+      ),
+    [selectedDiseaseSymptomIds, diseaseCatalog, diagnosisContext]
   );
   const selectedPlantDiseaseSymptomIds = useMemo(
     () =>
@@ -13450,9 +16739,10 @@ export default function HomeScreen() {
     () =>
       buildPlantDiseaseSuggestions(
         selectedPlantDiseaseSymptomIds,
-        plantDiseaseCatalog
+        plantDiseaseCatalog,
+        diagnosisContext
       ),
-    [selectedPlantDiseaseSymptomIds, plantDiseaseCatalog]
+    [selectedPlantDiseaseSymptomIds, plantDiseaseCatalog, diagnosisContext]
   );
   const selectedAlgaeSymptomIds = useMemo(
     () =>
@@ -13469,12 +16759,30 @@ export default function HomeScreen() {
     [selectedAlgaeSymptoms]
   );
   const algaeSuggestions = useMemo(
-    () => buildAlgaeSuggestions(selectedAlgaeSymptomIds, algaeCatalog),
-    [selectedAlgaeSymptomIds, algaeCatalog]
+    () =>
+      buildAlgaeSuggestions(
+        selectedAlgaeSymptomIds,
+        algaeCatalog,
+        diagnosisContext
+      ),
+    [selectedAlgaeSymptomIds, algaeCatalog, diagnosisContext]
   );
-  const hasDiseaseEmergencySignal =
-    selectedDiseaseSymptoms.rapid_breathing ||
-    selectedDiseaseSymptoms.sudden_deaths;
+  const selectedEmergencyState = useMemo(
+    () =>
+      evaluateEmergencyState(
+        selectedTank,
+        currentMeasurement,
+        currentEquipmentAssessmentForContext,
+        selectedDiseaseSymptoms
+      ),
+    [
+      currentEquipmentAssessmentForContext,
+      currentMeasurement,
+      selectedDiseaseSymptoms,
+      selectedTank,
+    ]
+  );
+  const hasDiseaseEmergencySignal = Boolean(selectedEmergencyState?.isEmergency);
   const selectedCatalogFish = useMemo(
     () =>
       isFishSection && isEditingFish
@@ -13668,6 +16976,7 @@ export default function HomeScreen() {
       );
     }
 
+    const selectedTankFishItems = stockItems.filter((entry) => entry.type === 'fish');
     const issueCountById = new Map(
       filtered.map((item) => [
         item.id,
@@ -13675,7 +16984,8 @@ export default function HomeScreen() {
           item,
           currentMeasurement,
           selectedTankLiters,
-          selectedTankEnvironmentProfile
+          selectedTankEnvironmentProfile,
+          { fishItems: selectedTankFishItems }
         ).length,
       ])
     );
@@ -13704,6 +17014,7 @@ export default function HomeScreen() {
     plantCatalog,
     selectedTankEnvironmentProfile,
     selectedTankLiters,
+    stockItems,
     stockPlantSearch,
   ]);
   const visibleFilteredFishCatalog = useMemo(() => {
@@ -13776,6 +17087,7 @@ export default function HomeScreen() {
       return map;
     }
 
+    const selectedTankFishItems = stockItems.filter((entry) => entry.type === 'fish');
     for (const plant of visibleFilteredPlantCatalog) {
       map.set(
         plant.id,
@@ -13783,7 +17095,8 @@ export default function HomeScreen() {
           plant,
           currentMeasurement,
           selectedTankLiters,
-          selectedTankEnvironmentProfile
+          selectedTankEnvironmentProfile,
+          { fishItems: selectedTankFishItems }
         )
       );
     }
@@ -13799,7 +17112,8 @@ export default function HomeScreen() {
           selectedPlant,
           currentMeasurement,
           selectedTankLiters,
-          selectedTankEnvironmentProfile
+          selectedTankEnvironmentProfile,
+          { fishItems: selectedTankFishItems }
         )
       );
     });
@@ -13813,6 +17127,7 @@ export default function HomeScreen() {
     selectedCatalogPlants,
     selectedTankEnvironmentProfile,
     selectedTankLiters,
+    stockItems,
   ]);
   const fishCompatibilityResults = useMemo(
     () =>
@@ -14511,27 +17826,51 @@ export default function HomeScreen() {
         .filter(Boolean),
     [fishCatalogById, fishCatalogByLatinName, stockItems, t]
   );
+  const stockingCompatibility = useMemo(
+    () =>
+      evaluateStockingCompatibility(
+        selectedTank ?? {},
+        stockItems,
+        currentMeasurement
+      ),
+    [currentMeasurement, selectedTank, stockItems]
+  );
   const fishAggressionConflicts = useMemo(() => {
-    const fishItems = stockItems.filter((item) => item.type === 'fish');
-    const conflicts = [];
+    const dynamicConflicts = (stockingCompatibility?.conflicts ?? [])
+      .filter((item) =>
+        ['aggression', 'territoriality', 'predation', 'finNipping'].includes(
+          String(item?.category ?? '')
+        )
+      )
+      .map((item, index) => ({
+        id: String(item?.id ?? `stocking-conflict-${index}`),
+        firstFish: item?.firstFish ?? null,
+        secondFish: item?.secondFish ?? null,
+        score: item?.severity === 'critical' ? 28 : 52,
+        level: item?.severity === 'critical' ? 'incompatible' : 'risky',
+        label: item?.severity === 'critical' ? 'niezgodne' : 'ryzykowne',
+        reasons: [String(item?.message ?? '').trim()].filter(Boolean),
+        category: item?.category ?? 'aggression',
+      }))
+      .filter((entry) => entry?.firstFish && entry?.secondFish);
 
+    if (dynamicConflicts.length > 0) {
+      return dynamicConflicts;
+    }
+
+    const fishItems = stockItems.filter((item) => item.type === 'fish');
+    const fallbackConflicts = [];
     for (let index = 0; index < fishItems.length; index += 1) {
       const currentFish = fishItems[index];
-
-      for (
-        let compareIndex = index + 1;
-        compareIndex < fishItems.length;
-        compareIndex += 1
-      ) {
+      for (let compareIndex = index + 1; compareIndex < fishItems.length; compareIndex += 1) {
         const comparedFish = fishItems[compareIndex];
         const conflict = getFishAggressionConflict(
           currentFish,
           comparedFish,
           selectedTankLiters
         );
-
         if (conflict) {
-          conflicts.push({
+          fallbackConflicts.push({
             id: `${currentFish.id}-${comparedFish.id}`,
             firstFish: currentFish,
             secondFish: comparedFish,
@@ -14540,11 +17879,13 @@ export default function HomeScreen() {
         }
       }
     }
-
-    return conflicts;
-  }, [selectedTankLiters, stockItems]);
+    return fallbackConflicts;
+  }, [selectedTankLiters, stockItems, stockingCompatibility]);
   const fishIssueDetails = useMemo(
     () => [
+      ...(stockingCompatibility?.warnings ?? []).map(
+        (item) => `Ocena obsady: ${item}`
+      ),
       ...fishCompatibilityResults.flatMap((item) =>
         item.issues.map((issue) => `${item.label}: ${issue}`)
       ),
@@ -14578,15 +17919,15 @@ export default function HomeScreen() {
           .join(' ')
       ),
     ],
-    [fishAggressionConflicts, fishCompatibilityResults, fishSchoolingWarnings, t]
+    [
+      fishAggressionConflicts,
+      fishCompatibilityResults,
+      fishSchoolingWarnings,
+      stockingCompatibility,
+      t,
+    ]
   );
   const hasFishCompatibilityIssues = fishIssueDetails.length > 0;
-  const fishCompatibilitySummary = useMemo(
-    () => summarizeCompatibilityResults(fishCompatibilityResults),
-    [fishCompatibilityResults]
-  );
-  const incompatibleFishCount = fishCompatibilitySummary.speciesWithIssues;
-  const incompatibleFishMajorCount = fishCompatibilitySummary.speciesWithMajorIssues;
   const fishWarningsByItemId = useMemo(() => {
     const warningsMap = new Map();
     const appendWarning = (fishId, text, severity = 'warning') => {
@@ -14643,15 +17984,17 @@ export default function HomeScreen() {
     return warningsMap;
   }, [fishAggressionConflicts, fishCompatibilityResults, fishSchoolingWarnings, t]);
   const plantCompatibilityResults = useMemo(
-    () =>
-      stockItems
+    () => {
+      const selectedTankFishItems = stockItems.filter((entry) => entry.type === 'fish');
+      return stockItems
         .filter((item) => item.type === 'plant')
         .map((item) => {
           const issues = checkPlantCompatibility(
             item,
             currentMeasurement,
             selectedTankLiters,
-            selectedTankEnvironmentProfile
+            selectedTankEnvironmentProfile,
+            { fishItems: selectedTankFishItems }
           );
 
           return {
@@ -14659,7 +18002,8 @@ export default function HomeScreen() {
             label: `${item.commonName ?? item.name} (${item.latinName ?? t('noDataCaps')})`,
             issues,
           };
-        }),
+        });
+    },
     [currentMeasurement, selectedTankEnvironmentProfile, selectedTankLiters, stockItems, t]
   );
   const plantCompatibilitySummary = useMemo(
@@ -14704,6 +18048,119 @@ export default function HomeScreen() {
     () => buildFishStockingSummary(stockItems, selectedTankLiters),
     [selectedTankLiters, stockItems]
   );
+  const stockingCompatibilitySections = useMemo(() => {
+    const assessment = stockingCompatibility?.stockingAssessment ?? null;
+    const categories = stockingCompatibility?.categories ?? {};
+    const riskToUi = (risk) => {
+      if (risk === 'critical') return 'Niezgodne';
+      if (risk === 'high') return 'Ryzykowne';
+      if (risk === 'medium') return 'Uwaga';
+      return 'OK';
+    };
+    const behaviorCategoryKeys = [
+      'aggression',
+      'territoriality',
+      'predation',
+      'finNipping',
+      'socialNeeds',
+      'zoneCompetition',
+    ];
+    const behaviorCategoryLabels = {
+      aggression: 'Agresja',
+      territoriality: 'Terytorialnosc',
+      predation: 'Drapieznictwo',
+      finNipping: 'Podgryzanie pletw',
+      socialNeeds: 'Potrzeby spoleczne',
+      zoneCompetition: 'Konkurencja stref',
+    };
+    const buildFishLabel = (fish, fallback = 'Ryba') =>
+      String(fish?.commonName ?? fish?.name ?? fish?.latinName ?? fallback).trim();
+    const behaviorConflictDetails = (stockingCompatibility?.conflicts ?? [])
+      .filter((item) => behaviorCategoryKeys.includes(String(item?.category ?? '')))
+      .map((item) => {
+        const categoryKey = String(item?.category ?? '');
+        const categoryLabel =
+          behaviorCategoryLabels[categoryKey] ?? 'Konflikt';
+        const firstFishLabel = buildFishLabel(item?.firstFish, '');
+        const secondFishLabel = buildFishLabel(item?.secondFish, '');
+        const pairLabel =
+          firstFishLabel && secondFishLabel
+            ? `${firstFishLabel} + ${secondFishLabel}`
+            : firstFishLabel || secondFishLabel || 'Obsada';
+        const message = String(item?.message ?? '').trim();
+        return message
+          ? `${categoryLabel}: ${pairLabel} - ${message}`
+          : `${categoryLabel}: ${pairLabel}`;
+      });
+    const behaviorCategoryDetails = behaviorCategoryKeys.flatMap((key) =>
+      (categories?.[key]?.problems ?? []).map((text) => {
+        const label = behaviorCategoryLabels[key] ?? 'Zachowanie';
+        return `${label}: ${text}`;
+      })
+    );
+    const uniqueBehaviorDetails = [
+      ...new Set(
+        [...behaviorConflictDetails, ...behaviorCategoryDetails].filter(Boolean)
+      ),
+    ].slice(0, 8);
+    const spaceDetails = [
+      ...new Set([...(categories?.tankSize?.problems ?? [])].filter(Boolean)),
+    ].slice(0, 5);
+    const filtration = assessment?.filtration ?? {};
+    const filtrationStatusUi =
+      String(filtration?.status ?? '').toLowerCase() === 'za slaba'
+        ? 'Ryzykowne'
+        : String(filtration?.status ?? '').toLowerCase() === 'za silny nurt'
+          ? 'Ryzykowne'
+          : String(filtration?.status ?? '').toLowerCase() === 'mocna'
+            ? 'Uwaga'
+            : String(filtration?.status ?? '').toLowerCase() === 'nadfiltracja'
+              ? 'Uwaga'
+              : 'OK';
+    return [
+      {
+        key: 'spaceLoad',
+        label: 'Przestrzen',
+        data: {
+          uiStatus: riskToUi(assessment?.spaceLoad?.risk),
+          problems: [assessment?.spaceLoad?.message].filter(Boolean),
+          details: spaceDetails,
+        },
+      },
+      {
+        key: 'behaviorLoad',
+        label: 'Zachowanie',
+        data: {
+          uiStatus: riskToUi(assessment?.behaviorLoad?.risk),
+          problems: [assessment?.behaviorLoad?.message].filter(Boolean),
+          details: uniqueBehaviorDetails,
+        },
+      },
+      {
+        key: 'filtration',
+        label: 'Filtracja',
+        data: {
+          uiStatus: filtrationStatusUi,
+          problems: [
+            `Deklarowany przeplyw: ${filtration?.declaredFlowTotalLph ?? 0} l/h`,
+            `Szacowany realny przeplyw: ${filtration?.estimatedRealFlowTotalLph ?? 0} l/h`,
+            `Wspolczynnik realnego przeplywu: ${Math.round(Number(filtration?.effectiveFlowFactor ?? 0) * 100)}%`,
+            `Obrot: ${filtration?.turnoverPerHour ?? 0}x/h`,
+            `Ocena: ${filtration?.status ?? 'brak danych'}`,
+          ].filter(Boolean),
+          details: [
+            ...(Array.isArray(filtration?.warnings) ? filtration.warnings : []),
+            filtration?.hasStrongCurrentWarning
+              ? 'Alert: wykryto potencjalnie zbyt silny nurt dla spokojnych gatunkow.'
+              : '',
+          ].filter(Boolean),
+        },
+      },
+    ].map((item) => ({
+      ...item,
+      data: item.data ?? { uiStatus: 'OK', problems: [], details: [] },
+    }));
+  }, [stockingCompatibility]);
   const todayDayBucketMs = getDayBucketMs(new Date());
   const homeStockItemsByTankId = useMemo(
     () =>
@@ -14737,7 +18194,11 @@ export default function HomeScreen() {
       const tankMeasurements = homeMeasurements
         .filter((item) => item.tankId === tank.id)
         .sort((a, b) => getMeasurementRecordedAtMs(b) - getMeasurementRecordedAtMs(a));
-      const latestMeasurement = tankMeasurements[0] ?? null;
+      const visibleTankMeasurements = filterMeasurementsByPlan(
+        tankMeasurements,
+        currentPlan
+      );
+      const latestMeasurement = visibleTankMeasurements[0] ?? null;
       const latestAnalysis = latestMeasurement
         ? analyzeMeasurementLogic(
             latestMeasurement,
@@ -14751,7 +18212,7 @@ export default function HomeScreen() {
       ).length;
 
       const schedule = buildWaterTestingScheduleLogic(
-        tankMeasurements,
+        visibleTankMeasurements,
         availableMeasurementTests,
         getWaterAnalysisOptionsForTank(tank)
       );
@@ -14765,12 +18226,13 @@ export default function HomeScreen() {
         measurement: latestMeasurement,
         stockItems: tankStockItems,
         activeIssueCases: issueCases,
+        equipmentCatalog: equipmentCatalogForAnalysis,
       });
       const tankProfile = buildTankEnvironmentProfile(tank);
       const tankLiters = Number(tank?.liters);
       const tankEquipmentAssessment = buildTankEquipmentAssessment(
         tank,
-        EQUIPMENT_CATALOG
+        equipmentCatalogForAnalysis
       );
       const tankFishItems = tankStockItems.filter((item) => item.type === 'fish');
       const tankPlantItems = tankStockItems.filter((item) => item.type === 'plant');
@@ -14780,26 +18242,31 @@ export default function HomeScreen() {
       }));
       const tankPlantCompatibilityResults = tankPlantItems.map((item) => ({
         id: item.id,
-        issues: checkPlantCompatibility(item, latestMeasurement, tankLiters, tankProfile),
+        issues: checkPlantCompatibility(
+          item,
+          latestMeasurement,
+          tankLiters,
+          tankProfile,
+          { fishItems: tankFishItems }
+        ),
       }));
-      let tankFishAggressionConflictsCount = 0;
-      for (let index = 0; index < tankFishItems.length; index += 1) {
-        for (
-          let compareIndex = index + 1;
-          compareIndex < tankFishItems.length;
-          compareIndex += 1
-        ) {
-          if (
-            getFishAggressionConflict(
-              tankFishItems[index],
-              tankFishItems[compareIndex],
-              tankLiters
-            )
-          ) {
-            tankFishAggressionConflictsCount += 1;
-          }
-        }
-      }
+      const tankDynamicCompatibility = evaluateStockingCompatibility(
+        tank,
+        tankStockItems,
+        latestMeasurement
+      );
+      const tankEmergencyState = evaluateEmergencyState(
+        tank,
+        latestMeasurement,
+        tankEquipmentAssessment,
+        null
+      );
+      const tankFishAggressionConflictsCount = (tankDynamicCompatibility?.conflicts ?? []).filter(
+        (item) =>
+          ['aggression', 'territoriality', 'predation', 'finNipping'].includes(
+            String(item?.category ?? '')
+          )
+      ).length;
       const tankFishSchoolingWarningsCount = tankFishItems.filter((item) => {
         const schoolingProfile = resolveFishSchoolingProfile(item);
         return (
@@ -14853,22 +18320,68 @@ export default function HomeScreen() {
         stockItems: tankStockItems,
         issueCases,
         enabledTests: availableMeasurementTests,
+        equipmentCatalog: equipmentCatalogForAnalysis,
       });
+      const tankOnboardingPlan = buildTankOnboardingPlan(
+        tank,
+        visibleTankMeasurements,
+        availableMeasurementTests
+      );
+      const adaptiveTaskSchedule = buildAdaptiveTaskSchedule(tank, {
+        todayDayBucketMs,
+        latestMeasurement,
+        latestAnalysis,
+        measurements: visibleTankMeasurements,
+        stockItems: tankStockItems,
+        issueCases,
+        equipmentAssessment: tankEquipmentAssessment,
+        stockingCompatibility: tankDynamicCompatibility,
+        onboardingPlan: tankOnboardingPlan,
+      });
+      const todayActionPlan = buildTodayActionPlan(tank, {
+        todayDayBucketMs,
+        latestMeasurement,
+        latestAnalysis,
+        schedule,
+        adaptiveSchedule: adaptiveTaskSchedule,
+        measurements: visibleTankMeasurements,
+        stockItems: tankStockItems,
+        issueCases,
+        healthAssessment,
+        equipmentAssessment: tankEquipmentAssessment,
+        stockingCompatibility: tankDynamicCompatibility,
+        onboardingPlan: tankOnboardingPlan,
+        emergencyState: tankEmergencyState,
+      });
+      const adaptiveActionsTodayCount = Array.isArray(adaptiveTaskSchedule?.dueToday)
+        ? adaptiveTaskSchedule.dueToday.length
+        : 0;
       const fallbackActionsTodayCount =
-        measurementActionsToday + scheduleActionsToday;
+        measurementActionsToday + scheduleActionsToday + adaptiveActionsTodayCount;
       const actionsTodayCount =
-        sectionCounts.planCount > 0
-          ? sectionCounts.planCount
-          : fallbackActionsTodayCount;
+        todayActionPlan.count > 0
+          ? todayActionPlan.count
+          : sectionCounts.planCount > 0
+            ? sectionCounts.planCount
+            : fallbackActionsTodayCount;
       const reminderActionsTodayCount = actionsTodayCount;
 
       return {
         tank,
-        statusSeverity: getHomeStatusSeverityFromScore(healthAssessment.score),
+        statusSeverity:
+          tankEmergencyState?.severity === 'critical'
+            ? 'critical'
+            : getHomeStatusSeverityFromScore(healthAssessment.score),
         healthAssessment,
+        emergencyState: tankEmergencyState,
+        adaptiveTaskSchedule,
+        todayActionPlan,
         actionsTodayCount,
         reminderActionsTodayCount,
-        issueCount: Math.max(homeAttentionItems.length, issueCases.length),
+        issueCount: Math.max(
+          homeAttentionItems.length,
+          issueCases.length + (tankEmergencyState?.isEmergency ? 1 : 0)
+        ),
       };
     });
   }, [
@@ -14879,9 +18392,156 @@ export default function HomeScreen() {
     homeActiveIssueCases,
     hasEquipmentSaveAccess,
     hasGeneralRecommendationAccess,
+    equipmentCatalogForAnalysis,
     todayDayBucketMs,
+    currentPlan,
   ]);
   const selectedHomeScoreAssessment = selectedHomeScoreSummary?.healthAssessment ?? null;
+  const selectedHomeEmergencyState = selectedHomeScoreSummary?.emergencyState ?? null;
+  const selectedHomeAdaptiveTaskSchedule =
+    selectedHomeScoreSummary?.adaptiveTaskSchedule ?? null;
+  const selectedHomeTodayActionPlan = selectedHomeScoreSummary?.todayActionPlan ?? null;
+  const selectedHomeTankId = String(selectedHomeScoreSummary?.tank?.id ?? '').trim();
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    const loadAdaptiveTaskChecks = async () => {
+      if (!user?.uid || !selectedHomeTankId) {
+        if (!isCancelled) {
+          setAdaptiveTaskChecks({});
+        }
+        return;
+      }
+
+      const storageKey = getAdaptiveTaskChecksStorageKey(user.uid, selectedHomeTankId);
+      try {
+        const rawValue = await AsyncStorage.getItem(storageKey);
+        if (isCancelled) {
+          return;
+        }
+        const parsedValue = rawValue ? JSON.parse(rawValue) : {};
+        setAdaptiveTaskChecks(normalizeAdaptiveTaskChecks(parsedValue));
+      } catch {
+        if (!isCancelled) {
+          setAdaptiveTaskChecks({});
+        }
+      }
+    };
+
+    loadAdaptiveTaskChecks();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [selectedHomeTankId, user?.uid]);
+
+  useEffect(() => {
+    setAdaptiveTaskExpandedBuckets({
+      today: false,
+      week: false,
+      month: false,
+    });
+  }, [selectedHomeTankId]);
+
+  const selectedHomeAdaptiveTasksByWindow = useMemo(() => {
+    const tasks = Array.isArray(selectedHomeAdaptiveTaskSchedule?.tasks)
+      ? selectedHomeAdaptiveTaskSchedule.tasks
+      : [];
+    const windows = {
+      today: [],
+      week: [],
+      month: [],
+    };
+    const dayMs = 24 * 60 * 60 * 1000;
+    tasks.forEach((task) => {
+      const taskBucket = Number(task?.dayBucketMs);
+      const completionKey = getAdaptiveTaskOccurrenceKey(task);
+      if (!Number.isFinite(taskBucket) || taskBucket <= 0 || !completionKey) {
+        return;
+      }
+      const taskWithCompletion = {
+        ...task,
+        completionKey,
+      };
+      const diffDays = Math.round((taskBucket - todayDayBucketMs) / dayMs);
+      if (diffDays <= 0) {
+        windows.today.push(taskWithCompletion);
+      } else if (diffDays <= 7) {
+        windows.week.push(taskWithCompletion);
+      } else if (diffDays <= 30) {
+        windows.month.push(taskWithCompletion);
+      }
+    });
+    const sortByPriority = (a, b) => {
+      const rank = (value) =>
+        String(value ?? '').toLowerCase() === 'critical'
+          ? 3
+          : String(value ?? '').toLowerCase() === 'important'
+            ? 2
+            : 1;
+      const byRank = rank(b?.priority) - rank(a?.priority);
+      if (byRank !== 0) {
+        return byRank;
+      }
+      return Number(a?.dayBucketMs ?? 0) - Number(b?.dayBucketMs ?? 0);
+    };
+    const mapBucket = (bucketItems) => {
+      const allItems = bucketItems.sort(sortByPriority);
+      const pending = allItems.filter(
+        (task) => !adaptiveTaskChecks[String(task?.completionKey ?? '').trim()]
+      );
+      return {
+        all: allItems,
+        pending,
+        completedCount: Math.max(0, allItems.length - pending.length),
+      };
+    };
+    return {
+      today: mapBucket(windows.today),
+      week: mapBucket(windows.week),
+      month: mapBucket(windows.month),
+    };
+  }, [adaptiveTaskChecks, selectedHomeAdaptiveTaskSchedule, todayDayBucketMs]);
+
+  const handleToggleAdaptiveTaskBucketExpanded = useCallback((bucketKey) => {
+    const normalizedKey = String(bucketKey ?? '').trim().toLowerCase();
+    if (!normalizedKey) {
+      return;
+    }
+    setAdaptiveTaskExpandedBuckets((previous) => ({
+      ...previous,
+      [normalizedKey]: !previous[normalizedKey],
+    }));
+  }, []);
+
+  const handleCompleteAdaptiveTask = useCallback(
+    async (task) => {
+      const completionKey = getAdaptiveTaskOccurrenceKey(task);
+      if (!completionKey || !user?.uid || !selectedHomeTankId) {
+        return;
+      }
+
+      const previousChecks = adaptiveTaskChecks;
+      const nextChecks = {
+        ...previousChecks,
+        [completionKey]: true,
+      };
+      setAdaptiveTaskChecks(nextChecks);
+
+      try {
+        const storageKey = getAdaptiveTaskChecksStorageKey(user.uid, selectedHomeTankId);
+        await AsyncStorage.setItem(storageKey, JSON.stringify(nextChecks));
+      } catch (error) {
+        setAdaptiveTaskChecks(previousChecks);
+        alert(
+          'Blad zapisu statusu zadania: ' +
+            (error instanceof Error ? error.message : '')
+        );
+      }
+    },
+    [adaptiveTaskChecks, selectedHomeTankId, user?.uid]
+  );
   const selectedHomeScoreDetails = selectedHomeScoreAssessment?.penalties ?? [];
   const selectedHomeScoreLabel = selectedHomeScoreAssessment
     ? selectedHomeScoreAssessment.score >= 85
@@ -14987,9 +18647,28 @@ export default function HomeScreen() {
   const diseaseImageModalFrameWidth = Math.max(windowWidth - 24, 280);
   const diseaseImageModalFrameHeight = Math.max(windowHeight - 220, 260);
   const diseaseImageModalScaleLabel = `${Math.round(diseaseImageZoomLevel * 100)}%`;
+  const accessibleTanks = useMemo(
+    () => getAccessibleTanksForPlan(tanks, currentPlan),
+    [currentPlan, tanks]
+  );
+  const lockedTanks = useMemo(
+    () => getLockedTanksForPlan(tanks, currentPlan),
+    [currentPlan, tanks]
+  );
+  const selectedTankIndex = useMemo(
+    () => tanks.findIndex((item) => item?.id === selectedTank?.id),
+    [selectedTank?.id, tanks]
+  );
+  const selectedTankLockedByPlan = useMemo(
+    () =>
+      selectedTankIndex >= 0
+        ? isTankLockedByPlan(currentPlan, selectedTankIndex)
+        : false,
+    [currentPlan, selectedTankIndex]
+  );
   const currentTankCount = tanks.length;
-  const tankLimit = getSubscriptionLimit('maxTanks');
-  const canAddTank = tankLimit === null || currentTankCount < tankLimit;
+  const tankLimit = planLimits?.maxTanks ?? getSubscriptionLimit('maxTanks');
+  const canAddTank = canCreateTank(currentTankCount);
   const isOverTankLimit = tankLimit !== null && currentTankCount > tankLimit;
   const subscriptionStatusLabel =
     subscription.status === 'active'
@@ -15019,26 +18698,39 @@ export default function HomeScreen() {
   const hasEquipmentSaveAccess =
     subscriptionEntitlements?.equipmentAccess === 'save' ||
     subscriptionEntitlements?.equipmentAccess === 'analysis_and_recommendations';
-  const hasEquipmentAnalysisAccess =
-    subscriptionEntitlements?.equipmentAccess === 'analysis_and_recommendations';
   const hasGeneralRecommendationAccess =
     subscriptionEntitlements?.recommendationAccess === 'general' ||
-    subscriptionEntitlements?.recommendationAccess === 'step_by_step';
-  const hasGuidedRecommendationAccess =
     subscriptionEntitlements?.recommendationAccess === 'step_by_step';
   const hasTaskReminderAccess =
     subscriptionEntitlements?.taskAccess === 'reminders' ||
     subscriptionEntitlements?.taskAccess === 'checklists_and_plan';
   const hasTaskChecklistAccess =
     subscriptionEntitlements?.taskAccess === 'checklists_and_plan';
-  const historyEntryLimit = getSubscriptionLimit('maxSavedMeasurementsPerTank');
+  const historyDaysLimit = planLimits?.historyDays ?? getSubscriptionLimit('historyDays');
   const currentHistoryEntryCount = measurements.length;
-  const visibleHistoryMeasurements =
-    historyEntryLimit === null
-      ? measurements
-      : measurements.slice(0, historyEntryLimit);
-  const isHistoryDisplayLimited =
-    historyEntryLimit !== null && currentHistoryEntryCount > historyEntryLimit;
+  const visibleHistoryMeasurements = useMemo(
+    () => filterMeasurementsByPlan(measurements, currentPlan),
+    [currentPlan, measurements]
+  );
+  const isHistoryDisplayLimited = visibleHistoryMeasurements.length < measurements.length;
+  const lockedMeasurementFields = useMemo(
+    () => getLockedMeasurementFields(currentPlan),
+    [currentPlan]
+  );
+  const fullMeasurementFeatureTargetPlan = useMemo(
+    () => getUpgradeTargetForFeature('full_measurements'),
+    []
+  );
+  const fullMeasurementFeatureLockMessage = useMemo(
+    () => getFeatureLockMessage('full_measurements', currentPlan),
+    [currentPlan]
+  );
+  const criticalActionPlanLockMessage = useMemo(
+    () => getFeatureLockMessage('smart_action_plan', currentPlan),
+    [currentPlan]
+  );
+  const hasSmartActionPlanAccess = !isFeatureLocked('smart_action_plan');
+  const hasAutomaticTasksAccess = canUseFeature('automatic_tasks');
   const tankLimitUsageText =
     tankLimit === null
       ? t('subscriptionTankLimitUsageUnlimited', {
@@ -15051,16 +18743,12 @@ export default function HomeScreen() {
           limit: tankLimit,
         });
   const historyLimitUsageText =
-    historyEntryLimit === null
+    historyDaysLimit === null
       ? t('subscriptionHistoryLimitUsageUnlimited', {
           plan: currentSubscriptionTierLabel,
           current: currentHistoryEntryCount,
         })
-      : t('subscriptionHistoryLimitUsage', {
-          plan: currentSubscriptionTierLabel,
-          current: currentHistoryEntryCount,
-          limit: historyEntryLimit,
-        });
+      : `Plan ${currentSubscriptionTierLabel}: historia z ostatnich ${historyDaysLimit} dni (${visibleHistoryMeasurements.length}/${currentHistoryEntryCount} wpisow).`;
   const subscriptionPlatformProductIdByTier = useMemo(
     () =>
       subscriptionPlans.reduce((acc, plan) => {
@@ -15110,6 +18798,20 @@ export default function HomeScreen() {
       : selectedTankLighting.isDaylightOnly
         ? t('lightDaylightOnly')
         : t('noDataCaps');
+  useEffect(() => {
+    if (!selectedTankLockedByPlan) {
+      return;
+    }
+
+    const firstAccessibleTank = accessibleTanks[0] ?? null;
+    if (!firstAccessibleTank) {
+      return;
+    }
+
+    if (firstAccessibleTank?.id !== selectedTank?.id) {
+      setSelectedTank(firstAccessibleTank);
+    }
+  }, [accessibleTanks, selectedTank, selectedTankLockedByPlan, setSelectedTank]);
   useEffect(() => {
     setEquipmentLightHoursDraft(
       selectedTankLighting.lightHours === null
@@ -15194,11 +18896,238 @@ export default function HomeScreen() {
     [tanks]
   );
   const tankEquipmentAssessment = useMemo(
-    () => buildTankEquipmentAssessment(selectedTank, EQUIPMENT_CATALOG),
-    [selectedTank]
+    () => buildTankEquipmentAssessment(selectedTank, equipmentCatalogForAnalysis),
+    [selectedTank, equipmentCatalogForAnalysis]
   );
+  const maintenanceActionState = useMemo(
+    () => normalizeMaintenanceActionState(selectedTank?.maintenanceActionState),
+    [selectedTank?.maintenanceActionState]
+  );
+  const waterActionCalendar = useMemo(() => {
+    const windowDays = 14;
+    const dayMs = 24 * 60 * 60 * 1000;
+    const todayDayBucketMs = getDayBucketMs(new Date());
+    const endDayBucketMs = todayDayBucketMs + (windowDays - 1) * dayMs;
+    const waterChangeIntervalDays = 7;
+    const gravelVacuumIntervalDays = 21;
+    const filterServiceIntervalDays = 21;
+    const parameterPlans = Array.isArray(waterTestingSchedule?.parameters)
+      ? waterTestingSchedule.parameters
+      : [];
+    const latestMeasurementMs = getMeasurementRecordedAtMs(measurements?.[0]);
+    const latestMeasurementDayBucketMs = getDayBucketMs(latestMeasurementMs);
+
+    const actionDays = new Map();
+    const addAction = (dayBucketMs, action) => {
+      if (!Number.isFinite(dayBucketMs) || dayBucketMs < todayDayBucketMs || dayBucketMs > endDayBucketMs) {
+        return;
+      }
+      const existing = actionDays.get(dayBucketMs);
+      const dayEntry = existing ?? {
+        dayBucketMs,
+        date: formatDateOnly(dayBucketMs),
+        actions: [],
+      };
+      dayEntry.actions.push(action);
+      actionDays.set(dayBucketMs, dayEntry);
+    };
+
+    const scheduleRecurringAction = ({
+      stateKey,
+      title,
+      details,
+      intervalDays,
+      fallbackDayBucketMs = todayDayBucketMs,
+    }) => {
+      const stateEntry = maintenanceActionState[stateKey] ?? {};
+      const completedAtMs = Number(stateEntry?.lastCompletedAtMs) || 0;
+      const skippedAtMs = Number(stateEntry?.lastSkippedAtMs) || 0;
+      const postponedUntilMs = Number(stateEntry?.postponedUntilMs) || 0;
+      const referenceDayBucketMs = Math.max(completedAtMs, skippedAtMs, fallbackDayBucketMs);
+      let firstDueDayBucketMs =
+        referenceDayBucketMs > 0
+          ? referenceDayBucketMs + intervalDays * dayMs
+          : todayDayBucketMs;
+      if (postponedUntilMs > firstDueDayBucketMs) {
+        firstDueDayBucketMs = postponedUntilMs;
+      }
+
+      const isOverdue = firstDueDayBucketMs < todayDayBucketMs;
+      let displayDayBucketMs = isOverdue ? todayDayBucketMs : firstDueDayBucketMs;
+      let iteration = 0;
+      while (displayDayBucketMs <= endDayBucketMs) {
+        addAction(displayDayBucketMs, {
+          id: `${stateKey}-${displayDayBucketMs}`,
+          stateKey,
+          kind: stateKey,
+          level: isOverdue && iteration === 0 ? 'problem' : 'ok',
+          isOverdue: Boolean(isOverdue && iteration === 0),
+          dayBucketMs: displayDayBucketMs,
+          sourceDueDayBucketMs:
+            iteration === 0 ? firstDueDayBucketMs : firstDueDayBucketMs + iteration * intervalDays * dayMs,
+          intervalDays,
+          title,
+          details,
+        });
+        displayDayBucketMs += intervalDays * dayMs;
+        iteration += 1;
+      }
+    };
+
+    scheduleRecurringAction({
+      stateKey: 'water_change',
+      title: 'Podmiana wody (20-30%)',
+      details: 'Regularna podmiana wspiera stabilnosc biologiczna i kontroluje NO3.',
+      intervalDays: waterChangeIntervalDays,
+    });
+    scheduleRecurringAction({
+      stateKey: 'gravel_vacuum',
+      title: 'Odmulanie dna',
+      details: 'Najlepiej sekcjami i razem z podmiana, bez naruszania calego dna naraz.',
+      intervalDays: gravelVacuumIntervalDays,
+    });
+    scheduleRecurringAction({
+      stateKey: 'filter_service',
+      title: 'Serwis filtra',
+      details:
+        'Kontrola przeplywu, prefiltra i wirnika. Media biologiczne plucz delikatnie, nie wszystkie naraz.',
+      intervalDays: filterServiceIntervalDays,
+    });
+
+    const testsByDay = new Map();
+    const testStateEntry = maintenanceActionState.water_tests ?? {};
+    const testCompletedAtMs = Number(testStateEntry?.lastCompletedAtMs) || 0;
+    const testSkippedAtMs = Number(testStateEntry?.lastSkippedAtMs) || 0;
+    const testPostponedUntilMs = Number(testStateEntry?.postponedUntilMs) || 0;
+    const testReferenceDayBucketMs = Math.max(
+      testCompletedAtMs,
+      testSkippedAtMs,
+      latestMeasurementDayBucketMs
+    );
+
+    parameterPlans.forEach((plan) => {
+      const cadenceDays = Math.max(1, Math.round(Number(plan?.cadenceDays) || 1));
+      let nextDayBucketMs =
+        Number.isFinite(Number(plan?.dayBucketMs)) && Number(plan.dayBucketMs) > 0
+          ? Number(plan.dayBucketMs)
+          : todayDayBucketMs;
+      if (testReferenceDayBucketMs > 0) {
+        nextDayBucketMs = Math.max(
+          nextDayBucketMs,
+          testReferenceDayBucketMs + cadenceDays * dayMs
+        );
+      }
+      if (testPostponedUntilMs > nextDayBucketMs) {
+        nextDayBucketMs = testPostponedUntilMs;
+      }
+
+      const isOverdue = nextDayBucketMs < todayDayBucketMs;
+      let displayDayBucketMs = isOverdue ? todayDayBucketMs : nextDayBucketMs;
+
+      while (displayDayBucketMs <= endDayBucketMs) {
+        const current = testsByDay.get(displayDayBucketMs) ?? [];
+        current.push({
+          ...plan,
+          cadenceDays,
+          isOverdue,
+          displayDayBucketMs,
+          sourceDueDayBucketMs: nextDayBucketMs,
+        });
+        testsByDay.set(displayDayBucketMs, current);
+        displayDayBucketMs += cadenceDays * dayMs;
+        nextDayBucketMs += cadenceDays * dayMs;
+      }
+    });
+    testsByDay.forEach((dayPlans, dayBucketMs) => {
+      const labels = [...new Set(dayPlans.map((plan) => String(plan?.label ?? plan?.key ?? '').trim()).filter(Boolean))];
+      const reasons = [...new Set(dayPlans.map((plan) => String(plan?.reason ?? '').trim()).filter(Boolean))];
+      const highestLevel = dayPlans.reduce((level, plan) => {
+        const normalized = String(plan?.level ?? '').toLowerCase();
+        if (normalized === 'problem') {
+          return 'problem';
+        }
+        if (normalized === 'warning' && level !== 'problem') {
+          return 'warning';
+        }
+        return level;
+      }, 'ok');
+      const hasOverduePlan = dayPlans.some((plan) => Boolean(plan?.isOverdue));
+      addAction(dayBucketMs, {
+        id: `water-tests-${dayBucketMs}`,
+        stateKey: 'water_tests',
+        kind: 'water_tests',
+        level: hasOverduePlan ? 'problem' : highestLevel,
+        isOverdue: hasOverduePlan,
+        dayBucketMs,
+        sourceDueDayBucketMs: dayPlans[0]?.sourceDueDayBucketMs ?? dayBucketMs,
+        intervalDays: Math.max(
+          1,
+          ...dayPlans.map((plan) => Number(plan?.cadenceDays) || 1)
+        ),
+        title: `Testy parametrow: ${labels.join(', ')}`,
+        details:
+          reasons.length > 0
+            ? reasons.slice(0, 2).join(' ')
+            : 'Zakres testow dobrany do historii pomiarow i wymaganej czestotliwosci badan.',
+      });
+    });
+
+    const levelRank = (value) =>
+      value === 'problem' ? 3 : value === 'warning' ? 2 : 1;
+    const kindRank = (value) =>
+      value === 'water_change'
+        ? 1
+        : value === 'water_tests'
+          ? 2
+          : value === 'gravel_vacuum'
+            ? 3
+            : 4;
+    const days = [...actionDays.values()]
+      .sort((a, b) => a.dayBucketMs - b.dayBucketMs)
+      .map((day) => ({
+        ...day,
+        actions: [...day.actions].sort((a, b) => {
+          const byLevel = levelRank(b.level) - levelRank(a.level);
+          if (byLevel !== 0) {
+            return byLevel;
+          }
+          return kindRank(a.kind) - kindRank(b.kind);
+        }),
+      }));
+    const overdueCount = days.reduce(
+      (sum, day) =>
+        sum + day.actions.filter((action) => Boolean(action?.isOverdue)).length,
+      0
+    );
+
+    return {
+      windowDays,
+      totalActions: days.reduce((sum, day) => sum + day.actions.length, 0),
+      days,
+      overdueCount,
+      waterChangeIntervalDays,
+      gravelVacuumIntervalDays,
+      filterServiceIntervalDays,
+    };
+  }, [
+    maintenanceActionState,
+    measurements,
+    waterTestingSchedule,
+  ]);
   const filteredEquipmentCatalog = useMemo(() => {
     const normalizedType = normalizeEquipmentCatalogType(equipmentCatalogType);
+    const heaterCatalogAnalysis = tankEquipmentAssessment?.heater?.analysis || null;
+    const heaterRequiredPowerW = toFiniteNumber(heaterCatalogAnalysis?.requiredHeaterPowerW);
+    const heaterTargetTemperatureC = toFiniteNumber(heaterCatalogAnalysis?.targetTemperatureC);
+    const heaterAmbientTemperatureC = toFiniteNumber(heaterCatalogAnalysis?.ambientTemperatureC);
+    const heaterTemperatureDeltaC = toFiniteNumber(heaterCatalogAnalysis?.temperatureDeltaC);
+    const heaterWattsPerLiter =
+      Number.isFinite(heaterRequiredPowerW) &&
+      heaterRequiredPowerW > 0 &&
+      Number.isFinite(selectedTankLiters) &&
+      selectedTankLiters > 0
+        ? heaterRequiredPowerW / selectedTankLiters
+        : null;
 
     if (!normalizedType) {
       return [];
@@ -15206,12 +19135,12 @@ export default function HomeScreen() {
 
     const search = normalizeText(equipmentCatalogSearch);
     if (normalizedType === 'light') {
-      return LIGHT_LAMP_CATALOG
+      return lightLampCatalog
         .map((item) => ({
           id: item.id,
           type: 'light',
-          brand: 'Lampa',
-          model: item.name,
+          brand: item.brand || 'Lampa',
+          model: item.model || item.name,
           lumens: Number(item.lumens),
           description: getEquipmentCatalogDescription({ type: 'light' }),
         }))
@@ -15254,7 +19183,7 @@ export default function HomeScreen() {
         });
     }
 
-    return EQUIPMENT_CATALOG.filter((item) => item.type === normalizedType)
+    return mergedEquipmentCatalog.filter((item) => item.type === normalizedType)
       .filter((item) => {
         if (!search) {
           return true;
@@ -15267,21 +19196,183 @@ export default function HomeScreen() {
       .map((item) => {
         const minLiters = toFiniteNumber(item.tankMinLiters) ?? 0;
         const maxLiters = toFiniteNumber(item.tankMaxLiters) ?? Number.MAX_SAFE_INTEGER;
-        const fitsTank =
+        const nominalFitsTank =
           Number.isFinite(selectedTankLiters) &&
           selectedTankLiters >= minLiters &&
           selectedTankLiters <= maxLiters;
+        const filterEfficiencyFactor =
+          item.type === 'filter'
+            ? getFilterRealFlowFactor(
+                item.filterType,
+                item.effectiveFlowFactor ?? item.filterEfficiencyFactor
+              )
+            : null;
+        const effectiveFlowLh =
+          item.type === 'filter' && Number.isFinite(toFiniteNumber(item.flowLh))
+            ? Number(item.flowLh) * Number(filterEfficiencyFactor ?? 1)
+            : null;
         const flowRatio =
           item.type === 'filter' &&
           Number.isFinite(selectedTankLiters) &&
           selectedTankLiters > 0 &&
-          Number.isFinite(toFiniteNumber(item.flowLh))
-            ? Math.round((item.flowLh / selectedTankLiters) * 10) / 10
+          Number.isFinite(Number(effectiveFlowLh))
+            ? Math.round((Number(effectiveFlowLh) / selectedTankLiters) * 10) / 10
             : null;
+        const effectiveMinLiters =
+          item.type === 'filter' && Number.isFinite(Number(filterEfficiencyFactor))
+            ? Math.max(0, minLiters * Number(filterEfficiencyFactor))
+            : minLiters;
+        const effectiveMaxLiters =
+          item.type === 'filter' &&
+          Number.isFinite(Number(filterEfficiencyFactor)) &&
+          Number.isFinite(maxLiters) &&
+          maxLiters < Number.MAX_SAFE_INTEGER
+            ? maxLiters * Number(filterEfficiencyFactor)
+            : maxLiters;
+        const heaterPowerW = toFiniteNumber(item.powerW);
+        const heaterEffectiveMinLiters =
+          item.type === 'heater' &&
+          Number.isFinite(heaterPowerW) &&
+          heaterPowerW > 0 &&
+          Number.isFinite(heaterWattsPerLiter) &&
+          heaterWattsPerLiter > 0
+            ? heaterPowerW / (1.5 * heaterWattsPerLiter)
+            : null;
+        const heaterEffectiveMaxLiters =
+          item.type === 'heater' &&
+          Number.isFinite(heaterPowerW) &&
+          heaterPowerW > 0 &&
+          Number.isFinite(heaterWattsPerLiter) &&
+          heaterWattsPerLiter > 0
+            ? heaterPowerW / (0.9 * heaterWattsPerLiter)
+            : null;
+        const effectiveTankRangeLabel =
+          item.type === 'filter'
+            ? formatRoundedTankRangeToTens(effectiveMinLiters, effectiveMaxLiters)
+            : item.type === 'heater'
+            ? formatRoundedTankRangeToTens(heaterEffectiveMinLiters, heaterEffectiveMaxLiters)
+            : formatEquipmentTankRange(item);
+
+        let fitsTank = nominalFitsTank;
+        let fitBadgeLabel = fitsTank ? 'Pasuje' : 'Sprawdz';
+        let fitBadgeTone = fitsTank ? 'ok' : 'neutral';
+        let fitMessage = fitsTank
+          ? 'Zakres litrazu wyglada sensownie dla Twojego akwarium.'
+          : 'Model jest poza zalecanym zakresem litrazu dla tego zbiornika.';
+
+        if (item.type === 'filter') {
+          if (!Number.isFinite(selectedTankLiters) || selectedTankLiters <= 0) {
+            fitsTank = false;
+            fitBadgeLabel = 'Sprawdz';
+            fitBadgeTone = 'neutral';
+            fitMessage =
+              'Ustaw litraz akwarium, aby ocenic filtr na bazie realnego przeplywu.';
+          } else if (!Number.isFinite(Number(flowRatio))) {
+            fitsTank = false;
+            fitBadgeLabel = 'Sprawdz';
+            fitBadgeTone = 'neutral';
+            fitMessage =
+              'Brak danych o przeplywie filtra. Uzupelnij model lub wydajnosc.';
+          } else if (Number(flowRatio) < 5) {
+            fitsTank = false;
+            fitBadgeLabel = 'Za slaby';
+            fitBadgeTone = Number(flowRatio) < 3 ? 'danger' : 'warning';
+            fitMessage = `Realny obrot ${flowRatio}x/h jest niski dla tego litrazu (cel zwykle 5-10x/h).`;
+          } else if (Number(flowRatio) > 10) {
+            fitsTank = false;
+            fitBadgeLabel = 'Za mocny';
+            fitBadgeTone = Number(flowRatio) > 14 ? 'danger' : 'warning';
+            fitMessage = `Realny obrot ${flowRatio}x/h jest wysoki dla tego litrazu (cel zwykle 5-10x/h).`;
+          } else {
+            fitsTank = true;
+            fitBadgeLabel = 'Pasuje';
+            fitBadgeTone = 'ok';
+            fitMessage = `Realny obrot ${flowRatio}x/h jest dobrze dopasowany (cel zwykle 5-10x/h).`;
+          }
+        } else if (item.type === 'heater') {
+          const heaterStatus = String(heaterCatalogAnalysis?.heaterStatus ?? '');
+          const heaterContextLabel =
+            Number.isFinite(heaterTargetTemperatureC) &&
+            Number.isFinite(heaterAmbientTemperatureC) &&
+            Number.isFinite(heaterTemperatureDeltaC)
+              ? ` (cel ${Math.round(heaterTargetTemperatureC * 10) / 10} C, otoczenie ${
+                  Math.round(heaterAmbientTemperatureC * 10) / 10
+                } C, delta ${Math.round(heaterTemperatureDeltaC * 10) / 10} C)`
+              : '';
+          if (!Number.isFinite(selectedTankLiters) || selectedTankLiters <= 0) {
+            fitsTank = false;
+            fitBadgeLabel = 'Sprawdz';
+            fitBadgeTone = 'neutral';
+            fitMessage = 'Ustaw litraz akwarium, aby ocenic grzalke na bazie wymaganej mocy.';
+          } else if (heaterStatus === 'no_heater_needed') {
+            fitsTank = true;
+            fitBadgeLabel = 'Opcjonalna';
+            fitBadgeTone = 'neutral';
+            fitMessage =
+              'Przy obecnych zalozeniach grzalka nie jest konieczna do osiagniecia celu temperatury, ale moze stabilizowac wahania.';
+          } else if (!Number.isFinite(heaterRequiredPowerW) || heaterRequiredPowerW <= 0) {
+            fitsTank = false;
+            fitBadgeLabel = 'Sprawdz';
+            fitBadgeTone = 'neutral';
+            fitMessage =
+              'Brak danych o wymaganej mocy. Uzupelnij temperature docelowa i litraz, aby ocenic grzalke.';
+          } else if (!Number.isFinite(heaterPowerW) || heaterPowerW <= 0) {
+            fitsTank = false;
+            fitBadgeLabel = 'Sprawdz';
+            fitBadgeTone = 'neutral';
+            fitMessage = 'Brak danych o mocy grzalki w katalogu.';
+          } else {
+            const heaterRatio = heaterPowerW / Math.max(1, heaterRequiredPowerW);
+            if (heaterRatio < 0.7) {
+              fitsTank = false;
+              fitBadgeLabel = 'Za slaba';
+              fitBadgeTone = 'danger';
+              fitMessage = `Moc ${Math.round(heaterPowerW)} W jest za niska wzgledem wymaganych ~${Math.round(
+                heaterRequiredPowerW
+              )} W${heaterContextLabel}.`;
+            } else if (heaterRatio < 0.9) {
+              fitsTank = false;
+              fitBadgeLabel = 'Raczej slaba';
+              fitBadgeTone = 'warning';
+              fitMessage = `Moc ${Math.round(heaterPowerW)} W moze byc za slaba wzgledem wymaganych ~${Math.round(
+                heaterRequiredPowerW
+              )} W${heaterContextLabel}.`;
+            } else if (heaterRatio <= 1.5) {
+              fitsTank = true;
+              fitBadgeLabel = 'Pasuje';
+              fitBadgeTone = 'ok';
+              fitMessage = `Moc ${Math.round(heaterPowerW)} W jest dobrze dopasowana do wymaganych ~${Math.round(
+                heaterRequiredPowerW
+              )} W${heaterContextLabel}.`;
+            } else if (heaterRatio <= 2.5) {
+              fitsTank = true;
+              fitBadgeLabel = 'Mocna';
+              fitBadgeTone = 'warning';
+              fitMessage = `Moc ${Math.round(heaterPowerW)} W daje duza rezerwe wzgledem wymaganych ~${Math.round(
+                heaterRequiredPowerW
+              )} W${heaterContextLabel}.`;
+            } else {
+              fitsTank = false;
+              fitBadgeLabel = 'Za mocna';
+              fitBadgeTone = heaterRatio > 3.5 ? 'danger' : 'warning';
+              fitMessage = `Moc ${Math.round(heaterPowerW)} W jest wysoka wzgledem wymaganych ~${Math.round(
+                heaterRequiredPowerW
+              )} W${heaterContextLabel}.`;
+            }
+          }
+        }
         return {
           ...item,
           description: getEquipmentCatalogDescription(item),
           fitsTank,
+          fitBadgeLabel,
+          fitBadgeTone,
+          fitMessage,
+          nominalTankRangeLabel: formatEquipmentTankRange(item),
+          effectiveTankRangeLabel,
+          effectiveFlowFactor: filterEfficiencyFactor,
+          filterEfficiencyFactor,
+          effectiveFlowLh,
           flowRatio,
         };
       })
@@ -15294,9 +19385,26 @@ export default function HomeScreen() {
   }, [
     equipmentCatalogSearch,
     equipmentCatalogType,
+    lightLampCatalog,
+    mergedEquipmentCatalog,
     selectedTankLiters,
     selectedTankPlantLightingRange,
+    tankEquipmentAssessment,
   ]);
+  const customEquipmentPrimaryFieldLabel =
+    equipmentCatalogType === 'heater'
+      ? 'Moc grzalki (W)'
+      : equipmentCatalogType === 'filter'
+      ? 'Wydajnosc filtra (l/h)'
+      : 'Lumeny lampy (lm)';
+  const customEquipmentPrimaryFieldPlaceholder =
+    equipmentCatalogType === 'heater'
+      ? 'np. 150'
+      : equipmentCatalogType === 'filter'
+      ? 'np. 1200'
+      : 'np. 4200';
+  const showCustomEquipmentRangeFields =
+    equipmentCatalogType === 'heater' || equipmentCatalogType === 'filter';
   const measurementDraftCo2 = useMemo(
     () => calculateCo2FromKhPhLogic(kh, ph),
     [kh, ph]
@@ -15625,334 +19733,6 @@ export default function HomeScreen() {
     plantsInTank,
     selectedTankEnvironmentProfile.lightHours,
   ]);
-  const guidedRecommendationSteps = useMemo(() => {
-    if (!selectedTank || !hasGuidedRecommendationAccess) {
-      return [];
-    }
-
-    const steps = [];
-    const seen = new Set();
-    const toPriority = (severity, area, text) => {
-      let score = severity === 'critical' ? 320 : severity === 'warning' ? 220 : 140;
-      const normalized = `${area} ${text}`.toLowerCase();
-
-      if (
-        normalized.includes('agresj') ||
-        normalized.includes('konflikt') ||
-        normalized.includes('chorob') ||
-        normalized.includes('glon')
-      ) {
-        score += 80;
-      }
-
-      if (
-        normalized.includes('przerybienie') ||
-        normalized.includes('filtr') ||
-        normalized.includes('grzalk')
-      ) {
-        score += 55;
-      }
-
-      if (normalized.includes('dodaj') || normalized.includes('uzupelnij')) {
-        score += 20;
-      }
-
-      return score;
-    };
-    const priorityLabel = (score) => {
-      if (score >= 320) return 'Pilne';
-      if (score >= 240) return 'Wysoki';
-      return 'Sredni';
-    };
-    const appendStep = (severity, area, text, details = []) => {
-      const normalizedArea = String(area ?? '').trim();
-      const normalizedText = String(text ?? '').trim();
-      if (!normalizedText) {
-        return;
-      }
-      const dedupeKey = `${normalizedArea}|${normalizedText}`.toLowerCase();
-      if (seen.has(dedupeKey)) {
-        return;
-      }
-      seen.add(dedupeKey);
-
-      const priority = toPriority(severity, normalizedArea, normalizedText);
-      steps.push({
-        id: dedupeKey,
-        severity: severity === 'critical' ? 'critical' : severity === 'warning' ? 'warning' : 'info',
-        area: normalizedArea || 'Akwarium',
-        text: normalizedText,
-        details: Array.isArray(details)
-          ? details
-              .map((item) => String(item ?? '').trim())
-              .filter(Boolean)
-          : [],
-        priority,
-        priorityLabel: priorityLabel(priority),
-      });
-    };
-    const fishMismatch = buildCompatibilityMismatchDetails(fishCompatibilityResults, {
-      maxSpecies: 3,
-      maxIssuesPerSpecies: 2,
-    });
-    const fishMismatchNames = formatCompactNameList(fishMismatch.names, 3);
-    const plantMismatch = buildCompatibilityMismatchDetails(plantCompatibilityResults, {
-      maxSpecies: 3,
-      maxIssuesPerSpecies: 2,
-    });
-    const plantMismatchNames = formatCompactNameList(plantMismatch.names, 3);
-    const aggressionDetails = buildAggressionConflictDetails(fishAggressionConflicts, 4);
-    const schoolingDetails = buildSchoolingWarningDetails(fishSchoolingWarnings, 4);
-    const activeIssueNames = formatCompactNameList(
-      [
-        ...activeDiseaseCases.map((item) => getIssueCaseDisplayName(item)),
-        ...activePlantDiseaseCases.map((item) => getIssueCaseDisplayName(item)),
-        ...activeAlgaeCases.map((item) => getIssueCaseDisplayName(item)),
-      ],
-      4
-    );
-
-    (currentAnalysis?.recommendations ?? []).slice(0, 3).forEach((item) => {
-      appendStep(
-        item.severity,
-        'Parametry',
-        `Skoryguj ${item.parameter} (aktualnie ${item.value || 'brak'}, cel ${item.expectedRange || 'zakres docelowy'}). ${item.action}`,
-        [
-          `Parametr: ${item.parameter || '-'}.`,
-          `Aktualnie: ${item.value || 'brak danych'}.`,
-          `Zakres docelowy: ${item.expectedRange || 'zakres docelowy'}.`,
-          `Dzialanie: ${item.action || 'sprawdz pomiar i skoryguj stopniowo'}.`,
-        ]
-      );
-    });
-
-    if (
-      trendSuggestedEnvironment.recommendedTempRange &&
-      trendSuggestedEnvironment.isTempWithinSuggested === false
-    ) {
-      appendStep(
-        'critical',
-        'Parametry',
-        `Ustaw temperature w zakresie ${trendSuggestedEnvironment.recommendedTempRange.min}-${trendSuggestedEnvironment.recommendedTempRange.max} C (aktualnie: ${trendSuggestedEnvironment.currentTempValue} C).`,
-        [
-          `Cel: ${trendSuggestedEnvironment.recommendedTempRange.min}-${trendSuggestedEnvironment.recommendedTempRange.max} C.`,
-          `Aktualnie: ${trendSuggestedEnvironment.currentTempValue} C.`,
-          'Dzialanie: zmieniaj temperature stopniowo (maks. 1 C na dobe).',
-        ]
-      );
-    }
-
-    if (
-      trendSuggestedEnvironment.recommendedLightRange &&
-      trendSuggestedEnvironment.isLightWithinSuggested === false
-    ) {
-      appendStep(
-        'warning',
-        'Informacje',
-        `Skoryguj czas swiecenia do ${trendSuggestedEnvironment.recommendedLightRange.min}-${trendSuggestedEnvironment.recommendedLightRange.max} h/dobe (aktualnie: ${trendSuggestedEnvironment.currentLightValue} h).`,
-        [
-          `Cel: ${trendSuggestedEnvironment.recommendedLightRange.min}-${trendSuggestedEnvironment.recommendedLightRange.max} h/dobe.`,
-          `Aktualnie: ${trendSuggestedEnvironment.currentLightValue} h/dobe.`,
-          'Dzialanie: zmien czas swiecenia o 30-60 min i ocen efekt po 3-4 dniach.',
-        ]
-      );
-    }
-
-    if (hasEquipmentAnalysisAccess) {
-      [tankEquipmentAssessment.heater, tankEquipmentAssessment.filter].forEach((entry) => {
-        if (entry.status !== 'ok') {
-          appendStep(
-            entry.status === 'critical' ? 'critical' : 'warning',
-            'Informacje',
-            `Popraw ${entry.title.toLowerCase()}: ${entry.actions?.[0] || entry.details}.`,
-            [entry.details, ...(Array.isArray(entry.actions) ? entry.actions.slice(0, 3) : [])]
-          );
-        }
-      });
-    }
-
-    if (fishAggressionConflicts.length > 0) {
-      appendStep(
-        'critical',
-        'Ryby',
-        aggressionDetails.length > 0
-          ? `Konflikty agresji: ${formatCompactNameList(aggressionDetails, 2)}.`
-          : `Wykryto konflikty agresji (${fishAggressionConflicts.length}).`,
-        [
-          ...aggressionDetails.map((pair) => `Konflikt: ${pair}.`),
-          'Dzialanie: rozdziel konfliktowe gatunki lub ogranicz agresywna obsade.',
-        ]
-      );
-    }
-
-    if (incompatibleFishCount > 0) {
-      appendStep(
-        incompatibleFishMajorCount >= 2 ? 'critical' : 'warning',
-        'Ryby',
-        fishMismatchNames
-          ? `Niedopasowanie warunkow u ryb: ${fishMismatchNames}.`
-          : `Wykryto niedopasowanie warunkow dla ${incompatibleFishCount} gat. ryb.`,
-        [
-          ...fishMismatch.details,
-          'Dzialanie: dopasuj gatunki do pH, GH/KH, temperatury i litrazu.',
-        ]
-      );
-    }
-
-    if (fishSchoolingWarnings.length > 0) {
-      appendStep(
-        'warning',
-        'Ryby',
-        `Za mala liczebnosc ryb stadnych: ${formatCompactNameList(
-          fishSchoolingWarnings.map((item) => item?.label),
-          3
-        )}.`,
-        [
-          ...schoolingDetails,
-          'Dzialanie: zwieksz liczebnosc grup lub ogranicz gatunki stadne.',
-        ]
-      );
-    }
-
-    if (fishStockingSummary.hasFish && fishStockingSummary.hasTankLiters) {
-      if (fishStockingSummary.ratio > 1.2) {
-        appendStep(
-          'critical',
-          'Ryby',
-          `Przerybienie jest wysokie (${Math.round(fishStockingSummary.ratio * 100)}%). Ogranicz obsade albo zwieksz litraz.`,
-          [
-            `Poziom obciazenia: ${Math.round(fishStockingSummary.ratio * 100)}%.`,
-            'Dzialanie: zmniejsz obsade lub zwieksz litraz/filtracje.',
-          ]
-        );
-      } else if (fishStockingSummary.isOverstocked) {
-        appendStep(
-          'warning',
-          'Ryby',
-          `Obsada jest lekko za duza (${Math.round(fishStockingSummary.ratio * 100)}%). Warto odciazyc zbiornik.`,
-          [
-            `Poziom obciazenia: ${Math.round(fishStockingSummary.ratio * 100)}%.`,
-            'Dzialanie: lekko zmniejsz obsade i monitoruj NO2/NO3.',
-          ]
-        );
-      }
-    }
-
-    if (incompatiblePlantCount > 0) {
-      appendStep(
-        incompatiblePlantMajorCount >= 2 ? 'critical' : 'warning',
-        'Rosliny',
-        plantMismatchNames
-          ? `Niedopasowanie warunkow u roslin: ${plantMismatchNames}.`
-          : `Wykryto niedopasowanie dla ${incompatiblePlantCount} gat. roslin.`,
-        [
-          ...plantMismatch.details,
-          'Dzialanie: dopasuj oswietlenie, pH, GH/KH i temperature do gatunkow.',
-        ]
-      );
-    }
-
-    const activeIssueCasesCount =
-      activeDiseaseCases.length + activePlantDiseaseCases.length + activeAlgaeCases.length;
-    if (activeIssueCasesCount > 0) {
-      appendStep(
-        activeIssueCasesCount > 1 ? 'critical' : 'warning',
-        'Choroby/Glony',
-        activeIssueNames
-          ? `Aktywne problemy: ${activeIssueNames}.`
-          : `Aktywne problemy: ${activeIssueCasesCount}. Najpierw ustabilizuj leczenie i harmonogram.`,
-        [
-          ...activeDiseaseCases
-            .map((item) => getIssueCaseDisplayName(item))
-            .filter(Boolean)
-            .slice(0, 2)
-            .map((name) => `Choroba ryb: ${name}.`),
-          ...activePlantDiseaseCases
-            .map((item) => getIssueCaseDisplayName(item))
-            .filter(Boolean)
-            .slice(0, 2)
-            .map((name) => `Choroba roslin: ${name}.`),
-          ...activeAlgaeCases
-            .map((item) => getIssueCaseDisplayName(item))
-            .filter(Boolean)
-            .slice(0, 2)
-            .map((name) => `Glony: ${name}.`),
-        ]
-      );
-    }
-
-    [...activeDiseaseCases, ...activePlantDiseaseCases, ...activeAlgaeCases]
-      .slice(0, 3)
-      .forEach((caseItem) => {
-      const issueName = String(
-        caseItem?.issueName ?? caseItem?.diseaseName ?? caseItem?.name ?? 'problem'
-      ).trim();
-      const treatmentHint = String(
-        caseItem?.treatmentPlan?.[0] ?? caseItem?.schedule?.[0]?.action ?? ''
-      ).trim();
-      const severityLabel = String(caseItem?.severity ?? 'medium').toLowerCase();
-      const stepSeverity =
-        severityLabel === 'high'
-          ? 'critical'
-          : severityLabel === 'low'
-            ? 'warning'
-            : 'warning';
-
-        if (treatmentHint) {
-          appendStep(
-            stepSeverity,
-            'Choroby/Glony',
-            `${issueName}: ${treatmentHint} Jesli w terapii jest lek/preparat, stosuj go zgodnie z dawkowaniem na opakowaniu.`,
-            [
-              `Problem: ${issueName}.`,
-              `Najblizszy krok: ${treatmentHint}.`,
-              'Wskazowka: leki/preparaty stosuj zgodnie z etykieta producenta.',
-            ]
-          );
-          return;
-        }
-
-        appendStep(
-          stepSeverity,
-          'Choroby/Glony',
-          `${issueName}: sprawdz i realizuj plan terapii. Jesli w terapii jest lek/preparat, stosuj go zgodnie z dawkowaniem na opakowaniu.`,
-          [
-            `Problem: ${issueName}.`,
-            'Dzialanie: otworz plan leczenia i realizuj kolejne kroki.',
-            'Wskazowka: leki/preparaty stosuj zgodnie z etykieta producenta.',
-          ]
-        );
-      });
-
-    return steps
-      .sort((a, b) => b.priority - a.priority)
-      .slice(0, 6);
-  }, [
-    activeAlgaeCases,
-    activeDiseaseCases,
-    activePlantDiseaseCases,
-    currentAnalysis?.recommendations,
-    fishAggressionConflicts,
-    fishCompatibilityResults,
-    incompatibleFishCount,
-    incompatibleFishMajorCount,
-    fishSchoolingWarnings,
-    fishStockingSummary,
-    hasEquipmentAnalysisAccess,
-    hasGuidedRecommendationAccess,
-    incompatiblePlantCount,
-    incompatiblePlantMajorCount,
-    plantCompatibilityResults,
-    selectedTank,
-    tankEquipmentAssessment.filter,
-    tankEquipmentAssessment.heater,
-    trendSuggestedEnvironment.currentLightValue,
-    trendSuggestedEnvironment.currentTempValue,
-    trendSuggestedEnvironment.isLightWithinSuggested,
-    trendSuggestedEnvironment.isTempWithinSuggested,
-    trendSuggestedEnvironment.recommendedLightRange,
-    trendSuggestedEnvironment.recommendedTempRange,
-  ]);
   const selectedTankHealthAssessment = useMemo(() => {
     if (!selectedTank) {
       return null;
@@ -15969,12 +19749,14 @@ export default function HomeScreen() {
       measurement: currentMeasurement,
       stockItems,
       activeIssueCases,
+      equipmentCatalog: equipmentCatalogForAnalysis,
     });
   }, [
     activeAlgaeCases,
     activeDiseaseCases,
     activePlantDiseaseCases,
     currentMeasurement,
+    equipmentCatalogForAnalysis,
     selectedTank,
     stockItems,
   ]);
@@ -16019,6 +19801,34 @@ export default function HomeScreen() {
     tankEquipmentAssessment,
     trendSuggestedEnvironment,
   ]);
+  const parameterSuggestionItems = useMemo(
+    () =>
+      suggestionChangeItems.filter(
+        (item) => String(item?.area ?? '').toLowerCase() === 'parametry'
+      ),
+    [suggestionChangeItems]
+  );
+  const fishSuggestionItems = useMemo(
+    () =>
+      suggestionChangeItems.filter(
+        (item) => String(item?.area ?? '').toLowerCase() === 'ryby'
+      ),
+    [suggestionChangeItems]
+  );
+  const plantSuggestionItems = useMemo(
+    () =>
+      suggestionChangeItems.filter(
+        (item) => String(item?.area ?? '').toLowerCase() === 'rosliny'
+      ),
+    [suggestionChangeItems]
+  );
+  const equipmentSuggestionItems = useMemo(
+    () =>
+      suggestionChangeItems.filter(
+        (item) => String(item?.area ?? '').toLowerCase() === 'sprzet'
+      ),
+    [suggestionChangeItems]
+  );
   const currentParametersSectionSeverity = useMemo(() => {
     if (!selectedTank || historyLoading) {
       return 'none';
@@ -16050,73 +19860,6 @@ export default function HomeScreen() {
     historyLoading,
     selectedTank,
   ]);
-  const suggestionsSectionSeverity = useMemo(() => {
-    if (!selectedTank || !hasGeneralRecommendationAccess) {
-      return 'none';
-    }
-
-    if (suggestionChangeItems.some((item) => item.severity === 'critical')) {
-      return 'critical';
-    }
-
-    if (suggestionChangeItems.length > 0) {
-      return 'warning';
-    }
-
-    return 'none';
-  }, [
-    hasGeneralRecommendationAccess,
-    selectedTank,
-    suggestionChangeItems,
-  ]);
-  const guidedPlanSectionSeverity = useMemo(() => {
-    if (
-      !selectedTank ||
-      !hasGeneralRecommendationAccess ||
-      !hasGuidedRecommendationAccess ||
-      guidedRecommendationSteps.length === 0
-    ) {
-      return 'none';
-    }
-
-    if (guidedRecommendationSteps.some((item) => item.severity === 'critical')) {
-      return 'critical';
-    }
-
-    return 'warning';
-  }, [
-    guidedRecommendationSteps,
-    hasGeneralRecommendationAccess,
-    hasGuidedRecommendationAccess,
-    selectedTank,
-  ]);
-  const waterTestingSectionSeverity = useMemo(() => {
-    if (!selectedTank || !hasTaskReminderAccess) {
-      return 'none';
-    }
-
-    if (
-      waterTestingSchedule.isOverdue ||
-      (waterTestingSchedule.parameters ?? []).some((plan) => plan.level === 'problem')
-    ) {
-      return 'critical';
-    }
-
-    if (
-      waterTestingSchedule.requiresPostWaterChangeTest ||
-      (waterTestingSchedule.parameters ?? []).some((plan) => plan.level === 'warning')
-    ) {
-      return 'warning';
-    }
-
-    return 'none';
-  }, [
-    hasTaskReminderAccess,
-    selectedTank,
-    waterTestingSchedule.isOverdue,
-    waterTestingSchedule.parameters,
-    waterTestingSchedule.requiresPostWaterChangeTest,
-  ]);
   const onboardingSectionSeverity = useMemo(() => {
     if (
       !selectedTank ||
@@ -16142,21 +19885,7 @@ export default function HomeScreen() {
     tankOnboardingPlan.rows,
     tankOnboardingPlan.todayItems,
   ]);
-  const reviewTabSeverity = useMemo(
-    () =>
-      getHighestSeverity([
-        currentParametersSectionSeverity,
-        suggestionsSectionSeverity,
-        waterTestingSectionSeverity,
-        onboardingSectionSeverity,
-      ]),
-    [
-      currentParametersSectionSeverity,
-      onboardingSectionSeverity,
-      suggestionsSectionSeverity,
-      waterTestingSectionSeverity,
-    ]
-  );
+  const reviewTabSeverity = 'none';
   const equipmentTabSeverity = useMemo(() => {
     if (!selectedTank || !hasEquipmentSaveAccess) {
       return 'none';
@@ -16195,6 +19924,9 @@ export default function HomeScreen() {
 
     if (
       fishAggressionConflicts.length > 0 ||
+      ['high_risk', 'incompatible'].includes(
+        String(stockingCompatibility?.overallStatus ?? '')
+      ) ||
       (fishStockingSummary.hasFish &&
         fishStockingSummary.hasTankLiters &&
         fishStockingSummary.ratio > 1.2)
@@ -16204,6 +19936,7 @@ export default function HomeScreen() {
 
     if (
       hasFishCompatibilityIssues ||
+      String(stockingCompatibility?.overallStatus ?? '') === 'caution' ||
       fishSchoolingWarnings.length > 0 ||
       fishStockingSummary.isOverstocked
     ) {
@@ -16220,6 +19953,7 @@ export default function HomeScreen() {
     fishStockingSummary.ratio,
     hasFishCompatibilityIssues,
     stockItems,
+    stockingCompatibility?.overallStatus,
   ]);
   const plantTabSeverity = useMemo(() => {
     const plantItems = stockItems.filter((item) => item.type === 'plant');
@@ -17343,7 +21077,12 @@ export default function HomeScreen() {
                       <Text style={{ color: statusColor, marginTop: 4, fontWeight: '700' }}>
                         {t('status', { value: statusText })}
                       </Text>
-                      {hasTaskReminderAccess ? (
+                      {summary.emergencyState?.isEmergency ? (
+                        <Text style={{ color: themeDangerText, marginTop: 4, fontSize: 12, fontWeight: '700' }}>
+                          AWARYJNE: {summary.emergencyState.title || summary.emergencyState.summary}
+                        </Text>
+                      ) : null}
+                      {hasAutomaticTasksAccess ? (
                         <Text style={{ color: themeTextSecondary, marginTop: 2, fontSize: 12 }}>
                           {t('homeActionsToday', { count: visibleActionsTodayCount })}
                         </Text>
@@ -17352,6 +21091,17 @@ export default function HomeScreen() {
                           {t('subscriptionTasksLocked')}
                         </Text>
                       )}
+                      {hasSmartActionPlanAccess &&
+                      Array.isArray(summary.todayActionPlan?.items) &&
+                      summary.todayActionPlan.items.length > 0 ? (
+                        <Text style={{ color: themeTextMuted, marginTop: 4, fontSize: 11 }}>
+                          {summary.todayActionPlan.items[0].categoryLabel}: {summary.todayActionPlan.items[0].title}
+                        </Text>
+                      ) : !hasSmartActionPlanAccess ? (
+                        <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 11 }}>
+                          {criticalActionPlanLockMessage}
+                        </Text>
+                      ) : null}
                       {hasExtendedAlertAccess ? (
                         <Text style={{ color: themeTextSecondary, marginTop: 2, fontSize: 12 }}>
                           {t('homeProblemsCount', { count: summary.issueCount })}
@@ -17433,7 +21183,21 @@ export default function HomeScreen() {
                   {t('subscriptionTankLimitUpgradeHint')}
                 </Text>
               ) : null}
-
+              {lockedTanks.length > 0 ? (
+                <View
+                  style={{
+                    marginTop: 8,
+                    borderWidth: 1,
+                    borderColor: themeBorder,
+                    borderRadius: 8,
+                    padding: 10,
+                    backgroundColor: themeCardBgAlt,
+                  }}>
+                  <Text style={{ color: themeTextPrimary, fontSize: 12 }}>
+                    W planie Free mozesz aktywnie prowadzic 1 akwarium. Pozostale akwaria sa bezpiecznie zapisane i odblokuja sie po powrocie do Premium.
+                  </Text>
+                </View>
+              ) : null}
             </>
           )}
 
@@ -17675,6 +21439,7 @@ export default function HomeScreen() {
 
                   <Pressable
                     onPress={handleStartEditTank}
+                    disabled={selectedTankLockedByPlan}
                     style={{
                       marginTop: 16,
                       borderWidth: 1,
@@ -17684,6 +21449,7 @@ export default function HomeScreen() {
                       alignItems: 'center',
                       justifyContent: 'center',
                       backgroundColor: themeAccent,
+                      opacity: selectedTankLockedByPlan ? 0.6 : 1,
                     }}>
                     <Text
                       style={{
@@ -17694,6 +21460,11 @@ export default function HomeScreen() {
                       {t('editTank')}
                     </Text>
                   </Pressable>
+                  {selectedTankLockedByPlan ? (
+                    <Text style={{ color: themeWarningText, marginTop: 8, fontSize: 12 }}>
+                      To akwarium jest zablokowane przez plan i jest dostepne tylko do odczytu.
+                    </Text>
+                  ) : null}
                 </View>
               ))}
 
@@ -17736,6 +21507,35 @@ export default function HomeScreen() {
                       czy wymagaja poprawy.
                     </Text>
                   </View>
+                  {equipmentSuggestionItems.length > 0 ? (
+                    <View
+                      style={{
+                        borderWidth: 1,
+                        borderColor: themeBorder,
+                        borderRadius: 12,
+                        padding: 10,
+                        marginTop: 8,
+                        backgroundColor: themeCardBgAlt,
+                      }}>
+                      <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+                        Wymaga uwagi (Sprzet)
+                      </Text>
+                      {equipmentSuggestionItems.slice(0, 4).map((item, idx) => (
+                        <Text
+                          key={`equipment-suggestion-inline-${item.id ?? idx}`}
+                          style={{
+                            color:
+                              item.severity === 'critical'
+                                ? themeDangerText
+                                : themeWarningText,
+                            fontSize: 12,
+                            marginTop: 4,
+                          }}>
+                          - {item.text}
+                        </Text>
+                      ))}
+                    </View>
+                  ) : null}
                   {[
                     {
                       key: 'heater',
@@ -17786,6 +21586,24 @@ export default function HomeScreen() {
                         : assessmentStatus === 'none'
                           ? 'Brak'
                           : 'Do poprawy';
+                    const heaterAnalysis =
+                      entry.key === 'heater' &&
+                      entry?.data?.analysis &&
+                      typeof entry.data.analysis === 'object'
+                        ? entry.data.analysis
+                        : null;
+                    const heaterStatusLabelMap = {
+                      no_heater_needed: 'Brak potrzeby grzania',
+                      underpowered: 'Za slaba',
+                      slightly_underpowered: 'Lekko za slaba',
+                      adequate: 'Wystarczajaca',
+                      strong: 'Mocna',
+                      oversized: 'Przewymiarowana',
+                    };
+                    const heaterStatusLabel = heaterAnalysis
+                      ? heaterStatusLabelMap[String(heaterAnalysis.heaterStatus ?? '')] ??
+                        String(heaterAnalysis.heaterStatus ?? '')
+                      : '';
 
                     return (
                       <View
@@ -17844,6 +21662,40 @@ export default function HomeScreen() {
                               }}>
                               {entry.data.details}
                             </Text>
+                            {heaterAnalysis ? (
+                              <View style={{ marginTop: 8 }}>
+                                <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
+                                  Suma mocy: {Math.round(Number(heaterAnalysis.totalHeaterPowerW) || 0)} W
+                                </Text>
+                                <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
+                                  Temperatura docelowa: {Math.round((Number(heaterAnalysis.targetTemperatureC) || 0) * 10) / 10} C
+                                </Text>
+                                <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
+                                  Przyjeta temperatura otoczenia: {Math.round((Number(heaterAnalysis.ambientTemperatureC) || 0) * 10) / 10} C
+                                </Text>
+                                <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
+                                  Roznica temperatur: {Math.round((Number(heaterAnalysis.temperatureDeltaC) || 0) * 10) / 10} C
+                                </Text>
+                                <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
+                                  Wymagana moc: ~{Math.round(Number(heaterAnalysis.requiredHeaterPowerW) || 0)} W
+                                </Text>
+                                <Text style={{ color: themeTextPrimary, fontSize: 12, fontWeight: '700' }}>
+                                  Status grzalki: {heaterStatusLabel || '-'}
+                                </Text>
+                                {Boolean(heaterAnalysis.usedDefaultAmbientTemperature) ? (
+                                  <Text style={{ color: themeWarningText, fontSize: 11, marginTop: 4 }}>
+                                    Przyjeto domyslna temperature pomieszczenia 20 C. W cieplejszym pomieszczeniu slabsza grzalka moze wystarczyc, a w chlodniejszym moze byc za slaba.
+                                  </Text>
+                                ) : null}
+                              </View>
+                            ) : null}
+                            {(entry.data.actions ?? []).slice(0, 2).map((actionText, idx) => (
+                              <Text
+                                key={`equipment-action-preview-${entry.key}-${idx}`}
+                                style={{ color: themeTextMuted, fontSize: 11, marginTop: 4 }}>
+                                - {actionText}
+                              </Text>
+                            ))}
                           </View>
                           <View
                             style={{
@@ -17902,6 +21754,44 @@ export default function HomeScreen() {
                               const equipmentName = `${equipmentItem.brand ?? ''} ${
                                 equipmentItem.model ?? ''
                               }`.trim();
+                              const catalogEquipment = mergedEquipmentCatalogById.get(
+                                String(equipmentItem?.id ?? '').trim().toLowerCase()
+                              );
+                              const resolvedFilterType =
+                                normalizeFilterType(equipmentItem?.filterType) ||
+                                normalizeFilterType(catalogEquipment?.filterType);
+                              const resolvedFilterFactor = getFilterRealFlowFactor(
+                                resolvedFilterType,
+                                equipmentItem?.effectiveFlowFactor ??
+                                  equipmentItem?.filterEfficiencyFactor ??
+                                  catalogEquipment?.effectiveFlowFactor ??
+                                  catalogEquipment?.filterEfficiencyFactor
+                              );
+                              const equipmentDetails =
+                                entry.key === 'heater'
+                                  ? Number.isFinite(Number(equipmentItem?.powerW))
+                                    ? `${Math.round(Number(equipmentItem.powerW))} W`
+                                    : ''
+                                  : Number.isFinite(Number(equipmentItem?.flowLh))
+                                  ? `${Math.round(Number(equipmentItem.flowLh))} l/h nominalnie${
+                                      resolvedFilterType
+                                        ? ` • ${getFilterTypeLabel(
+                                            resolvedFilterType
+                                          )} (${Math.round(
+                                            resolvedFilterFactor * 100
+                                          )}%) • ${Math.round(
+                                            Number(equipmentItem.flowLh) *
+                                              resolvedFilterFactor
+                                          )} l/h realnie`
+                                        : ''
+                                    }`
+                                  : resolvedFilterType
+                                  ? `${getFilterTypeLabel(
+                                      resolvedFilterType
+                                    )} (${Math.round(
+                                      resolvedFilterFactor * 100
+                                    )}%)`
+                                  : '';
 
                               return (
                                 <View
@@ -17933,7 +21823,7 @@ export default function HomeScreen() {
                                         fontSize: 11,
                                         marginTop: 4,
                                       }}>
-                                      Przypisany do akwarium
+                                      {equipmentDetails || 'Przypisany do akwarium'}
                                     </Text>
                                   </View>
                                   {hasEquipmentSaveAccess ? (
@@ -18262,6 +22152,7 @@ export default function HomeScreen() {
               ))}
             </>
           )}
+          
 
           {isFishCatalogMenuMode && (
             <View
@@ -18598,186 +22489,154 @@ export default function HomeScreen() {
                     <View
                       style={{
                         borderWidth: 1,
-                        borderColor: !fishStockingSummary.hasFish || !fishStockingSummary.hasTankLiters
-                          ? themeBorder
-                          : fishStockingSummary.ratio > 1.2
+                        borderColor:
+                          stockingCompatibility.overallStatus === 'incompatible'
                             ? themeDangerBg
-                            : fishStockingSummary.isOverstocked
-                              ? themeWarningBg
-                              : themeSuccessBg,
+                            : stockingCompatibility.overallStatus === 'high_risk'
+                              ? themeDangerBg
+                              : stockingCompatibility.overallStatus === 'caution'
+                                ? themeWarningBg
+                                : themeBorder,
                         borderRadius: 14,
                         padding: 14,
                         marginBottom: 10,
-                        backgroundColor: !fishStockingSummary.hasFish || !fishStockingSummary.hasTankLiters
-                          ? themeCardBgAlt
-                          : fishStockingSummary.ratio > 1.2
+                        backgroundColor:
+                          stockingCompatibility.overallStatus === 'incompatible'
                             ? themeDangerSoftBg
-                            : fishStockingSummary.isOverstocked
-                              ? themeWarningSoftBg
-                              : themeSuccessSoftBg,
+                            : stockingCompatibility.overallStatus === 'high_risk'
+                              ? themeDangerSoftBg
+                              : stockingCompatibility.overallStatus === 'caution'
+                                ? themeWarningSoftBg
+                                : themeCardBgAlt,
                       }}>
                       <View
                         style={{
                           flexDirection: 'row',
                           alignItems: 'center',
                           justifyContent: 'space-between',
-                          gap: 12,
+                          gap: 10,
                         }}>
                         <View style={{ flex: 1 }}>
-                          <Text
-                            style={{
-                              color: themeTextPrimary,
-                              fontWeight: '700',
-                              fontSize: 15,
-                            }}>
-                            {t('overstocking', {
-                              value: fishStockingSummary.isOverstocked
-                                ? t('yes')
-                                : t('no'),
-                            })}
+                          <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 15 }}>
+                            Zgodnosc obsady
                           </Text>
                           <Text
                             style={{
                               color:
-                                !fishStockingSummary.hasFish || !fishStockingSummary.hasTankLiters
-                                  ? themeTextSecondary
-                                  : fishStockingSummary.ratio > 1.2
-                                    ? themeDangerText
-                                    : fishStockingSummary.isOverstocked
-                                      ? themeWarningText
-                                      : themeSuccessText,
+                                stockingCompatibility.overallStatus === 'compatible' ||
+                                stockingCompatibility.overallStatus === 'mostly_compatible'
+                                  ? themeSuccessText
+                                  : stockingCompatibility.overallStatus === 'caution'
+                                    ? themeWarningText
+                                    : themeDangerText,
                               fontSize: 12,
                               fontWeight: '700',
                               marginTop: 4,
                             }}>
-                            {!fishStockingSummary.hasFish || !fishStockingSummary.hasTankLiters
-                              ? 'Ocena obsady wymaga danych'
-                              : fishStockingSummary.ratio > 1.2
-                                ? 'Stan krytyczny: obsada wyraźnie ponad bezpieczny poziom'
-                                : fishStockingSummary.isOverstocked
-                                  ? 'Stan ostrzegawczy: obsada zaczyna przekraczać limit'
-                                  : 'Obsada wygląda bezpiecznie dla tego litrażu'}
+                            Status: {stockingCompatibility.overallUiStatus}
                           </Text>
                         </View>
                         <View
                           style={{
-                            minWidth: 88,
                             borderWidth: 1,
-                            borderColor:
-                              !fishStockingSummary.hasFish || !fishStockingSummary.hasTankLiters
-                                ? themeBorderStrong
-                                : fishStockingSummary.ratio > 1.2
-                                  ? themeDangerBg
-                                  : fishStockingSummary.isOverstocked
-                                    ? themeWarningBg
-                                    : themeSuccessBg,
+                            borderColor: themeBorder,
                             borderRadius: 12,
                             paddingVertical: 8,
                             paddingHorizontal: 10,
                             backgroundColor: themeCardBg,
-                            alignItems: 'center',
                           }}>
-                          <Text
-                            style={{
-                              color: themeTextSecondary,
-                              fontSize: 10,
-                              fontWeight: '700',
-                              textTransform: 'uppercase',
-                              letterSpacing: 0.3,
-                            }}>
-                            Obciążenie
+                          <Text style={{ color: themeTextMuted, fontSize: 10, fontWeight: '700' }}>
+                            WYNIK
                           </Text>
-                          <Text
-                            style={{
-                              color:
-                                !fishStockingSummary.hasFish || !fishStockingSummary.hasTankLiters
-                                  ? themeTextPrimary
-                                  : fishStockingSummary.ratio > 1.2
-                                    ? themeDangerText
-                                    : fishStockingSummary.isOverstocked
-                                      ? themeWarningText
-                                      : themeSuccessText,
-                              fontWeight: '700',
-                              fontSize: 20,
-                              marginTop: 2,
-                            }}>
-                            {fishStockingSummary.hasFish && fishStockingSummary.hasTankLiters
-                              ? `${Math.round(fishStockingSummary.ratio * 100)}%`
-                              : '--'}
+                          <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 18 }}>
+                            {stockingCompatibility.score}/100
                           </Text>
                         </View>
                       </View>
 
-                      <View style={{ marginTop: 8 }}>
-                        {!fishStockingSummary.hasFish ? (
-                          <Text style={{ color: themeTextSecondary }}>
-                            {t('noFishOverstockRisk')}
-                          </Text>
-                        ) : !fishStockingSummary.hasTankLiters ? (
-                          <Text style={{ color: themeTextSecondary }}>
-                            {t('setTankLitersForOverstock')}
+                      <View
+                        style={{
+                          marginTop: 10,
+                          borderWidth: 1,
+                          borderColor: themeBorder,
+                          borderRadius: 10,
+                          padding: 10,
+                          backgroundColor: themeCardBg,
+                        }}>
+                        {(stockingCompatibility.warnings ?? []).length === 0 ? (
+                          <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
+                            Brak istotnych sygnalow ryzyka. Nadal obserwuj zachowanie ryb po zmianach obsady.
                           </Text>
                         ) : (
                           <>
+                            {(stockingCompatibility.warnings ?? []).slice(0, 2).map((warning, idx) => (
+                              <Text
+                                key={`stocking-warning-${idx}`}
+                                style={{ color: themeTextSecondary, fontSize: 12, marginTop: idx === 0 ? 0 : 6 }}>
+                                - {warning}
+                              </Text>
+                            ))}
+                            {(stockingCompatibility.recommendations ?? []).slice(0, 1).map((recommendation, idx) => (
+                              <Text
+                                key={`stocking-recommendation-${idx}`}
+                                style={{ color: themeTextPrimary, fontSize: 12, marginTop: 8, fontWeight: '700' }}>
+                                Rekomendacja: {recommendation}
+                              </Text>
+                            ))}
+                          </>
+                        )}
+                      </View>
+
+                      <View style={{ marginTop: 10 }}>
+                        {stockingCompatibilitySections.map((section) => (
+                          <View
+                            key={`stocking-category-${section.key}`}
+                            style={{
+                              borderTopWidth: 1,
+                              borderTopColor: themeBorder,
+                              paddingTop: 8,
+                              marginTop: 8,
+                            }}>
                             <View
                               style={{
                                 flexDirection: 'row',
-                                flexWrap: 'wrap',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
                                 gap: 8,
-                                marginTop: 2,
-                                marginBottom: 8,
                               }}>
-                              <View
+                              <Text style={{ color: themeTextPrimary, fontSize: 12, fontWeight: '700' }}>
+                                {section.label}
+                              </Text>
+                              <Text
                                 style={{
-                                  borderWidth: 1,
-                                  borderColor: themeBorder,
-                                  borderRadius: 999,
-                                  paddingVertical: 6,
-                                  paddingHorizontal: 10,
-                                  backgroundColor: themeCardBg,
+                                  color:
+                                    section.data.uiStatus === 'OK'
+                                      ? themeSuccessText
+                                      : section.data.uiStatus === 'Uwaga'
+                                        ? themeWarningText
+                                        : themeDangerText,
+                                  fontSize: 12,
+                                  fontWeight: '700',
                                 }}>
-                                <Text style={{ color: themeTextPrimary, fontSize: 12, fontWeight: '700' }}>
-                                  Szacowane minimum: {Math.round(fishStockingSummary.estimatedLiters)} l
-                                </Text>
-                              </View>
-                              <View
-                                style={{
-                                  borderWidth: 1,
-                                  borderColor: themeBorder,
-                                  borderRadius: 999,
-                                  paddingVertical: 6,
-                                  paddingHorizontal: 10,
-                                  backgroundColor: themeCardBg,
-                                }}>
-                                <Text style={{ color: themeTextPrimary, fontSize: 12, fontWeight: '700' }}>
-                                  Akwarium: {fishStockingSummary.tankLiters} l
-                                </Text>
-                              </View>
+                                {section.data.uiStatus}
+                              </Text>
                             </View>
-                            <Text
-                              style={{
-                                color: themeTextSecondary,
-                                marginTop: 6,
-                                fontSize: 12,
-                              }}>
-                              {fishStockingSummary.ratio > 1
-                                ? `Szacunkowo brakuje ok. ${Math.max(
-                                    1,
-                                    Math.round(
-                                      fishStockingSummary.estimatedLiters -
-                                        fishStockingSummary.tankLiters
-                                    )
-                                  )} l zapasu.`
-                                : `Szacunkowo zostaje ok. ${Math.max(
-                                    1,
-                                    Math.round(
-                                      fishStockingSummary.tankLiters -
-                                        fishStockingSummary.estimatedLiters
-                                    )
-                                  )} l zapasu.`}
-                            </Text>
-                          </>
-                        )}
+                            {section.data.problems.slice(0, 2).map((problem, idx) => (
+                              <Text
+                                key={`stocking-category-problem-${section.key}-${idx}`}
+                                style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
+                                {problem}
+                              </Text>
+                            ))}
+                            {(section.data.details ?? []).map((detail, idx) => (
+                              <Text
+                                key={`stocking-category-detail-${section.key}-${idx}`}
+                                style={{ color: themeTextMuted, fontSize: 11, marginTop: 3 }}>
+                                {detail}
+                              </Text>
+                            ))}
+                          </View>
+                        ))}
                       </View>
                     </View>
                   </>
@@ -18827,6 +22686,36 @@ export default function HomeScreen() {
                           </Pressable>
                         </View>
                       </View>
+
+                      {fishSuggestionItems.length > 0 ? (
+                        <View
+                          style={{
+                            borderWidth: 1,
+                            borderColor: themeBorder,
+                            borderRadius: 8,
+                            padding: 8,
+                            marginTop: 8,
+                            backgroundColor: themeCardBg,
+                          }}>
+                          <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+                            Wymaga uwagi (Ryby)
+                          </Text>
+                          {fishSuggestionItems.slice(0, 4).map((item, idx) => (
+                            <Text
+                              key={`fish-suggestion-inline-${item.id ?? idx}`}
+                              style={{
+                                color:
+                                  item.severity === 'critical'
+                                    ? themeDangerText
+                                    : themeWarningText,
+                                fontSize: 12,
+                                marginTop: 4,
+                              }}>
+                              - {item.text}
+                            </Text>
+                          ))}
+                        </View>
+                      ) : null}
 
                       {stockLoading ? (
                         <Text style={{ color: themeTextSecondary, marginTop: 8 }}>
@@ -19631,6 +23520,36 @@ export default function HomeScreen() {
                         </View>
                       </View>
 
+                      {plantSuggestionItems.length > 0 ? (
+                        <View
+                          style={{
+                            borderWidth: 1,
+                            borderColor: themeBorder,
+                            borderRadius: 8,
+                            padding: 8,
+                            marginTop: 8,
+                            backgroundColor: themeCardBg,
+                          }}>
+                          <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+                            Wymaga uwagi (Rosliny)
+                          </Text>
+                          {plantSuggestionItems.slice(0, 4).map((item, idx) => (
+                            <Text
+                              key={`plant-suggestion-inline-${item.id ?? idx}`}
+                              style={{
+                                color:
+                                  item.severity === 'critical'
+                                    ? themeDangerText
+                                    : themeWarningText,
+                                fontSize: 12,
+                                marginTop: 4,
+                              }}>
+                              - {item.text}
+                            </Text>
+                          ))}
+                        </View>
+                      ) : null}
+
                       {!isPlantStockExpanded ? null : (
                         <>
                           {stockLoading ? (
@@ -19646,7 +23565,7 @@ export default function HomeScreen() {
                           {plantsInTank.map((item) => {
                             const itemQuantity = Math.max(1, Number(item.quantity) || 1);
                             const itemDraft =
-                              fishQuantityDrafts[item.id] ?? String(itemQuantity);
+                              plantQuantityDrafts[item.id] ?? String(itemQuantity);
                             const itemWarnings = plantWarningsByItemId.get(item.id) ?? [];
                             const itemLightAssessment =
                               plantLightingStatusByItemId.get(item.id) ?? null;
@@ -19793,7 +23712,7 @@ export default function HomeScreen() {
                                       <Pressable
                                         onPress={() => {
                                           const current = Number(
-                                            fishQuantityDrafts[item.id] ?? itemQuantity
+                                            plantQuantityDrafts[item.id] ?? itemQuantity
                                           );
                                           const safeCurrent = Number.isFinite(current)
                                             ? current
@@ -19802,7 +23721,7 @@ export default function HomeScreen() {
                                             0,
                                             Math.round(safeCurrent) - 1
                                           );
-                                          setFishQuantityDrafts((prev) => ({
+                                          setPlantQuantityDrafts((prev) => ({
                                             ...prev,
                                             [item.id]: String(nextValue),
                                           }));
@@ -19822,9 +23741,9 @@ export default function HomeScreen() {
                                       <TextInput
                                         placeholder={t('quantity')}
                                         placeholderTextColor={themePlaceholder}
-                                        value={fishQuantityDrafts[item.id] ?? itemDraft}
+                                        value={plantQuantityDrafts[item.id] ?? itemDraft}
                                         onChangeText={(value) =>
-                                          setFishQuantityDrafts((prev) => ({
+                                          setPlantQuantityDrafts((prev) => ({
                                             ...prev,
                                             [item.id]: value,
                                           }))
@@ -19842,7 +23761,7 @@ export default function HomeScreen() {
                                       <Pressable
                                         onPress={() => {
                                           const current = Number(
-                                            fishQuantityDrafts[item.id] ?? itemQuantity
+                                            plantQuantityDrafts[item.id] ?? itemQuantity
                                           );
                                           const safeCurrent = Number.isFinite(current)
                                             ? current
@@ -19851,7 +23770,7 @@ export default function HomeScreen() {
                                             0,
                                             Math.round(safeCurrent) + 1
                                           );
-                                          setFishQuantityDrafts((prev) => ({
+                                          setPlantQuantityDrafts((prev) => ({
                                             ...prev,
                                             [item.id]: String(nextValue),
                                           }));
@@ -21089,13 +25008,26 @@ export default function HomeScreen() {
                         backgroundColor: themeDangerSoftBg,
                       }}>
                       <Text style={{ color: themeDangerText, fontWeight: '700' }}>
-                        Alert: objawy alarmowe
+                        Alert awaryjny akwarium
                       </Text>
                       <Text style={{ color: themeDangerText, marginTop: 4, fontSize: 12 }}>
-                        Przy dusznosci lub naglych padach wykonaj natychmiastowa
-                        podmiane wody, mocne napowietrzanie i pilna konsultacje ze
-                        specjalista.
+                        {selectedEmergencyState?.summary ||
+                          'Wykonaj natychmiastowa podmiane wody, mocne napowietrzanie i pilna konsultacje.'}
                       </Text>
+                      {(selectedEmergencyState?.steps ?? []).slice(0, 3).map((step, index) => (
+                        <Text
+                          key={`disease-emergency-step-${index}`}
+                          style={{ color: themeDangerText, marginTop: 4, fontSize: 12 }}>
+                          {index + 1}. {step}
+                        </Text>
+                      ))}
+                      {(selectedEmergencyState?.avoid ?? []).slice(0, 2).map((item, index) => (
+                        <Text
+                          key={`disease-emergency-avoid-${index}`}
+                          style={{ color: themeTextPrimary, marginTop: 4, fontSize: 12 }}>
+                          Nie rob pochopnie: {item}
+                        </Text>
+                      ))}
                     </View>
                   )}
 
@@ -21155,13 +25087,45 @@ export default function HomeScreen() {
                           </Text>
                           <Text
                             style={{
+                              color: themeTextMuted,
+                              marginTop: 6,
+                              fontSize: 12,
+                            }}>
+                            Pewnosc diagnozy: {item.adjustedConfidencePercent ?? item.confidencePercent ?? 0}% ({item.confidenceLevel ?? mapConfidenceLevel(item.confidencePercent)})
+                          </Text>
+                          {Array.isArray(item.probableCauses) &&
+                          item.probableCauses.length > 0 ? (
+                            <>
+                              <Text
+                                style={{
+                                  color: themeTextMuted,
+                                  marginTop: 6,
+                                  fontSize: 12,
+                                }}>
+                                Prawdopodobne przyczyny:
+                              </Text>
+                              {item.probableCauses.slice(0, 3).map((cause, index) => (
+                                <Text
+                                  key={`${item.id}-probable-cause-${index}`}
+                                  style={{
+                                    color: themeTextSecondary,
+                                    marginTop: 2,
+                                    fontSize: 12,
+                                  }}>
+                                  - {cause}
+                                </Text>
+                              ))}
+                            </>
+                          ) : null}
+                          <Text
+                            style={{
                               color: themeSuccessText,
                               marginTop: 6,
                               fontSize: 12,
                             }}>
-                            Propozycja dzialan (ostroznych):
+                            Plan dzialan 24h:
                           </Text>
-                          {item.treatment.slice(0, 3).map((step, index) => (
+                          {(item.timelinePlan?.h24 ?? item.treatment ?? []).slice(0, 3).map((step, index) => (
                             <Text
                               key={`${item.id}-suggestion-step-${index}`}
                               style={{
@@ -21172,6 +25136,54 @@ export default function HomeScreen() {
                               - {step}
                             </Text>
                           ))}
+                          {Array.isArray(item.timelinePlan?.d7) &&
+                          item.timelinePlan.d7.length > 0 ? (
+                            <>
+                              <Text
+                                style={{
+                                  color: themeSuccessText,
+                                  marginTop: 6,
+                                  fontSize: 12,
+                                }}>
+                                Plan 7 dni:
+                              </Text>
+                              {item.timelinePlan.d7.slice(0, 2).map((step, index) => (
+                                <Text
+                                  key={`${item.id}-plan7-${index}`}
+                                  style={{
+                                    color: themeAccentText,
+                                    marginTop: 2,
+                                    fontSize: 12,
+                                  }}>
+                                  - {step}
+                                </Text>
+                              ))}
+                            </>
+                          ) : null}
+                          {Array.isArray(item.timelinePlan?.d30) &&
+                          item.timelinePlan.d30.length > 0 ? (
+                            <>
+                              <Text
+                                style={{
+                                  color: themeSuccessText,
+                                  marginTop: 6,
+                                  fontSize: 12,
+                                }}>
+                                Plan 30 dni:
+                              </Text>
+                              {item.timelinePlan.d30.slice(0, 2).map((step, index) => (
+                                <Text
+                                  key={`${item.id}-plan30-${index}`}
+                                  style={{
+                                    color: themeAccentText,
+                                    marginTop: 2,
+                                    fontSize: 12,
+                                  }}>
+                                  - {step}
+                                </Text>
+                              ))}
+                            </>
+                          ) : null}
                           <Text
                             style={{
                               color: themeWarningText,
@@ -21744,13 +25756,45 @@ export default function HomeScreen() {
                           </Text>
                           <Text
                             style={{
+                              color: themeTextMuted,
+                              marginTop: 6,
+                              fontSize: 12,
+                            }}>
+                            Pewnosc diagnozy: {item.adjustedConfidencePercent ?? item.confidencePercent ?? 0}% ({item.confidenceLevel ?? mapConfidenceLevel(item.confidencePercent)})
+                          </Text>
+                          {Array.isArray(item.probableCauses) &&
+                          item.probableCauses.length > 0 ? (
+                            <>
+                              <Text
+                                style={{
+                                  color: themeTextMuted,
+                                  marginTop: 6,
+                                  fontSize: 12,
+                                }}>
+                                Prawdopodobne przyczyny:
+                              </Text>
+                              {item.probableCauses.slice(0, 3).map((cause, index) => (
+                                <Text
+                                  key={`${item.id}-plant-probable-cause-${index}`}
+                                  style={{
+                                    color: themeTextSecondary,
+                                    marginTop: 2,
+                                    fontSize: 12,
+                                  }}>
+                                  - {cause}
+                                </Text>
+                              ))}
+                            </>
+                          ) : null}
+                          <Text
+                            style={{
                               color: themeSuccessText,
                               marginTop: 6,
                               fontSize: 12,
                             }}>
-                            Propozycja dzialan:
+                            Plan dzialan 24h:
                           </Text>
-                          {item.treatment.slice(0, 3).map((step, index) => (
+                          {(item.timelinePlan?.h24 ?? item.treatment ?? []).slice(0, 3).map((step, index) => (
                             <Text
                               key={`${item.id}-suggestion-step-${index}`}
                               style={{
@@ -21761,6 +25805,54 @@ export default function HomeScreen() {
                               - {step}
                             </Text>
                           ))}
+                          {Array.isArray(item.timelinePlan?.d7) &&
+                          item.timelinePlan.d7.length > 0 ? (
+                            <>
+                              <Text
+                                style={{
+                                  color: themeSuccessText,
+                                  marginTop: 6,
+                                  fontSize: 12,
+                                }}>
+                                Plan 7 dni:
+                              </Text>
+                              {item.timelinePlan.d7.slice(0, 2).map((step, index) => (
+                                <Text
+                                  key={`${item.id}-plant-plan7-${index}`}
+                                  style={{
+                                    color: themeAccentText,
+                                    marginTop: 2,
+                                    fontSize: 12,
+                                  }}>
+                                  - {step}
+                                </Text>
+                              ))}
+                            </>
+                          ) : null}
+                          {Array.isArray(item.timelinePlan?.d30) &&
+                          item.timelinePlan.d30.length > 0 ? (
+                            <>
+                              <Text
+                                style={{
+                                  color: themeSuccessText,
+                                  marginTop: 6,
+                                  fontSize: 12,
+                                }}>
+                                Plan 30 dni:
+                              </Text>
+                              {item.timelinePlan.d30.slice(0, 2).map((step, index) => (
+                                <Text
+                                  key={`${item.id}-plant-plan30-${index}`}
+                                  style={{
+                                    color: themeAccentText,
+                                    marginTop: 2,
+                                    fontSize: 12,
+                                  }}>
+                                  - {step}
+                                </Text>
+                              ))}
+                            </>
+                          ) : null}
                           <Text
                             style={{
                               color: themeWarningText,
@@ -22347,9 +26439,17 @@ export default function HomeScreen() {
                               marginTop: 6,
                               fontSize: 12,
                             }}>
-                            Przyczyny:
+                            Pewnosc diagnozy: {item.adjustedConfidencePercent ?? item.confidencePercent ?? 0}% ({item.confidenceLevel ?? mapConfidenceLevel(item.confidencePercent)})
                           </Text>
-                          {item.causes.slice(0, 2).map((cause, index) => (
+                          <Text
+                            style={{
+                              color: themeTextMuted,
+                              marginTop: 6,
+                              fontSize: 12,
+                            }}>
+                            Prawdopodobne przyczyny:
+                          </Text>
+                          {(item.probableCauses ?? item.causes ?? []).slice(0, 3).map((cause, index) => (
                             <Text
                               key={`${item.id}-cause-short-${index}`}
                               style={{
@@ -22366,9 +26466,13 @@ export default function HomeScreen() {
                               marginTop: 6,
                               fontSize: 12,
                             }}>
-                            Usuwanie + prewencja:
+                            Plan dzialan 24h:
                           </Text>
-                          {[...item.removeActions.slice(0, 2), ...item.preventionActions.slice(0, 2)].map((step, index) => (
+                          {(item.timelinePlan?.h24 ??
+                            [
+                              ...(item.removeActions ?? []).slice(0, 2),
+                              ...(item.preventionActions ?? []).slice(0, 1),
+                            ]).slice(0, 3).map((step, index) => (
                             <Text
                               key={`${item.id}-plan-short-${index}`}
                               style={{
@@ -22379,6 +26483,54 @@ export default function HomeScreen() {
                               - {step}
                             </Text>
                           ))}
+                          {Array.isArray(item.timelinePlan?.d7) &&
+                          item.timelinePlan.d7.length > 0 ? (
+                            <>
+                              <Text
+                                style={{
+                                  color: themeSuccessText,
+                                  marginTop: 6,
+                                  fontSize: 12,
+                                }}>
+                                Plan 7 dni:
+                              </Text>
+                              {item.timelinePlan.d7.slice(0, 2).map((step, index) => (
+                                <Text
+                                  key={`${item.id}-algae-plan7-${index}`}
+                                  style={{
+                                    color: themeAccentText,
+                                    marginTop: 2,
+                                    fontSize: 12,
+                                  }}>
+                                  - {step}
+                                </Text>
+                              ))}
+                            </>
+                          ) : null}
+                          {Array.isArray(item.timelinePlan?.d30) &&
+                          item.timelinePlan.d30.length > 0 ? (
+                            <>
+                              <Text
+                                style={{
+                                  color: themeSuccessText,
+                                  marginTop: 6,
+                                  fontSize: 12,
+                                }}>
+                                Plan 30 dni:
+                              </Text>
+                              {item.timelinePlan.d30.slice(0, 2).map((step, index) => (
+                                <Text
+                                  key={`${item.id}-algae-plan30-${index}`}
+                                  style={{
+                                    color: themeAccentText,
+                                    marginTop: 2,
+                                    fontSize: 12,
+                                  }}>
+                                  - {step}
+                                </Text>
+                              ))}
+                            </>
+                          ) : null}
                           <Text
                             style={{
                               color: themeWarningText,
@@ -22419,7 +26571,7 @@ export default function HomeScreen() {
               )}
                 </>
               )}
-            </>
+                </>
           )}
 
           {isSettingsSection && (
@@ -23875,6 +28027,14 @@ export default function HomeScreen() {
                 }}>
                 Start akwarium
               </Text>
+              <Text
+                style={{
+                  color: '#9da3af',
+                  marginBottom: 8,
+                  fontSize: 11,
+                }}>
+                Wybierz tryb startu, a potem typ akwarium i cele parametrow w sekcji ponizej.
+              </Text>
               <View
                 style={{
                   flexDirection: 'row',
@@ -23971,6 +28131,7 @@ export default function HomeScreen() {
               </View>
 
               {renderTankWaterTargetsSection('inline-add')}
+              {renderTankHeaterContextSection('inline-add')}
               <Pressable
                 onPress={handleSaveTank}
                 style={{
@@ -24081,6 +28242,14 @@ export default function HomeScreen() {
                       }}>
                       Start akwarium
                     </Text>
+                    <Text
+                      style={{
+                        color: '#9da3af',
+                        marginBottom: 8,
+                        fontSize: 11,
+                      }}>
+                      Wybierz tryb startu, a potem typ akwarium i cele parametrow w sekcji ponizej.
+                    </Text>
                     <View
                       style={{
                         flexDirection: 'row',
@@ -24177,6 +28346,7 @@ export default function HomeScreen() {
                     </View>
 
                     {renderTankWaterTargetsSection('modal-add')}
+                    {renderTankHeaterContextSection('modal-add')}
 
                     <Pressable
                       onPress={handleSaveTank}
@@ -24329,6 +28499,218 @@ export default function HomeScreen() {
                         marginBottom: 14,
                       }}
                     />
+                    <View
+                      style={{
+                        borderWidth: 1,
+                        borderColor: themeBorder,
+                        borderRadius: 14,
+                        padding: 12,
+                        marginBottom: 14,
+                        backgroundColor: themeCardBgAlt,
+                      }}>
+                      <Pressable
+                        onPress={() =>
+                          setIsCustomEquipmentFormVisible((prev) => !prev)
+                        }
+                        style={{
+                          borderWidth: 1,
+                          borderColor: themeBorderStrong,
+                          borderRadius: 10,
+                          paddingVertical: 10,
+                          paddingHorizontal: 12,
+                          backgroundColor: themeCardBg,
+                        }}>
+                        <Text
+                          style={{
+                            color: themeTextPrimary,
+                            fontWeight: '700',
+                            fontSize: 13,
+                          }}>
+                          {isCustomEquipmentFormVisible
+                            ? 'Ukryj formularz "Inne"'
+                            : 'Nie ma na liscie? Dodaj "Inne"'}
+                        </Text>
+                      </Pressable>
+
+                      {isCustomEquipmentFormVisible ? (
+                        <View style={{ marginTop: 10 }}>
+                          <Text
+                            style={{
+                              color: themeTextSecondary,
+                              fontSize: 12,
+                              marginBottom: 8,
+                              lineHeight: 17,
+                            }}>
+                            Podaj podstawowe dane sprzetu, a zapisze go bezposrednio do
+                            aktywnego akwarium.
+                          </Text>
+                          <TextInput
+                            placeholder="Marka (opcjonalnie)"
+                            placeholderTextColor={themePlaceholder}
+                            value={customEquipmentBrand}
+                            onChangeText={setCustomEquipmentBrand}
+                            style={{
+                              borderWidth: 1,
+                              borderColor: themeInputBorder,
+                              backgroundColor: themeInputBg,
+                              color: themeInputText,
+                              paddingHorizontal: 12,
+                              paddingVertical: 10,
+                              borderRadius: 10,
+                              marginBottom: 8,
+                            }}
+                          />
+                          <TextInput
+                            placeholder="Model lub nazwa (wymagane)"
+                            placeholderTextColor={themePlaceholder}
+                            value={customEquipmentModel}
+                            onChangeText={setCustomEquipmentModel}
+                            style={{
+                              borderWidth: 1,
+                              borderColor: themeInputBorder,
+                              backgroundColor: themeInputBg,
+                              color: themeInputText,
+                              paddingHorizontal: 12,
+                              paddingVertical: 10,
+                              borderRadius: 10,
+                              marginBottom: 8,
+                            }}
+                          />
+                          {equipmentCatalogType === 'filter' ? (
+                            <View style={{ marginBottom: 8 }}>
+                              <Text
+                                style={{
+                                  color: themeTextSecondary,
+                                  fontSize: 12,
+                                  marginBottom: 6,
+                                }}>
+                                Typ filtra i wspolczynnik realnej wydajnosci
+                              </Text>
+                              <View
+                                style={{
+                                  flexDirection: 'row',
+                                  flexWrap: 'wrap',
+                                  gap: 8,
+                                }}>
+                                {FILTER_TYPE_OPTIONS.map((option) => (
+                                  <Pressable
+                                    key={`custom-filter-type-${option.value}`}
+                                    onPress={() => setCustomFilterType(option.value)}
+                                    style={{
+                                      borderWidth: 1,
+                                      borderColor:
+                                        customFilterType === option.value
+                                          ? themeAccent
+                                          : themeBorderStrong,
+                                      borderRadius: 999,
+                                      paddingVertical: 6,
+                                      paddingHorizontal: 10,
+                                      backgroundColor:
+                                        customFilterType === option.value
+                                          ? themeAccentStrongBg
+                                          : themeCardBg,
+                                    }}>
+                                    <Text
+                                      style={{
+                                        color:
+                                          customFilterType === option.value
+                                            ? themeAccentOnStrong
+                                            : themeTextPrimary,
+                                        fontSize: 11,
+                                        fontWeight: '700',
+                                      }}>
+                                      {option.label} ({Math.round(option.factor * 100)}%)
+                                    </Text>
+                                  </Pressable>
+                                ))}
+                              </View>
+                            </View>
+                          ) : null}
+                          <TextInput
+                            placeholder={`${customEquipmentPrimaryFieldLabel} - ${customEquipmentPrimaryFieldPlaceholder}`}
+                            placeholderTextColor={themePlaceholder}
+                            value={customEquipmentPrimaryValue}
+                            onChangeText={setCustomEquipmentPrimaryValue}
+                            keyboardType="numeric"
+                            style={{
+                              borderWidth: 1,
+                              borderColor: themeInputBorder,
+                              backgroundColor: themeInputBg,
+                              color: themeInputText,
+                              paddingHorizontal: 12,
+                              paddingVertical: 10,
+                              borderRadius: 10,
+                              marginBottom: showCustomEquipmentRangeFields ? 8 : 10,
+                            }}
+                          />
+                          {showCustomEquipmentRangeFields ? (
+                            <View
+                              style={{
+                                flexDirection: 'row',
+                                gap: 8,
+                                marginBottom: 10,
+                              }}>
+                              <TextInput
+                                placeholder="Min litraz (opcjonalnie)"
+                                placeholderTextColor={themePlaceholder}
+                                value={customEquipmentTankMinLiters}
+                                onChangeText={setCustomEquipmentTankMinLiters}
+                                keyboardType="numeric"
+                                style={{
+                                  flex: 1,
+                                  borderWidth: 1,
+                                  borderColor: themeInputBorder,
+                                  backgroundColor: themeInputBg,
+                                  color: themeInputText,
+                                  paddingHorizontal: 12,
+                                  paddingVertical: 10,
+                                  borderRadius: 10,
+                                }}
+                              />
+                              <TextInput
+                                placeholder="Max litraz (opcjonalnie)"
+                                placeholderTextColor={themePlaceholder}
+                                value={customEquipmentTankMaxLiters}
+                                onChangeText={setCustomEquipmentTankMaxLiters}
+                                keyboardType="numeric"
+                                style={{
+                                  flex: 1,
+                                  borderWidth: 1,
+                                  borderColor: themeInputBorder,
+                                  backgroundColor: themeInputBg,
+                                  color: themeInputText,
+                                  paddingHorizontal: 12,
+                                  paddingVertical: 10,
+                                  borderRadius: 10,
+                                }}
+                              />
+                            </View>
+                          ) : null}
+                          <Pressable
+                            onPress={handleAssignCustomEquipmentToTank}
+                            disabled={equipmentSavingBusy}
+                            style={{
+                              borderWidth: 1,
+                              borderColor: themeAccent,
+                              borderRadius: 10,
+                              paddingVertical: 10,
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              backgroundColor: themeAccent,
+                              opacity: equipmentSavingBusy ? 0.65 : 1,
+                            }}>
+                            <Text
+                              style={{
+                                color: themeAccentOnStrong,
+                                fontWeight: '700',
+                                fontSize: 13,
+                              }}>
+                              Dodaj inny sprzet
+                            </Text>
+                          </Pressable>
+                        </View>
+                      ) : null}
+                    </View>
                     {filteredEquipmentCatalog.length === 0 ? (
                       <Text style={{ color: themeTextSecondary }}>
                         Brak wynikow dla podanego wyszukiwania.
@@ -24358,9 +28740,13 @@ export default function HomeScreen() {
                                       : item.lightFitStatus === 'too_low'
                                         ? themeWarningBg
                                         : themeBorder
-                                  : item.fitsTank
+                                  : item.fitBadgeTone === 'ok'
                                     ? themeSuccessBg
-                                    : themeBorder,
+                                    : item.fitBadgeTone === 'danger'
+                                      ? themeDangerBg
+                                      : item.fitBadgeTone === 'warning'
+                                        ? themeWarningBg
+                                        : themeBorder,
                               borderRadius: 18,
                               padding: 14,
                               backgroundColor:
@@ -24372,9 +28758,13 @@ export default function HomeScreen() {
                                       : item.lightFitStatus === 'too_low'
                                         ? themeWarningSoftBg
                                         : themeCardBg
-                                  : item.fitsTank
+                                  : item.fitBadgeTone === 'ok'
                                     ? themeSuccessSoftBg
-                                    : themeCardBg,
+                                    : item.fitBadgeTone === 'danger'
+                                      ? themeDangerSoftBg
+                                      : item.fitBadgeTone === 'warning'
+                                        ? themeWarningSoftBg
+                                        : themeCardBg,
                               opacity: equipmentSavingBusy ? 0.6 : 1,
                             }}>
                             <View
@@ -24397,9 +28787,13 @@ export default function HomeScreen() {
                                             : item.lightFitStatus === 'too_low'
                                               ? themeWarningText
                                               : themeAccentText
-                                        : item.fitsTank
+                                        : item.fitBadgeTone === 'ok'
                                           ? themeSuccessText
-                                          : themeAccentText,
+                                          : item.fitBadgeTone === 'danger'
+                                            ? themeDangerText
+                                            : item.fitBadgeTone === 'warning'
+                                              ? themeWarningText
+                                              : themeAccentText,
                                     fontSize: 11,
                                     fontWeight: '700',
                                     textTransform: 'uppercase',
@@ -24429,9 +28823,13 @@ export default function HomeScreen() {
                                           : item.lightFitStatus === 'too_low'
                                             ? themeWarningBg
                                             : themeBorderStrong
-                                      : item.fitsTank
+                                      : item.fitBadgeTone === 'ok'
                                         ? themeSuccessBg
-                                        : themeBorderStrong,
+                                        : item.fitBadgeTone === 'danger'
+                                          ? themeDangerBg
+                                          : item.fitBadgeTone === 'warning'
+                                            ? themeWarningBg
+                                            : themeBorderStrong,
                                   backgroundColor:
                                     item.type === 'light'
                                       ? item.lightFitStatus === 'ok'
@@ -24441,9 +28839,13 @@ export default function HomeScreen() {
                                           : item.lightFitStatus === 'too_low'
                                             ? themeWarningBg
                                             : themeChipBg
-                                      : item.fitsTank
+                                      : item.fitBadgeTone === 'ok'
                                         ? themeSuccessBg
-                                        : themeChipBg,
+                                        : item.fitBadgeTone === 'danger'
+                                          ? themeDangerBg
+                                          : item.fitBadgeTone === 'warning'
+                                            ? themeWarningBg
+                                            : themeChipBg,
                                   borderRadius: 999,
                                   paddingVertical: 5,
                                   paddingHorizontal: 10,
@@ -24457,7 +28859,9 @@ export default function HomeScreen() {
                                           item.lightFitStatus === 'too_low'
                                           ? themeAccentOnStrong
                                           : themeChipText
-                                        : item.fitsTank
+                                        : item.fitBadgeTone === 'ok' ||
+                                          item.fitBadgeTone === 'danger' ||
+                                          item.fitBadgeTone === 'warning'
                                           ? themeAccentOnStrong
                                           : themeChipText,
                                     fontSize: 11,
@@ -24465,9 +28869,7 @@ export default function HomeScreen() {
                                   }}>
                                   {item.type === 'light'
                                     ? item.lightFitLabel || 'Sprawdz'
-                                    : item.fitsTank
-                                      ? 'Pasuje'
-                                      : 'Sprawdz'}
+                                    : item.fitBadgeLabel || 'Sprawdz'}
                                 </Text>
                               </View>
                             </View>
@@ -24541,7 +28943,85 @@ export default function HomeScreen() {
                                   </Text>
                                 </View>
                               )}
-                              {item.type === 'light' ? null : (
+                              {item.type === 'light' ? null : item.type === 'filter' ? (
+                                <>
+                                  <View
+                                    style={{
+                                      borderRadius: 999,
+                                      paddingVertical: 6,
+                                      paddingHorizontal: 10,
+                                      backgroundColor: themeChipBg,
+                                      borderWidth: 1,
+                                      borderColor: themeBorder,
+                                    }}>
+                                    <Text
+                                      style={{
+                                        color: themeChipText,
+                                        fontSize: 12,
+                                        fontWeight: '700',
+                                      }}>
+                                      {`Nominalnie: ${item.nominalTankRangeLabel || '-'}`}
+                                    </Text>
+                                  </View>
+                                  <View
+                                    style={{
+                                      borderRadius: 999,
+                                      paddingVertical: 6,
+                                      paddingHorizontal: 10,
+                                      backgroundColor: themeChipBg,
+                                      borderWidth: 1,
+                                      borderColor: themeBorder,
+                                    }}>
+                                    <Text
+                                      style={{
+                                        color: themeChipText,
+                                        fontSize: 12,
+                                        fontWeight: '700',
+                                      }}>
+                                      {`Realnie: ${item.effectiveTankRangeLabel || '-'}`}
+                                    </Text>
+                                  </View>
+                                </>
+                              ) : item.type === 'heater' ? (
+                                <>
+                                  <View
+                                    style={{
+                                      borderRadius: 999,
+                                      paddingVertical: 6,
+                                      paddingHorizontal: 10,
+                                      backgroundColor: themeChipBg,
+                                      borderWidth: 1,
+                                      borderColor: themeBorder,
+                                    }}>
+                                    <Text
+                                      style={{
+                                        color: themeChipText,
+                                        fontSize: 12,
+                                        fontWeight: '700',
+                                      }}>
+                                      {`Nominalnie: ${item.nominalTankRangeLabel || '-'}`}
+                                    </Text>
+                                  </View>
+                                  <View
+                                    style={{
+                                      borderRadius: 999,
+                                      paddingVertical: 6,
+                                      paddingHorizontal: 10,
+                                      backgroundColor: themeChipBg,
+                                      borderWidth: 1,
+                                      borderColor: themeBorder,
+                                    }}>
+                                    <Text
+                                      style={{
+                                        color: themeChipText,
+                                        fontSize: 12,
+                                        fontWeight: '700',
+                                      }}>
+                                      {`Realnie: ${item.effectiveTankRangeLabel || '-'}`}
+                                    </Text>
+                                  </View>
+                                </>
+                              ) : (
                                 <View
                                   style={{
                                     borderRadius: 999,
@@ -24578,6 +29058,53 @@ export default function HomeScreen() {
                                       fontWeight: '700',
                                     }}>
                                     {item.flowRatio}x/h
+                                  </Text>
+                                </View>
+                              ) : null}
+                              {item.type === 'filter' &&
+                              normalizeFilterType(item.filterType) ? (
+                                <View
+                                  style={{
+                                    borderRadius: 999,
+                                    paddingVertical: 6,
+                                    paddingHorizontal: 10,
+                                    backgroundColor: themeChipBg,
+                                    borderWidth: 1,
+                                    borderColor: themeBorder,
+                                  }}>
+                                  <Text
+                                    style={{
+                                      color: themeChipText,
+                                      fontSize: 12,
+                                      fontWeight: '700',
+                                    }}>
+                                    {getFilterTypeLabel(item.filterType)}
+                                  </Text>
+                                </View>
+                              ) : null}
+                              {item.type === 'filter' &&
+                              Number.isFinite(
+                                Number(item.effectiveFlowFactor ?? item.filterEfficiencyFactor)
+                              ) &&
+                              Number(item.effectiveFlowFactor ?? item.filterEfficiencyFactor) < 1 ? (
+                                <View
+                                  style={{
+                                    borderRadius: 999,
+                                    paddingVertical: 6,
+                                    paddingHorizontal: 10,
+                                    backgroundColor: themeChipBg,
+                                    borderWidth: 1,
+                                    borderColor: themeBorder,
+                                  }}>
+                                  <Text
+                                    style={{
+                                      color: themeChipText,
+                                      fontSize: 12,
+                                      fontWeight: '700',
+                                    }}>
+                                    {Math.round(
+                                      Number(item.effectiveFlowFactor ?? item.filterEfficiencyFactor) * 100
+                                    )}%
                                   </Text>
                                 </View>
                               ) : null}
@@ -24623,18 +29150,21 @@ export default function HomeScreen() {
                                           : item.lightFitStatus === 'too_low'
                                             ? themeWarningText
                                             : themeTextSecondary
-                                      : item.fitsTank
+                                      : item.fitBadgeTone === 'ok'
                                         ? themeSuccessText
-                                        : themeTextSecondary,
+                                        : item.fitBadgeTone === 'danger'
+                                          ? themeDangerText
+                                          : item.fitBadgeTone === 'warning'
+                                            ? themeWarningText
+                                            : themeTextSecondary,
                                   fontSize: 12,
                                   lineHeight: 17,
                                 }}>
                                 {item.type === 'light'
                                   ? item.lightFitMessage ||
                                     'Brak wystarczajacych danych do oceny lampy.'
-                                  : item.fitsTank
-                                    ? 'Zakres litrazu wyglada sensownie dla Twojego akwarium.'
-                                    : 'Model jest poza zalecanym zakresem litrazu dla tego zbiornika.'}
+                                  : item.fitMessage ||
+                                    'Brak wystarczajacych danych do oceny filtra.'}
                               </Text>
                               <View
                                 style={{
@@ -24806,6 +29336,7 @@ export default function HomeScreen() {
                     </View>
 
                     {renderTankWaterTargetsSection('modal-edit')}
+                    {renderTankHeaterContextSection('modal-edit')}
 
                     <Pressable
                       onPress={handleSaveTank}
@@ -24915,6 +29446,275 @@ export default function HomeScreen() {
                     })}
                   </Text>
                 </View>
+
+                {selectedHomeEmergencyState?.isEmergency ? (
+                  <View
+                    style={{
+                      borderWidth: 1,
+                      borderColor: themeDangerBg,
+                      borderRadius: 12,
+                      padding: 12,
+                      marginTop: 10,
+                      backgroundColor: themeDangerSoftBg,
+                    }}>
+                    <Text style={{ color: themeDangerText, fontWeight: '700', fontSize: 13 }}>
+                      Tryb awaryjny: {selectedHomeEmergencyState.title || 'Aktywowany'}
+                    </Text>
+                    <Text style={{ color: themeDangerText, marginTop: 4, fontSize: 12 }}>
+                      {selectedHomeEmergencyState.summary}
+                    </Text>
+
+                    <Text style={{ color: themeTextPrimary, marginTop: 8, fontWeight: '700', fontSize: 12 }}>
+                      Co zrobic teraz (krok po kroku)
+                    </Text>
+                    {(selectedHomeEmergencyState.steps ?? []).slice(0, 5).map((step, index) => (
+                      <Text
+                        key={`home-emergency-step-${index}`}
+                        style={{ color: themeTextPrimary, marginTop: 4, fontSize: 12 }}>
+                        {index + 1}. {step}
+                      </Text>
+                    ))}
+
+                    <Text style={{ color: themeTextPrimary, marginTop: 8, fontWeight: '700', fontSize: 12 }}>
+                      Czego nie robic pochopnie
+                    </Text>
+                    {(selectedHomeEmergencyState.avoid ?? []).slice(0, 4).map((item, index) => (
+                      <Text
+                        key={`home-emergency-avoid-${index}`}
+                        style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
+                        - {item}
+                      </Text>
+                    ))}
+                  </View>
+                ) : null}
+
+                <Text
+                  style={{
+                    color: themeTextPrimary,
+                    marginTop: 12,
+                    marginBottom: 8,
+                    fontWeight: '700',
+                  }}>
+                  Co zrobic dzisiaj
+                </Text>
+                {Array.isArray(selectedHomeTodayActionPlan?.items) &&
+                selectedHomeTodayActionPlan.items.length > 0 ? (
+                  selectedHomeTodayActionPlan.items.map((item, index) => (
+                    <View
+                      key={`home-today-action-${index}`}
+                      style={{
+                        borderWidth: 1,
+                        borderColor:
+                          item.categoryKey === 'critical'
+                            ? themeDanger
+                            : item.categoryKey === 'important'
+                              ? themeWarning
+                              : themeBorder,
+                        borderRadius: 10,
+                        padding: 10,
+                        marginBottom: 8,
+                        backgroundColor: themeCardBg,
+                      }}>
+                      <Text
+                        style={{
+                          color:
+                            item.categoryKey === 'critical'
+                              ? themeDangerText
+                              : item.categoryKey === 'important'
+                                ? themeWarningText
+                                : themeTextSecondary,
+                          fontSize: 11,
+                          fontWeight: '700',
+                        }}>
+                        {item.categoryLabel}
+                      </Text>
+                      <Text style={{ color: themeTextPrimary, marginTop: 4, fontWeight: '700' }}>
+                        {item.title}
+                      </Text>
+                      {item.details ? (
+                        <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
+                          {item.details}
+                        </Text>
+                      ) : null}
+                    </View>
+                  ))
+                ) : (
+                  <Text style={{ color: themeTextSecondary }}>
+                    Brak pilnych dzialan na dzis.
+                  </Text>
+                )}
+
+                <Text
+                  style={{
+                    color: themeTextPrimary,
+                    marginTop: 12,
+                    marginBottom: 8,
+                    fontWeight: '700',
+                  }}>
+                  Harmonogram adaptacyjny
+                </Text>
+                {Array.isArray(selectedHomeAdaptiveTaskSchedule?.tasks) &&
+                selectedHomeAdaptiveTaskSchedule.tasks.length > 0 ? (
+                  <View
+                    style={{
+                      borderWidth: 1,
+                      borderColor: themeBorder,
+                      borderRadius: 10,
+                      padding: 10,
+                      marginBottom: 8,
+                      backgroundColor: themeCardBg,
+                    }}>
+                    <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+                      Ryzyko: {selectedHomeAdaptiveTaskSchedule?.risk?.level ?? 'routine'} ({selectedHomeAdaptiveTaskSchedule?.risk?.score ?? 0}/100)
+                    </Text>
+                    <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
+                      {selectedHomeAdaptiveTaskSchedule?.summary ??
+                        'Zadania sa wyliczane automatycznie na podstawie ryzyka i trendow.'}
+                    </Text>
+                  </View>
+                ) : (
+                  <Text style={{ color: themeTextSecondary, marginBottom: 8 }}>
+                    Brak danych do zbudowania harmonogramu adaptacyjnego.
+                  </Text>
+                )}
+                {[
+                  {
+                    key: 'today',
+                    label: 'Dzisiaj',
+                    data: selectedHomeAdaptiveTasksByWindow.today,
+                  },
+                  {
+                    key: 'week',
+                    label: '7 dni',
+                    data: selectedHomeAdaptiveTasksByWindow.week,
+                  },
+                  {
+                    key: 'month',
+                    label: '30 dni',
+                    data: selectedHomeAdaptiveTasksByWindow.month,
+                  },
+                ].map((bucket) => {
+                  const pendingTasks = Array.isArray(bucket?.data?.pending)
+                    ? bucket.data.pending
+                    : [];
+                  const completedCount = Number(bucket?.data?.completedCount ?? 0);
+                  const shouldShowAll = Boolean(adaptiveTaskExpandedBuckets[bucket.key]);
+                  const hasMoreThanPreview =
+                    pendingTasks.length > ADAPTIVE_TASK_BUCKET_PREVIEW_LIMIT;
+                  const visibleTasks = shouldShowAll
+                    ? pendingTasks
+                    : pendingTasks.slice(0, ADAPTIVE_TASK_BUCKET_PREVIEW_LIMIT);
+
+                  return (
+                    <View
+                      key={`adaptive-bucket-${bucket.key}`}
+                      style={{
+                        borderWidth: 1,
+                        borderColor: themeBorder,
+                        borderRadius: 10,
+                        padding: 10,
+                        marginBottom: 8,
+                        backgroundColor: themeCardBg,
+                      }}>
+                      <View
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: 8,
+                        }}>
+                        <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+                          {bucket.label} ({pendingTasks.length})
+                        </Text>
+                        {hasMoreThanPreview ? (
+                          <Pressable
+                            onPress={() => handleToggleAdaptiveTaskBucketExpanded(bucket.key)}
+                            hitSlop={8}>
+                            <Text style={{ color: themeAccentText, fontSize: 12, fontWeight: '700' }}>
+                              {shouldShowAll ? 'Ukryj' : 'Pokaz wszystkie'}
+                            </Text>
+                          </Pressable>
+                        ) : null}
+                      </View>
+
+                      {completedCount > 0 ? (
+                        <Text style={{ color: themeTextMuted, marginTop: 3, fontSize: 11 }}>
+                          Wykonane i ukryte: {completedCount}
+                        </Text>
+                      ) : null}
+
+                      {pendingTasks.length === 0 ? (
+                        <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
+                          Brak zaplanowanych zadan.
+                        </Text>
+                      ) : (
+                        visibleTasks.map((task, index) => (
+                          <View
+                            key={`adaptive-task-${bucket.key}-${task?.completionKey ?? task?.id ?? index}`}
+                            style={{
+                              borderWidth: 1,
+                              borderColor:
+                                String(task?.priority ?? '').toLowerCase() === 'critical'
+                                  ? themeDangerBg
+                                  : String(task?.priority ?? '').toLowerCase() === 'important'
+                                    ? themeWarningBg
+                                    : themeBorder,
+                              borderRadius: 8,
+                              padding: 8,
+                              marginTop: 6,
+                              backgroundColor: themeCardBgAlt,
+                            }}>
+                            <Text
+                              style={{
+                                color:
+                                  String(task?.priority ?? '').toLowerCase() === 'critical'
+                                    ? themeDangerText
+                                    : String(task?.priority ?? '').toLowerCase() === 'important'
+                                      ? themeWarningText
+                                      : themeTextSecondary,
+                                fontSize: 11,
+                                fontWeight: '700',
+                              }}>
+                              {String(task?.priority ?? '').toLowerCase() === 'critical'
+                                ? 'Krytyczne'
+                                : String(task?.priority ?? '').toLowerCase() === 'important'
+                                  ? 'Wazne'
+                                  : 'Rutynowe'}
+                            </Text>
+                            <Text style={{ color: themeTextPrimary, marginTop: 2, fontWeight: '700' }}>
+                              {task?.title ?? 'Zadanie'}
+                            </Text>
+                            {task?.details ? (
+                              <Text style={{ color: themeTextSecondary, marginTop: 2, fontSize: 12 }}>
+                                {task.details}
+                              </Text>
+                            ) : null}
+                            <Text style={{ color: themeTextMuted, marginTop: 2, fontSize: 11 }}>
+                              Termin: {formatDateOnly(task?.nextDueAtMs)}
+                            </Text>
+                            <Pressable
+                              onPress={() => handleCompleteAdaptiveTask(task)}
+                              hitSlop={8}
+                              style={{
+                                marginTop: 6,
+                                alignSelf: 'flex-start',
+                                borderWidth: 1,
+                                borderColor: themeBorderStrong,
+                                borderRadius: 999,
+                                paddingVertical: 5,
+                                paddingHorizontal: 10,
+                                backgroundColor: themeCardBg,
+                              }}>
+                              <Text style={{ color: themeTextPrimary, fontSize: 11, fontWeight: '700' }}>
+                                Oznacz jako wykonane
+                              </Text>
+                            </Pressable>
+                          </View>
+                        ))
+                      )}
+                    </View>
+                  );
+                })}
 
                 <Text
                   style={{
@@ -25208,6 +30008,18 @@ export default function HomeScreen() {
                       }}>
                       Pola sa opcjonalne. Uzupelnij tylko te parametry, ktore masz pod reka.
                     </Text>
+                    {lockedMeasurementFields.length > 0 ? (
+                      <Text
+                        style={{
+                          color: themeTextSecondary,
+                          marginBottom: 12,
+                          fontSize: 12,
+                        }}>
+                        {fullMeasurementFeatureLockMessage ||
+                          `Pelne parametry od planu ${getPlanLabel(fullMeasurementFeatureTargetPlan)}.`}{' '}
+                        Zablokowane: {lockedMeasurementFields.join(', ')}.
+                      </Text>
+                    ) : null}
 
                     {measurementInputRows.length === 0 ? (
                       <Text
@@ -25369,13 +30181,23 @@ export default function HomeScreen() {
 
                     <Pressable
                       onPress={handleSaveMeasurement}
-                      disabled={saveBusy || historyLoading || !selectedTank}
+                      disabled={
+                        saveBusy ||
+                        historyLoading ||
+                        !selectedTank ||
+                        selectedTankLockedByPlan
+                      }
                       style={{
                         backgroundColor: selectedTank ? themeSuccessBg : '#555',
                         padding: 14,
                         borderRadius: 10,
                         opacity:
-                          saveBusy || historyLoading || !selectedTank ? 0.7 : 1,
+                          saveBusy ||
+                          historyLoading ||
+                          !selectedTank ||
+                          selectedTankLockedByPlan
+                            ? 0.7
+                            : 1,
                       }}>
                       <Text
                         style={{
@@ -25432,6 +30254,39 @@ export default function HomeScreen() {
                 <Text style={{ color: themeTextSecondary, marginTop: 6 }}>
                   {tankOnboardingPlan.statusText}
                 </Text>
+                <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
+                  Tryb: {tankOnboardingPlan.modeLabel || tankOnboardingPlan.mode}
+                </Text>
+                {Array.isArray(tankOnboardingPlan.checklistStart) &&
+                tankOnboardingPlan.checklistStart.length > 0 ? (
+                  <View style={{ marginTop: 8 }}>
+                    <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+                      Checklista startowa
+                    </Text>
+                    {tankOnboardingPlan.checklistStart.slice(0, 4).map((item, index) => (
+                      <Text
+                        key={`onboarding-checklist-${index}`}
+                        style={{ color: themeTextSecondary, marginTop: 3, fontSize: 12 }}>
+                        - {item}
+                      </Text>
+                    ))}
+                  </View>
+                ) : null}
+                {Array.isArray(tankOnboardingPlan.firstMeasurements) &&
+                tankOnboardingPlan.firstMeasurements.length > 0 ? (
+                  <View style={{ marginTop: 8 }}>
+                    <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+                      Pierwsze pomiary
+                    </Text>
+                    {tankOnboardingPlan.firstMeasurements.slice(0, 4).map((item, index) => (
+                      <Text
+                        key={`onboarding-first-measure-${index}`}
+                        style={{ color: themeTextSecondary, marginTop: 3, fontSize: 12 }}>
+                        - {item}
+                      </Text>
+                    ))}
+                  </View>
+                ) : null}
                 {!hasTaskChecklistAccess ? (
                   <Text style={{ color: themeTextSecondary, marginTop: 8, fontSize: 12 }}>
                     {t('subscriptionTasksPlanLocked')}
@@ -25736,6 +30591,35 @@ export default function HomeScreen() {
                 <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
                   {historyLimitUsageText}
                 </Text>
+                {parameterSuggestionItems.length > 0 ? (
+                  <View
+                    style={{
+                      borderWidth: 1,
+                      borderColor: themeBorder,
+                      borderRadius: 8,
+                      padding: 8,
+                      marginBottom: 8,
+                      backgroundColor: themeCardBgAlt,
+                    }}>
+                    <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+                      Wymaga uwagi (Parametry)
+                    </Text>
+                    {parameterSuggestionItems.slice(0, 4).map((item, idx) => (
+                      <Text
+                        key={`parameter-suggestion-inline-${item.id ?? idx}`}
+                        style={{
+                          color:
+                            item.severity === 'critical'
+                              ? themeDangerText
+                              : themeWarningText,
+                          fontSize: 12,
+                          marginTop: 4,
+                        }}>
+                        - {item.text}
+                      </Text>
+                    ))}
+                  </View>
+                ) : null}
 
                 {!selectedTank ? (
                   <Text style={{ color: themeTextSecondary }}>
@@ -25757,11 +30641,12 @@ export default function HomeScreen() {
                         fontSize: 12,
                         fontWeight: '700',
                       }}>
-                      {t('subscriptionHistoryDisplayLimited', {
-                        plan: currentSubscriptionTierLabel,
-                        current: currentHistoryEntryCount,
-                        limit: historyEntryLimit,
-                      })}
+                      {historyDaysLimit === null
+                        ? t('subscriptionHistoryLimitUsageUnlimited', {
+                            plan: currentSubscriptionTierLabel,
+                            current: currentHistoryEntryCount,
+                          })
+                        : `W planie ${currentSubscriptionTierLabel} widoczna jest historia z ostatnich ${historyDaysLimit} dni (${visibleHistoryMeasurements.length}/${currentHistoryEntryCount}).`}
                     </Text>
                     <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
                       {t('subscriptionHistoryUpgradeHint')}
@@ -25924,214 +30809,12 @@ export default function HomeScreen() {
             </View>
           )}
 
-          {isReviewSection && selectedTank && (
-            <View
-              style={{
-                borderWidth: 1,
-                borderColor: themeBorder,
-                borderRadius: 10,
-                padding: 12,
-                marginBottom: 18,
-                backgroundColor: themeCardBg,
-              }}>
-              <Pressable
-                onPress={() => setIsSuggestionsExpanded((prev) => !prev)}
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                }}>
-                {renderReviewSectionTitle('Co wymaga uwagi', suggestionsSectionSeverity)}
-                <Text style={{ color: themeActionText, fontWeight: '700' }}>
-                  {isSuggestionsExpanded ? t('hide') : t('show')}
-                </Text>
-              </Pressable>
-
-              {!isSuggestionsExpanded ? null : (
-              <View style={{ marginTop: 8 }}>
-                {!hasGeneralRecommendationAccess ? (
-                  <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
-                    {t('subscriptionRecommendationsLocked')}
-                  </Text>
-                ) : suggestionChangeItems.length === 0 ? (
-                  <Text
-                    style={{
-                      color: isLightTheme ? '#1f7a3a' : '#9be7a3',
-                      fontSize: 12,
-                      fontWeight: '700',
-                    }}>
-                    {t('suggestionsAllGood')}
-                  </Text>
-                ) : (
-                  suggestionChangeItems.map((item, index) => (
-                    <Text
-                      key={`suggestion-change-${item.id ?? index}`}
-                      style={{
-                        color:
-                          item.severity === 'critical'
-                            ? themeDangerText
-                            : themeWarningText,
-                        fontSize: 13,
-                        lineHeight: 19,
-                        fontWeight: item.severity === 'critical' ? '700' : '600',
-                        marginTop: index === 0 ? 0 : 6,
-                      }}>
-                      - {item.text}
-                    </Text>
-                  ))
-                )}
-              </View>
-              )}
-            </View>
-          )}
 
           {isReviewSection && selectedTank && (
             <View
               style={{
                 borderWidth: 1,
-                borderColor: themeBorder,
-                borderRadius: 10,
-                padding: 12,
-                marginBottom: 18,
-                backgroundColor: themeCardBg,
-              }}>
-              <Pressable
-                onPress={() => setIsGuidedPlanExpanded((prev) => !prev)}
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                }}>
-                {renderReviewSectionTitle(
-                  t('guidedRecommendationPlanTitle'),
-                  guidedPlanSectionSeverity
-                )}
-                <Text style={{ color: themeActionText, fontWeight: '700' }}>
-                  {isGuidedPlanExpanded ? t('hide') : t('show')}
-                </Text>
-              </Pressable>
-
-              {!isGuidedPlanExpanded ? null : (
-                <View style={{ marginTop: 8 }}>
-                  {!hasGeneralRecommendationAccess ? (
-                    <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
-                      {t('subscriptionRecommendationsLocked')}
-                    </Text>
-                  ) : !hasGuidedRecommendationAccess ? (
-                    <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
-                      {t('subscriptionRecommendationsGuidedLocked')}
-                    </Text>
-                  ) : guidedRecommendationSteps.length === 0 ? (
-                    <Text
-                      style={{
-                        color: isLightTheme ? '#1f7a3a' : '#9be7a3',
-                        fontSize: 12,
-                        fontWeight: '700',
-                      }}>
-                      Brak planu krok po kroku na ten moment.
-                    </Text>
-                  ) : (
-                    guidedRecommendationSteps.map((step, index) => (
-                      <View
-                        key={`guided-recommendation-step-${step.id ?? index}`}
-                        style={{ marginTop: index === 0 ? 0 : 8 }}>
-                        <Pressable
-                          onPress={() =>
-                            setExpandedGuidedStepIds((prev) => ({
-                              ...prev,
-                              [step.id]: !prev[step.id],
-                            }))
-                          }
-                          style={{
-                            borderWidth: 1,
-                            borderColor:
-                              step.severity === 'critical'
-                                ? (isLightTheme ? '#f1b0b0' : '#7a1e1e')
-                                : step.severity === 'warning'
-                                  ? (isLightTheme ? '#f0d79f' : '#7c5e11')
-                                  : themeBorder,
-                            borderRadius: 10,
-                            padding: 10,
-                            backgroundColor:
-                              step.severity === 'critical'
-                                ? (isLightTheme ? '#fff1f1' : '#2a1212')
-                                : step.severity === 'warning'
-                                  ? (isLightTheme ? '#fff8ea' : '#2d220f')
-                                  : themeCardBgAlt,
-                          }}>
-                          <Text
-                            style={{
-                              color:
-                                step.severity === 'critical'
-                                  ? themeDangerText
-                                  : step.severity === 'warning'
-                                    ? themeWarningText
-                                    : themeTextSecondary,
-                              fontSize: 11,
-                              fontWeight: '700',
-                            }}>
-                            {step.priorityLabel} - {step.area}
-                          </Text>
-                          <Text
-                            style={{
-                              color: themeTextPrimary,
-                              fontSize: 13,
-                              lineHeight: 19,
-                              marginTop: 4,
-                            }}>
-                            {index + 1}. {step.text}
-                          </Text>
-                          <Text
-                            style={{
-                              color: themeActionText,
-                              fontSize: 12,
-                              marginTop: 6,
-                              fontWeight: '700',
-                            }}>
-                            {expandedGuidedStepIds[step.id] ? t('hide') : t('tapForDetails')}
-                          </Text>
-                        </Pressable>
-
-                        {!expandedGuidedStepIds[step.id] ||
-                        !Array.isArray(step.details) ||
-                        step.details.length === 0 ? null : (
-                          <View
-                            style={{
-                              borderWidth: 1,
-                              borderColor: themeBorder,
-                              borderRadius: 8,
-                              paddingVertical: 8,
-                              paddingHorizontal: 10,
-                              marginTop: 6,
-                              backgroundColor: themeCardBgAlt,
-                            }}>
-                            {step.details.map((detail, detailIndex) => (
-                              <Text
-                                key={`guided-step-detail-${step.id}-${detailIndex}`}
-                                style={{
-                                  color: themeTextSecondary,
-                                  fontSize: 12,
-                                  lineHeight: 17,
-                                  marginTop: detailIndex === 0 ? 0 : 4,
-                                }}>
-                                - {detail}
-                              </Text>
-                            ))}
-                          </View>
-                        )}
-                      </View>
-                    ))
-                  )}
-                </View>
-              )}
-            </View>
-          )}
-
-          {isReviewSection && selectedTank && (
-            <View
-              style={{
-                borderWidth: 1,
-                borderColor: waterTestingSchedule.isOverdue
+                borderColor: waterActionCalendar.overdueCount > 0
                   ? isLightTheme
                     ? '#e8a08c'
                     : '#d9480f'
@@ -26139,7 +30822,7 @@ export default function HomeScreen() {
                 borderRadius: 10,
                 padding: 12,
                 marginBottom: 18,
-                backgroundColor: waterTestingSchedule.isOverdue
+                backgroundColor: waterActionCalendar.overdueCount > 0
                   ? isLightTheme
                     ? '#fff4f0'
                     : '#2b1410'
@@ -26160,7 +30843,7 @@ export default function HomeScreen() {
                     fontWeight: '700',
                     fontSize: 16,
                   }}>
-                  {t('waterTestingSchedule')}
+                  Kalendarz akcji (14 dni)
                 </Text>
                 <Text style={{ color: themeActionText, fontWeight: '700' }}>
                   {hasTaskReminderAccess
@@ -26177,108 +30860,210 @@ export default function HomeScreen() {
                 </Text>
               ) : !isWaterTestingExpanded ? null : (
                 <View style={{ marginTop: 8 }}>
-                  <Text
-                    style={{
-                      color: waterTestingSchedule.isOverdue
-                        ? isLightTheme
-                          ? '#b45309'
-                          : '#ffdd99'
-                        : isLightTheme
-                          ? '#1f7a3a'
-                          : '#d7f5dd',
-                      fontWeight: '700',
-                    }}>
-                    {t('nextTestWithDate', {
-                      date: formatDateOnly(waterTestingSchedule.nextTestAtMs),
-                    })}
+                  <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
+                    Plan obejmuje najblizsze {waterActionCalendar.windowDays} dni i laczy podmiany,
+                    testy, odmulanie oraz serwis filtra.
                   </Text>
-                  <Text style={{ color: themeTextSecondary, marginTop: 6, fontSize: 12 }}>
+                  <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
                     {waterTestingSchedule.reason}
                   </Text>
-                  {hasTaskChecklistAccess ? (
-                    <Text style={{ color: themeTextSecondary, marginTop: 6, fontSize: 12 }}>
-                      {t('subscriptionTasksChecklists')}
-                    </Text>
-                  ) : (
-                    <Text style={{ color: themeTextSecondary, marginTop: 6, fontSize: 12 }}>
-                      {t('subscriptionTasksReminders')}
-                    </Text>
-                  )}
 
-                  <View style={{ marginTop: 10 }}>
-                    {(waterTestingSchedule.parameters ?? []).map((plan, index) => (
-                      <View
-                        key={`water-plan-${plan.key}`}
-                        style={{
-                          borderWidth: 1,
-                          borderColor:
-                            plan.level === 'problem'
-                              ? isLightTheme
-                                ? '#e8a08c'
-                                : '#7a1e1e'
-                              : plan.level === 'warning'
-                                ? isLightTheme
-                                  ? '#e8cb85'
-                                  : '#8a6a16'
-                                : isLightTheme
-                                  ? '#a7d6b2'
-                                  : '#2f9e44',
-                          backgroundColor:
-                            plan.level === 'problem'
-                              ? isLightTheme
-                                ? '#fff4f0'
-                                : '#2a1212'
-                              : plan.level === 'warning'
-                                ? isLightTheme
-                                  ? '#fff9ec'
-                                  : '#2b2615'
-                                : isLightTheme
-                                  ? '#eefaf0'
-                                  : '#102515',
-                          borderRadius: 8,
-                          padding: 8,
-                          paddingTop: 8,
-                          marginTop: index === 0 ? 0 : 8,
-                        }}>
-                        <Text
-                          style={{
-                            color:
-                              plan.level === 'problem'
-                                ? isLightTheme
-                                  ? '#b45309'
-                                  : '#ffb3b3'
-                                : plan.level === 'warning'
-                                  ? isLightTheme
-                                    ? '#8a5a12'
-                                    : '#ffdd99'
-                                  : isLightTheme
-                                    ? '#1f7a3a'
-                                    : '#9be7a3',
-                            fontWeight: '700',
-                          }}>
-                          {plan.label}
-                        </Text>
-                        <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 2 }}>
-                          {t('nextTestWithDate', {
-                            date: formatDateOnly(plan.nextTestAtMs),
-                          })}
-                        </Text>
-                        <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 2 }}>
-                          {plan.reason}
-                        </Text>
-                      </View>
-                    ))}
+                  <View
+                    style={{
+                      marginTop: 10,
+                      flexDirection: 'row',
+                      flexWrap: 'wrap',
+                      gap: 8,
+                    }}>
+                    <View
+                      style={{
+                        borderWidth: 1,
+                        borderColor: themeBorder,
+                        borderRadius: 999,
+                        paddingVertical: 5,
+                        paddingHorizontal: 10,
+                        backgroundColor: themeCardBg,
+                      }}>
+                      <Text style={{ color: themeTextSecondary, fontSize: 11 }}>
+                        Podmiana: co {waterActionCalendar.waterChangeIntervalDays} dni
+                      </Text>
+                    </View>
+                    <View
+                      style={{
+                        borderWidth: 1,
+                        borderColor: themeBorder,
+                        borderRadius: 999,
+                        paddingVertical: 5,
+                        paddingHorizontal: 10,
+                        backgroundColor: themeCardBg,
+                      }}>
+                      <Text style={{ color: themeTextSecondary, fontSize: 11 }}>
+                        Odmulanie: co {waterActionCalendar.gravelVacuumIntervalDays} dni
+                      </Text>
+                    </View>
+                    <View
+                      style={{
+                        borderWidth: 1,
+                        borderColor: themeBorder,
+                        borderRadius: 999,
+                        paddingVertical: 5,
+                        paddingHorizontal: 10,
+                        backgroundColor: themeCardBg,
+                      }}>
+                      <Text style={{ color: themeTextSecondary, fontSize: 11 }}>
+                        Filtr: co {waterActionCalendar.filterServiceIntervalDays} dni
+                      </Text>
+                    </View>
                   </View>
 
-                  {waterTestingSchedule.requiresPostWaterChangeTest && (
+                  {waterTestingSchedule.requiresPostWaterChangeTest ? (
                     <Text
                       style={{
                         color: isLightTheme ? '#9a3412' : '#ffdd99',
                         marginTop: 10,
                         fontSize: 12,
                       }}>
-                      {t('extraTestAfterWaterChange')}
+                      Po podmianie wykonaj dodatkowy test kontrolny.
                     </Text>
+                  ) : null}
+
+                  {waterActionCalendar.days.length === 0 ? (
+                    <Text style={{ color: themeTextSecondary, marginTop: 10, fontSize: 12 }}>
+                      Brak zaplanowanych akcji na najblizsze 14 dni.
+                    </Text>
+                  ) : (
+                    <View style={{ marginTop: 10 }}>
+                      {waterActionCalendar.days.map((day, dayIndex) => (
+                        <View
+                          key={`water-action-day-${day.dayBucketMs}`}
+                          style={{
+                            borderWidth: 1,
+                            borderColor: themeBorder,
+                            borderRadius: 10,
+                            padding: 10,
+                            marginTop: dayIndex === 0 ? 0 : 8,
+                            backgroundColor: themeCardBg,
+                          }}>
+                          <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 13 }}>
+                            {day.date}
+                          </Text>
+                          {day.actions.map((action, actionIndex) => {
+                            const isOverdue = Boolean(action?.isOverdue);
+                            const actionBusyKeyBase = `${action?.stateKey ?? ''}`;
+                            const isBusy =
+                              maintenanceActionBusyId === `${actionBusyKeyBase}-done` ||
+                              maintenanceActionBusyId === `${actionBusyKeyBase}-skip` ||
+                              maintenanceActionBusyId === `${actionBusyKeyBase}-postpone`;
+
+                            return (
+                              <View
+                                key={`water-action-item-${day.dayBucketMs}-${action.id}-${actionIndex}`}
+                                style={{
+                                  borderWidth: 1,
+                                  borderColor: isOverdue
+                                    ? isLightTheme
+                                      ? '#e8a08c'
+                                      : '#7a1e1e'
+                                    : themeBorder,
+                                  backgroundColor: isOverdue
+                                    ? isLightTheme
+                                      ? '#fff4f0'
+                                      : '#2a1212'
+                                    : themeCardBgAlt,
+                                  borderRadius: 8,
+                                  padding: 8,
+                                  marginTop: 6,
+                                }}>
+                                <Text
+                                  style={{
+                                    color: isOverdue
+                                      ? isLightTheme
+                                        ? '#b45309'
+                                        : '#ffb3b3'
+                                      : themeTextPrimary,
+                                    fontWeight: '700',
+                                    fontSize: 12,
+                                  }}>
+                                  {action.title}
+                                </Text>
+                                {isOverdue ? (
+                                  <Text
+                                    style={{
+                                      color: isLightTheme ? '#9a3412' : '#ffdd99',
+                                      marginTop: 2,
+                                      fontSize: 11,
+                                      fontWeight: '700',
+                                    }}>
+                                    Przeterminowane
+                                  </Text>
+                                ) : null}
+                                {action.details ? (
+                                  <Text style={{ color: themeTextSecondary, marginTop: 3, fontSize: 12 }}>
+                                    {action.details}
+                                  </Text>
+                                ) : null}
+                                <View
+                                  style={{
+                                    marginTop: 8,
+                                    flexDirection: 'row',
+                                    flexWrap: 'wrap',
+                                    gap: 8,
+                                  }}>
+                                  <Pressable
+                                    onPress={() => handleUpdateMaintenanceActionState(action, 'done')}
+                                    disabled={isBusy}
+                                    style={{
+                                      borderWidth: 1,
+                                      borderColor: themeBorderStrong,
+                                      borderRadius: 999,
+                                      paddingVertical: 5,
+                                      paddingHorizontal: 10,
+                                      backgroundColor: themeCardBg,
+                                      opacity: isBusy ? 0.6 : 1,
+                                    }}>
+                                    <Text style={{ color: themeTextPrimary, fontSize: 11, fontWeight: '700' }}>
+                                      ☐ Zrobione
+                                    </Text>
+                                  </Pressable>
+                                  <Pressable
+                                    onPress={() => handleUpdateMaintenanceActionState(action, 'skip')}
+                                    disabled={isBusy}
+                                    style={{
+                                      borderWidth: 1,
+                                      borderColor: themeBorder,
+                                      borderRadius: 999,
+                                      paddingVertical: 5,
+                                      paddingHorizontal: 10,
+                                      backgroundColor: themeCardBg,
+                                      opacity: isBusy ? 0.6 : 1,
+                                    }}>
+                                    <Text style={{ color: themeTextSecondary, fontSize: 11, fontWeight: '700' }}>
+                                      Pomin
+                                    </Text>
+                                  </Pressable>
+                                  <Pressable
+                                    onPress={() => handleUpdateMaintenanceActionState(action, 'postpone')}
+                                    disabled={isBusy}
+                                    style={{
+                                      borderWidth: 1,
+                                      borderColor: themeBorder,
+                                      borderRadius: 999,
+                                      paddingVertical: 5,
+                                      paddingHorizontal: 10,
+                                      backgroundColor: themeCardBg,
+                                      opacity: isBusy ? 0.6 : 1,
+                                    }}>
+                                    <Text style={{ color: themeTextSecondary, fontSize: 11, fontWeight: '700' }}>
+                                      Przesun +1 dzien
+                                    </Text>
+                                  </Pressable>
+                                </View>
+                              </View>
+                            );
+                          })}
+                        </View>
+                      ))}
+                    </View>
                   )}
                 </View>
               )}
@@ -26313,6 +31098,13 @@ export default function HomeScreen() {
               <Text style={{ color: themeTextSecondary, marginBottom: 10, fontSize: 12 }}>
                 Pola pozostaja opcjonalne. Wpisz tylko te wartosci, ktore chcesz teraz zapisac.
               </Text>
+              {lockedMeasurementFields.length > 0 ? (
+                <Text style={{ color: themeTextSecondary, marginBottom: 10, fontSize: 12 }}>
+                  {fullMeasurementFeatureLockMessage ||
+                    `Pelne parametry od planu ${getPlanLabel(fullMeasurementFeatureTargetPlan)}.`}{' '}
+                  Zablokowane: {lockedMeasurementFields.join(', ')}.
+                </Text>
+              ) : null}
               <Text style={{ color: themeTextSecondary, marginBottom: 10, fontSize: 12 }}>
                 {historyLimitUsageText}
               </Text>
@@ -26332,11 +31124,12 @@ export default function HomeScreen() {
                       fontSize: 12,
                       fontWeight: '700',
                     }}>
-                    {t('subscriptionHistoryDisplayLimited', {
-                      plan: currentSubscriptionTierLabel,
-                      current: currentHistoryEntryCount,
-                      limit: historyEntryLimit,
-                    })}
+                    {historyDaysLimit === null
+                      ? t('subscriptionHistoryLimitUsageUnlimited', {
+                          plan: currentSubscriptionTierLabel,
+                          current: currentHistoryEntryCount,
+                        })
+                      : `W planie ${currentSubscriptionTierLabel} widoczna jest historia z ostatnich ${historyDaysLimit} dni (${visibleHistoryMeasurements.length}/${currentHistoryEntryCount}).`}
                   </Text>
                   <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
                     {t('subscriptionHistoryUpgradeHint')}
@@ -26439,16 +31232,26 @@ export default function HomeScreen() {
                 }}
               />
 
-              <Pressable
-                onPress={handleSaveMeasurement}
-                disabled={saveBusy || historyLoading || !selectedTank}
-                style={{
-                  backgroundColor: selectedTank ? themeSuccessBg : themeBorderStrong,
-                  padding: 14,
-                  borderRadius: 8,
-                  opacity:
-                    saveBusy || historyLoading || !selectedTank ? 0.7 : 1,
-                }}>
+                    <Pressable
+                      onPress={handleSaveMeasurement}
+                      disabled={
+                        saveBusy ||
+                        historyLoading ||
+                        !selectedTank ||
+                        selectedTankLockedByPlan
+                      }
+                      style={{
+                        backgroundColor: selectedTank ? themeSuccessBg : themeBorderStrong,
+                        padding: 14,
+                        borderRadius: 8,
+                        opacity:
+                          saveBusy ||
+                          historyLoading ||
+                          !selectedTank ||
+                          selectedTankLockedByPlan
+                            ? 0.7
+                            : 1,
+                      }}>
                 <Text
                   style={{
                     color: themeAccentOnStrong,
@@ -26876,7 +31679,7 @@ export default function HomeScreen() {
                       </Text>
                       <Pressable
                         onPress={handleOpenAddMeasurementModal}
-                        disabled={!selectedTank}
+                        disabled={!selectedTank || selectedTankLockedByPlan}
                         style={{
                           borderWidth: 1,
                           borderColor: themeAccentText,
@@ -26884,7 +31687,7 @@ export default function HomeScreen() {
                           paddingVertical: 6,
                           paddingHorizontal: 10,
                           backgroundColor: themeAccentText,
-                          opacity: selectedTank ? 1 : 0.6,
+                          opacity: selectedTank && !selectedTankLockedByPlan ? 1 : 0.6,
                         }}>
                         <Text
                           style={{
@@ -26915,11 +31718,12 @@ export default function HomeScreen() {
                             fontSize: 12,
                             fontWeight: '700',
                           }}>
-                          {t('subscriptionHistoryDisplayLimited', {
-                            plan: currentSubscriptionTierLabel,
-                            current: currentHistoryEntryCount,
-                            limit: historyEntryLimit,
-                          })}
+                          {historyDaysLimit === null
+                            ? t('subscriptionHistoryLimitUsageUnlimited', {
+                                plan: currentSubscriptionTierLabel,
+                                current: currentHistoryEntryCount,
+                              })
+                            : `W planie ${currentSubscriptionTierLabel} widoczna jest historia z ostatnich ${historyDaysLimit} dni (${visibleHistoryMeasurements.length}/${currentHistoryEntryCount}).`}
                         </Text>
                         <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
                           {t('subscriptionHistoryUpgradeHint')}
@@ -27684,4 +32488,5 @@ export default function HomeScreen() {
     </SafeAreaView>
   );
 }
+
 
