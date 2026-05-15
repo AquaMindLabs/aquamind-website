@@ -74,12 +74,21 @@ export function useFishPlantSectionInsights({
   evaluatePlantLightingForTank,
   buildFishStockingSummary,
 }: UseFishPlantSectionInsightsParams) {
+  const safeFilteredFishCatalog = Array.isArray(filteredFishCatalog)
+    ? filteredFishCatalog
+    : [];
+  const safeSelectedCatalogPlantIds = Array.isArray(selectedCatalogPlantIds)
+    ? selectedCatalogPlantIds
+    : [];
+  const safePlantCatalog = Array.isArray(plantCatalog) ? plantCatalog : [];
+  const safeStockItems = Array.isArray(stockItems) ? stockItems : [];
+
   useEffect(() => {
     if (!isEditingFish || !selectedCatalogFishId) {
       return;
     }
 
-    const selectedStillVisible = filteredFishCatalog.some(
+    const selectedStillVisible = safeFilteredFishCatalog.some(
       (item) => item.id === selectedCatalogFishId
     );
 
@@ -87,35 +96,35 @@ export function useFishPlantSectionInsights({
       setSelectedCatalogFishId(null);
     }
   }, [
-    filteredFishCatalog,
+    safeFilteredFishCatalog,
     isEditingFish,
     selectedCatalogFishId,
     setSelectedCatalogFishId,
   ]);
 
   useEffect(() => {
-    if (!isEditingPlant || selectedCatalogPlantIds.length === 0) {
+    if (!isEditingPlant || safeSelectedCatalogPlantIds.length === 0) {
       return;
     }
 
-    const availableIds = new Set(plantCatalog.map((item) => item.id));
-    const nextSelectedIds = selectedCatalogPlantIds.filter((plantId) =>
+    const availableIds = new Set(safePlantCatalog.map((item) => item.id));
+    const nextSelectedIds = safeSelectedCatalogPlantIds.filter((plantId) =>
       availableIds.has(plantId)
     );
 
-    if (nextSelectedIds.length !== selectedCatalogPlantIds.length) {
+    if (nextSelectedIds.length !== safeSelectedCatalogPlantIds.length) {
       setSelectedCatalogPlantIds(nextSelectedIds);
     }
   }, [
     isEditingPlant,
-    plantCatalog,
-    selectedCatalogPlantIds,
+    safePlantCatalog,
+    safeSelectedCatalogPlantIds,
     setSelectedCatalogPlantIds,
   ]);
 
   const fishCompatibilityResults = useMemo(
     () =>
-      stockItems
+      safeStockItems
         .filter((item) => item.type === 'fish')
         .map((item) => {
           const issues = checkFishCompatibility(
@@ -136,14 +145,14 @@ export function useFishPlantSectionInsights({
       currentMeasurement,
       selectedTankEnvironmentProfile,
       selectedTankLiters,
-      stockItems,
+      safeStockItems,
       t,
     ]
   );
 
   const fishSchoolingWarnings = useMemo(
     () =>
-      stockItems
+      safeStockItems
         .filter((item) => item.type === 'fish')
         .map((item) => {
           const catalogEntry =
@@ -176,14 +185,15 @@ export function useFishPlantSectionInsights({
       getFishQuantity,
       normalizeLatinCatalogKey,
       resolveFishSchoolingProfile,
-      stockItems,
+      safeStockItems,
       t,
     ]
   );
 
   const stockingCompatibility = useMemo(
-    () => evaluateStockingCompatibility(selectedTank ?? {}, stockItems, currentMeasurement),
-    [currentMeasurement, evaluateStockingCompatibility, selectedTank, stockItems]
+    () =>
+      evaluateStockingCompatibility(selectedTank ?? {}, safeStockItems, currentMeasurement),
+    [currentMeasurement, evaluateStockingCompatibility, selectedTank, safeStockItems]
   );
 
   const fishAggressionConflicts = useMemo(() => {
@@ -209,7 +219,7 @@ export function useFishPlantSectionInsights({
       return dynamicConflicts;
     }
 
-    const fishItems = stockItems.filter((item) => item.type === 'fish');
+    const fishItems = safeStockItems.filter((item) => item.type === 'fish');
     const fallbackConflicts = [];
     for (let index = 0; index < fishItems.length; index += 1) {
       const currentFish = fishItems[index];
@@ -235,7 +245,7 @@ export function useFishPlantSectionInsights({
       }
     }
     return fallbackConflicts;
-  }, [getFishAggressionConflict, selectedTankLiters, stockItems, stockingCompatibility]);
+  }, [getFishAggressionConflict, safeStockItems, selectedTankLiters, stockingCompatibility]);
 
   const fishIssueDetails = useMemo(
     () => [
@@ -342,8 +352,8 @@ export function useFishPlantSectionInsights({
   }, [fishAggressionConflicts, fishCompatibilityResults, fishSchoolingWarnings, t]);
 
   const plantCompatibilityResults = useMemo(() => {
-    const selectedTankFishItems = stockItems.filter((entry) => entry.type === 'fish');
-    return stockItems
+    const selectedTankFishItems = safeStockItems.filter((entry) => entry.type === 'fish');
+    return safeStockItems
       .filter((item) => item.type === 'plant')
       .map((item) => {
         const issues = checkPlantCompatibility(
@@ -365,7 +375,7 @@ export function useFishPlantSectionInsights({
     currentMeasurementDisplay,
     selectedTankEnvironmentProfile,
     selectedTankLiters,
-    stockItems,
+    safeStockItems,
     t,
   ]);
 
@@ -405,7 +415,7 @@ export function useFishPlantSectionInsights({
 
   const plantLightingStatusByItemId = useMemo(() => {
     const statusMap = new Map();
-    (stockItems ?? [])
+    safeStockItems
       .filter((item) => item?.type === 'plant')
       .forEach((item) => {
         statusMap.set(
@@ -415,11 +425,11 @@ export function useFishPlantSectionInsights({
       });
 
     return statusMap;
-  }, [evaluatePlantLightingForTank, selectedTankEnvironmentProfile, stockItems]);
+  }, [evaluatePlantLightingForTank, safeStockItems, selectedTankEnvironmentProfile]);
 
   const fishStockingSummary = useMemo(
-    () => buildFishStockingSummary(stockItems, selectedTankLiters),
-    [buildFishStockingSummary, selectedTankLiters, stockItems]
+    () => buildFishStockingSummary(safeStockItems, selectedTankLiters),
+    [buildFishStockingSummary, safeStockItems, selectedTankLiters]
   );
 
   const stockingCompatibilitySections = useMemo(

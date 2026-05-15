@@ -30,9 +30,18 @@ export function useHistorySectionChart({
   getMeasurementNumericValue,
   getMeasurementRecordedAtMs,
 }: UseHistorySectionChartParams) {
+  const safeMeasurements = Array.isArray(measurements) ? measurements : [];
+  const safeHistoryChartParameters = Array.isArray(historyChartParameters)
+    ? historyChartParameters
+    : [];
+  const safeAvailableMeasurementTests =
+    availableMeasurementTests && typeof availableMeasurementTests === 'object'
+      ? availableMeasurementTests
+      : {};
+
   const enabledHistoryChartParameters = useMemo(() => {
-    const enabledTestsMap = availableMeasurementTests;
-    return historyChartParameters.filter((item) => {
+    const enabledTestsMap = safeAvailableMeasurementTests;
+    return safeHistoryChartParameters.filter((item) => {
       const hasAccess =
         item.key === 'co2'
           ? Boolean(enabledTestsMap.ph && enabledTestsMap.kh)
@@ -42,7 +51,7 @@ export function useHistorySectionChart({
         return false;
       }
 
-      const hasData = measurements.some((measurementItem) => {
+      const hasData = safeMeasurements.some((measurementItem) => {
         const value = getMeasurementNumericValue(measurementItem, item.key);
         return Number.isFinite(value);
       });
@@ -57,10 +66,10 @@ export function useHistorySectionChart({
       return true;
     });
   }, [
-    availableMeasurementTests,
+    safeAvailableMeasurementTests,
     getMeasurementNumericValue,
-    historyChartParameters,
-    measurements,
+    safeHistoryChartParameters,
+    safeMeasurements,
   ]);
 
   useEffect(() => {
@@ -87,10 +96,10 @@ export function useHistorySectionChart({
         (item) => item.key === selectedHistoryChartParameter
       ) ??
       enabledHistoryChartParameters[0] ??
-      historyChartParameters[0],
+      safeHistoryChartParameters[0],
     [
       enabledHistoryChartParameters,
-      historyChartParameters,
+      safeHistoryChartParameters,
       selectedHistoryChartParameter,
     ]
   );
@@ -100,7 +109,7 @@ export function useHistorySectionChart({
       buildHistoryChartData({
         historyChartWidth,
         isHistorySection,
-        measurements,
+        measurements: safeMeasurements,
         selectedHistoryChartMeta,
         selectedTankTargetRanges,
         getMeasurementRecordedAtMs,
@@ -111,7 +120,7 @@ export function useHistorySectionChart({
       getMeasurementRecordedAtMs,
       historyChartWidth,
       isHistorySection,
-      measurements,
+      safeMeasurements,
       selectedHistoryChartMeta,
       selectedTankTargetRanges,
     ]

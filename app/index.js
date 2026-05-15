@@ -9888,7 +9888,10 @@ export default function HomeScreen() {
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (nextUser) => {
-      const hasPasswordProvider = (nextUser?.providerData ?? []).some(
+      const nextUserProviderData = Array.isArray(nextUser?.providerData)
+        ? nextUser.providerData
+        : [];
+      const hasPasswordProvider = nextUserProviderData.some(
         (provider) => provider?.providerId === 'password'
       );
 
@@ -17060,13 +17063,12 @@ export default function HomeScreen() {
     }
   };
 
-  const authProviderIds = useMemo(
-    () =>
-      (user?.providerData ?? [])
-        .map((provider) => String(provider?.providerId ?? '').trim())
-        .filter(Boolean),
-    [user?.providerData]
-  );
+  const authProviderIds = useMemo(() => {
+    const providerData = Array.isArray(user?.providerData) ? user.providerData : [];
+    return providerData
+      .map((provider) => String(provider?.providerId ?? '').trim())
+      .filter(Boolean);
+  }, [user?.providerData]);
   const hasPasswordSignInProvider = authProviderIds.includes('password');
   const hasGoogleSignInProvider = authProviderIds.includes('google.com');
 
@@ -20114,13 +20116,20 @@ export default function HomeScreen() {
       tankEquipmentAssessment.filter,
     ];
 
-    if (equipmentEntries.some((entry) => entry.status === 'critical')) {
+    if (
+      equipmentEntries.some(
+        (entry) => String(entry?.status ?? '').toLowerCase() === 'critical'
+      )
+    ) {
       return 'critical';
     }
 
     if (
       equipmentEntries.some(
-        (entry) => entry.status === 'warning' || entry.status === 'none'
+        (entry) => {
+          const status = String(entry?.status ?? '').toLowerCase();
+          return status === 'warning' || status === 'none';
+        }
       )
     ) {
       return 'warning';
