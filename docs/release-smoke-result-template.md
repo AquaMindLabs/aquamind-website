@@ -7,6 +7,11 @@
 
 ## Wyniki checklisty
 
+Notacja statusu (po kazdym kroku):
+- PASS: zaznacz `[x]`.
+- FAIL: zostaw `[ ]` i dopisz `FAIL (powod)`.
+- BLOCKED: zostaw `[ ]` i dopisz `FAIL (BLOCKED przez <SIGNATURE-ID>)`, np. `AUTH-BLK-001`.
+
 - [ ] [SMK-ONB-01] Fresh start: utworz nowe akwarium od zera, przejdz onboarding do konca bez crasha.
 - [ ] [SMK-ONB-02] Restart: wybierz tryb restart i sprawdz, ze kroki oraz komunikaty sa adekwatne do restartu.
 - [ ] [SMK-ONB-03] Mature media start: wybierz start na dojrzalej biologii i potwierdz, ze plan/kroki sa inne niz fresh start.
@@ -33,6 +38,17 @@
 - [ ] [SMK-EQP-02] Dodaj wpis custom (recznie) i zapisz.
 - [ ] [SMK-EQP-03] Edytuj parametry sprzetu i potwierdz persist danych.
 - [ ] [SMK-EQP-04] Sprawdz, ze analiza/rekomendacje sprzetu laduja sie bez crasha.
+
+- [ ] [SMK-AI-01] Chat AI: zadaj pytanie na danych usera (z aktywnym tankId) i potwierdz odpowiedz osadzona w kontekcie akwarium.
+- [ ] [SMK-AI-02] Chat AI fallback: dla konta z minimalnymi danymi potwierdz czytelny fallback bez crasha.
+- [ ] [SMK-AI-03] Vision happy path: wybierz czytelne zdjecie i potwierdz wynik (hipotezy, pewnosc, kroki weryfikacyjne, plan dzialania).
+- [ ] [SMK-AI-04] Vision low-confidence: wybierz rozmazane/ciemne zdjecie i potwierdz fallback "obraz nieczytelny" bez bledu technicznego.
+- [ ] [SMK-AI-05] Gating Free vs Pro: w planie Free AI pokazuje upgrade prompt, w planie Pro dostep jest odblokowany bez restartu app po zmianie planu.
+
+## Podsumowanie Gate
+- Core PASS/FAIL: `<PASS|FAIL>`
+- AI PASS/FAIL: `<PASS|FAIL>`
+- Final GO/NO-GO: `<GO|NO-GO>`
 
 ## Notatki i znane problemy
 - `<opis problemu / sygnatura / link do nagrania>`

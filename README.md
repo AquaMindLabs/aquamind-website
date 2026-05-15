@@ -48,6 +48,9 @@ Szczegoly:
 - [architecture-overview.md](/C:/Users/mikee/aquarium-mobile/docs/architecture-overview.md)
 - [data-model-tanks-measurements.md](/C:/Users/mikee/aquarium-mobile/docs/data-model-tanks-measurements.md)
 - [onboarding-engine.md](/C:/Users/mikee/aquarium-mobile/docs/onboarding-engine.md)
+- [subscription-webhook-sync.md](/C:/Users/mikee/aquarium-mobile/docs/subscription-webhook-sync.md)
+- [ai-backend-api.md](/C:/Users/mikee/aquarium-mobile/docs/ai-backend-api.md)
+- [release-candidate-cutover.md](/C:/Users/mikee/aquarium-mobile/docs/release-candidate-cutover.md)
 
 ## Uruchomienie
 
@@ -65,6 +68,11 @@ npm run test:firestore
 npm run firestore:deploy:rules
 npm run sanitize:legacy:dry-run
 npm run sanitize:legacy
+npm run release:preflight
+npm run billing:webhook:start
+npm run test:subscription:webhook
+npm run ai:backend:start
+npm run test:ai:backend
 ```
 
 ## Troubleshooting: Firestore Rules Tests

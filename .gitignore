@@ -28,6 +28,7 @@ credentials.json
 npm-debug.*
 yarn-debug.*
 yarn-error.*
+firestore-debug.log
 
 # macOS
 .DS_Store

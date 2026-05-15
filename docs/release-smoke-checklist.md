@@ -55,6 +55,13 @@ Szybko potwierdzic, ze kluczowe flow produktu dzialaja po releasie i nie ma bloc
 - [ ] [SMK-EQP-03] Edytuj parametry sprzetu i potwierdz persist danych.
 - [ ] [SMK-EQP-04] Sprawdz, ze analiza/rekomendacje sprzetu laduja sie bez crasha.
 
+## 6) AI (chat + vision + gating)
+- [ ] [SMK-AI-01] Chat AI: zadaj pytanie na danych usera (z aktywnym tankId) i potwierdz odpowiedz osadzona w kontekcie akwarium.
+- [ ] [SMK-AI-02] Chat AI fallback: dla konta z minimalnymi danymi potwierdz czytelny fallback bez crasha.
+- [ ] [SMK-AI-03] Vision happy path: wybierz czytelne zdjecie i potwierdz wynik (hipotezy, pewnosc, kroki weryfikacyjne, plan dzialania).
+- [ ] [SMK-AI-04] Vision low-confidence: wybierz rozmazane/ciemne zdjecie i potwierdz fallback "obraz nieczytelny" bez bledu technicznego.
+- [ ] [SMK-AI-05] Gating Free vs Pro: w planie Free AI pokazuje upgrade prompt, w planie Pro dostep jest odblokowany bez restartu app po zmianie planu.
+
 ---
 
 ## Known Failure Signatures
@@ -84,9 +91,34 @@ Szybko potwierdzic, ze kluczowe flow produktu dzialaja po releasie i nie ma bloc
 2. Potwierdz, czy dane wracaja po reopen aplikacji.
 3. Oznacz jako pass z uwaga lub fail zaleznie od oczekiwan release.
 
+### D) AI timeout
+- Sygnatura: `AIW_TIMEOUT` lub komunikat "Asystent odpowiada zbyt dlugo / Analiza obrazu trwa zbyt dlugo".
+- Gdzie widoczne: panel Asystent AI, telemetry `ai_request_failure` i `ai_diagnostic`.
+- Co zrobic:
+1. Powtorz request (retry).
+2. Sprawdz lacznosc i dostepnosc backendu AI.
+3. Zanotuj czas i rodzaj operacji (`chat`/`vision`).
+
+### E) AI provider error
+- Sygnatura: `AIW_PROVIDER_ERROR` lub komunikat o chwilowej niedostepnosci AI.
+- Gdzie widoczne: panel Asystent AI, telemetry.
+- Co zrobic:
+1. Powtorz request po 1-2 minutach.
+2. Sprawdz status backend/provider.
+3. Oznacz fail, jesli blad utrzymuje sie w kilku probach.
+
+### F) AI rate-limit / quota
+- Sygnatura: czeste `AIW_PROVIDER_ERROR` albo odpowiedzi wskazujace limit ruchu.
+- Gdzie widoczne: telemetry wzrost fail dla `chat`/`vision`.
+- Co zrobic:
+1. Ogranicz liczbe prob i zanotuj czestotliwosc bledu.
+2. Eskaluj do ownera backend AI z timestampami.
+3. Oznacz NO-GO, jesli dotyczy krytycznych flow AI w releasie.
+
 ---
 
 ## Kryterium PASS release smoke
 - Wszystkie pozycje z ID `SMK-*` odhaczone `[x]`.
+- Wszystkie pozycje `SMK-AI-*` odhaczone `[x]` (osobno AI PASS).
 - Brak blockerow typu crash / brak zapisu krytycznych danych.
 - Brak otwartych issue `P0/P1` po wykonaniu checklisty.

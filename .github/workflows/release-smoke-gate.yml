@@ -57,7 +57,8 @@ jobs:
             --result "${{ inputs.result_file }}" \
             --outDir release-smoke-artifacts \
             --release "${{ inputs.release_tag }}" \
-            --owner "${{ inputs.qa_owner }}"
+            --owner "${{ inputs.qa_owner }}" \
+            --manualApproval "${{ inputs.manual_approval }}"
 
       - name: Upload smoke gate artifact
         if: always()

@@ -51,6 +51,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { createTranslator } from '@/constants/translations';
 import { ActionCalendarPanel } from '@/features/aquarium/components/ActionCalendarPanel';
+import { AiAssistantPanel } from '@/features/aquarium/components/AiAssistantPanel';
 import {
   buildMeasurementSanitizationPatchRuntime,
   normalizeMeasurementRuntime,
@@ -92,6 +93,9 @@ import {
   buildTrendSuggestedEnvironmentForTank,
 } from '@/features/aquarium/sections/ReviewSectionHelpers';
 import {
+  mapBillingErrorToUserMessage,
+} from '@/features/aquarium/subscription/billingService';
+import {
   filterMeasurementFieldsByPlan,
   filterMeasurementsByPlan,
   getAccessibleTanksForPlan,
@@ -104,6 +108,7 @@ import {
   listSubscriptionCapabilityRows,
   listSubscriptionPlans,
 } from '@/features/aquarium/subscription/subscriptionModel';
+import { resolveAiAssistantGate } from '@/features/aquarium/subscription/aiGating';
 import { ALGAE_SYMPTOMS } from '@/data/algaeCatalog';
 import { FISH_CATALOG_EXPANDED } from '@/data/fishCatalogExpanded';
 import { FISH_CATALOG_STARTER } from '@/data/fishCatalogStarter';
@@ -162,6 +167,7 @@ import {
 } from '@/logic/waterAnalysis';
 import { auth, db } from '@/shared/services/firebase';
 import { logTelemetryError } from '@/shared/services/observability';
+import { safeSome } from '@/shared/utils/safeArray';
 
 let notificationsModulePromise = null;
 let notificationsHandlerConfigured = false;
@@ -4841,6 +4847,9 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
   }
 
   const appendUnique = (list, value) => {
+    if (!Array.isArray(list)) {
+      return;
+    }
     const normalized = String(value ?? '').trim();
     if (!normalized) return;
     if (list.some((entry) => String(entry ?? '').trim().toLowerCase() === normalized.toLowerCase())) {
@@ -4849,6 +4858,9 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
     list.push(normalized);
   };
   const addPenalty = (category, points, message, recommendation = '') => {
+    if (!Object.prototype.hasOwnProperty.call(categoryScores, category)) {
+      return;
+    }
     const safePoints = Math.max(0, Number(points) || 0);
     if (!safePoints) return;
     categoryScores[category] = clampScore(Number(categoryScores[category]) - safePoints, 0, 100);
@@ -4997,7 +5009,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
     const per100L = hasLiters ? (quantity / aquariumLiters) * 100 : 0;
     if (hasLiters && per100L > Number(profile.maxGroupDensityPer100L || DEFAULT_MAX_GROUP_DENSITY_PER_100L)) {
       addPenalty(
-        'stockingDensity',
+        'tankSize',
         12,
         `${fishLabel}: liczebnosc moze byc za wysoka jak na litraz.`,
         'Zmniejsz liczebnosc lub zwieksz litraz.'
@@ -8934,7 +8946,7 @@ function dedupeTextList(items = [], maxItems = 6) {
   (items ?? []).forEach((item) => {
     const text = String(item ?? '').trim();
     if (!text) return;
-    const exists = output.some(
+    const exists = safeSome(output, 
       (entry) => String(entry).toLowerCase() === text.toLowerCase()
     );
     if (!exists) {
@@ -9471,6 +9483,7 @@ export default function HomeScreen() {
     canAccessMeasurementKey,
     canCreateTank,
     canUseFeature,
+    hasSubscriptionFeature,
     isFeatureLocked,
     getSubscriptionLimit,
     updateAppSettings,
@@ -9478,6 +9491,13 @@ export default function HomeScreen() {
     applyAdminSubscriptionTier,
     canManageSubscriptionManually,
     getStoreProductIdForTier,
+    billingEnabled,
+    billingBusy,
+    billingRestoreBusy,
+    subscriptionManagementUrl,
+    purchaseSubscriptionTier,
+    restoreSubscriptionPurchases,
+    refreshSubscriptionFromBilling,
   } = useTank();
   const t = createTranslator(appSettings.language);
   const isMediumScreen = windowWidth >= 700;
@@ -9888,176 +9908,235 @@ export default function HomeScreen() {
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (nextUser) => {
-      const nextUserProviderData = Array.isArray(nextUser?.providerData)
-        ? nextUser.providerData
-        : [];
-      const hasPasswordProvider = nextUserProviderData.some(
-        (provider) => provider?.providerId === 'password'
-      );
+      try {
+        const nextUserProviderData = Array.isArray(nextUser?.providerData)
+          ? nextUser.providerData
+          : [];
+        const hasPasswordProvider = safeSome(
+          nextUserProviderData,
+          (provider) => provider?.providerId === 'password'
+        );
 
-      let resolvedUser = nextUser;
-      if (nextUser && hasPasswordProvider && !nextUser.emailVerified) {
-        try {
-          await nextUser.reload();
-          resolvedUser = auth.currentUser ?? nextUser;
-        } catch (reloadError) {
-          console.warn(
-            'Blad odswiezenia statusu emailVerified:',
-            reloadError instanceof Error ? reloadError.message : String(reloadError)
-          );
+        let resolvedUser = nextUser;
+        if (nextUser && hasPasswordProvider && !nextUser.emailVerified) {
+          try {
+            await nextUser.reload();
+            resolvedUser = auth.currentUser ?? nextUser;
+          } catch (reloadError) {
+            console.warn(
+              'Blad odswiezenia statusu emailVerified:',
+              reloadError instanceof Error ? reloadError.message : String(reloadError)
+            );
+          }
         }
-      }
 
-      if (resolvedUser && hasPasswordProvider && !resolvedUser.emailVerified) {
-        const shouldShowAlert = !skipNextUnverifiedAlertRef.current;
-        skipNextUnverifiedAlertRef.current = false;
+        if (resolvedUser && hasPasswordProvider && !resolvedUser.emailVerified) {
+          const shouldShowAlert = !skipNextUnverifiedAlertRef.current;
+          skipNextUnverifiedAlertRef.current = false;
 
-        signOut(auth).catch((error) => {
-          console.warn(
-            'Blad wylogowania nieweryfikowanego konta:',
-            error instanceof Error ? error.message : String(error)
-          );
-        });
-        setUser(null);
+          signOut(auth).catch((error) => {
+            console.warn(
+              'Blad wylogowania nieweryfikowanego konta:',
+              error instanceof Error ? error.message : String(error)
+            );
+          });
+          setUser(null);
+          setLoading(false);
+          setInitialDataReady(true);
+          if (shouldShowAlert) {
+            showUnverifiedEmailAlert(
+              'Najpierw zweryfikuj email. Sprawdz skrzynke i kliknij link aktywacyjny.'
+            );
+          }
+          return;
+        }
+
+        setInitialDataReady(false);
+        setUser(resolvedUser);
         setLoading(false);
-        setInitialDataReady(true);
-        if (shouldShowAlert) {
-          showUnverifiedEmailAlert(
-            'Najpierw zweryfikuj email. Sprawdz skrzynke i kliknij link aktywacyjny.'
-          );
+
+        if (!resolvedUser) {
+          setTanks([]);
+          setSelectedTank(null);
+          setActiveSection('home');
+          setFishCatalog([]);
+          setPlantCatalog([]);
+          setEquipmentCatalog([]);
+          setEquipmentCatalogLoading(false);
+          setEquipmentCatalogHydrated(false);
+          setRuntimeLightLampCatalog([]);
+          setSelectedCatalogFishId(null);
+          setSelectedCatalogPlantIds([]);
+          setStockItems([]);
+          setIsEditingFish(false);
+          setIsEditingPlant(false);
+          setIsPlantFertilizationExpanded(true);
+          setIsPlantStockExpanded(true);
+          setIsPlantFertilizationAddFormVisible(false);
+          setEditingFishItemId(null);
+          setEditingPlantItemId(null);
+          setEditingPlantFertilizationEntryId(null);
+          setPlantFertilizerName('');
+          setPlantFertilizerQuantityInput('1');
+          setPlantFertilizerNote('');
+          setRootTabsDurationDaysInput(String(ROOT_TABS_DEFAULT_DURATION_DAYS));
+          setEditingPlantFertilizerName('');
+          setEditingPlantFertilizerQuantityInput('1');
+          setEditingRootTabsDurationDaysInput(String(ROOT_TABS_DEFAULT_DURATION_DAYS));
+          setEditingPlantFertilizerNote('');
+          setPlantFertilizationBusy(false);
+          setMeasurements([]);
+          setHomeMeasurements([]);
+          setHomeStockItems([]);
+          setHomeActiveIssueCases([]);
+          setHomeLoading(false);
+          setIsAddMeasurementModalVisible(false);
+          setSelectedHomeScoreSummary(null);
+          setIsTankDiseasesExpanded(true);
+          setIsTankPlantDiseasesExpanded(true);
+          setIsTankAlgaeExpanded(true);
+          setExpandedDiseaseCaseId(null);
+          setExpandedPlantDiseaseCaseId(null);
+          setExpandedAlgaeCaseId(null);
+          setIsWaterTestingExpanded(false);
+          setMaintenanceActionBusyId('');
+          setOnboardingTaskBusy(false);
+          setOnboardingToggleBusy(false);
+          setIsAddingTankModalVisible(false);
+          setEditingTankId(null);
+          setIsEquipmentCatalogModalVisible(false);
+          setEquipmentCatalogType('');
+          setEquipmentCatalogSearch('');
+          setIsCustomEquipmentFormVisible(false);
+          setCustomEquipmentBrand('');
+          setCustomEquipmentModel('');
+          setCustomFilterType('internal');
+          setCustomEquipmentPrimaryValue('');
+          setCustomEquipmentTankMinLiters('');
+          setCustomEquipmentTankMaxLiters('');
+          setEquipmentSavingBusy(false);
+          setTankName('');
+          setTankLiters('');
+          setTankLengthCm('');
+          setTankWidthCm('');
+          setTankHeightCm('');
+          setIsTankDimensionsExpanded(false);
+          setAddTankWizardStepId('basic');
+          setTankStartType('new_from_scratch');
+          setTankBasedOnExistingTankId('');
+          setTankWizardProfile('general');
+          setTankRoomTempTypical('');
+          setTankRoomTempMin('');
+          setTankRoomTempMax('');
+          setTankHasLid(false);
+          setTankSubstrateLayers([]);
+          setTankAquariumType('');
+          setTankOnboardingEnabled(true);
+          setTankOnboardingMode('fresh_start');
+          setSelectedMeasurementId(null);
+          setEditingMeasurementId(null);
+          setDiseaseMode('catalog');
+          setSelectedDiseaseSymptoms({});
+          setIsDiseaseSymptomsDropdownOpen(false);
+          setDiseaseSafetyConfirmed(false);
+          setIsDiseaseImageModalVisible(false);
+          setDiseaseImageModalUri('');
+          setDiseaseImageModalFallbackUri('');
+          setDiseaseImageModalLoadStage(0);
+          setDiseaseImageModalTitle('');
+          setDiseaseImageZoomLevel(1);
+          setDiseasePreviewLoadStageById({});
+          setFishImageUriByKey({});
+          fishImageLookupInFlightRef.current = new Set();
+          fishImageLookupAttemptedRef.current = new Set();
+          setPlantImageUriByKey({});
+          plantImageLookupInFlightRef.current = new Set();
+          plantImageLookupAttemptedRef.current = new Set();
+          setPlantDiseaseMode('catalog');
+          setSelectedPlantDiseaseSymptoms({});
+          setIsPlantDiseaseSymptomsDropdownOpen(false);
+          setPlantDiseaseSafetyConfirmed(false);
+          setExpandedPlantDiseaseCatalogId(null);
+          setAlgaeMode('catalog');
+          setSelectedAlgaeSymptoms({});
+          setIsAlgaeSymptomsDropdownOpen(false);
+          setAlgaeSafetyConfirmed(false);
+          setExpandedAlgaeCatalogId(null);
+          setIsIssueTankPickerVisible(false);
+          setIssueTankPickerPayload(null);
+          setTankDiseaseCases([]);
+          setTankDiseaseHistoryCases([]);
+          setDeleteAccountBusy(false);
+          setIsDeleteAccountReauthModalVisible(false);
+          setDeleteAccountReauthPassword('');
+          setDeleteAccountReauthBusy(false);
+          setInitialDataReady(true);
         }
-        return;
-      }
-
-      setInitialDataReady(false);
-      setUser(resolvedUser);
-      setLoading(false);
-
-      if (!resolvedUser) {
-        setTanks([]);
-        setSelectedTank(null);
-        setActiveSection('home');
-        setFishCatalog([]);
-        setPlantCatalog([]);
-        setEquipmentCatalog([]);
-        setEquipmentCatalogLoading(false);
-        setEquipmentCatalogHydrated(false);
-        setRuntimeLightLampCatalog([]);
-        setSelectedCatalogFishId(null);
-        setSelectedCatalogPlantIds([]);
-        setStockItems([]);
-        setIsEditingFish(false);
-        setIsEditingPlant(false);
-        setIsPlantFertilizationExpanded(true);
-        setIsPlantStockExpanded(true);
-        setIsPlantFertilizationAddFormVisible(false);
-        setEditingFishItemId(null);
-        setEditingPlantItemId(null);
-        setEditingPlantFertilizationEntryId(null);
-        setPlantFertilizerName('');
-        setPlantFertilizerQuantityInput('1');
-        setPlantFertilizerNote('');
-        setRootTabsDurationDaysInput(String(ROOT_TABS_DEFAULT_DURATION_DAYS));
-        setEditingPlantFertilizerName('');
-        setEditingPlantFertilizerQuantityInput('1');
-        setEditingRootTabsDurationDaysInput(String(ROOT_TABS_DEFAULT_DURATION_DAYS));
-        setEditingPlantFertilizerNote('');
-        setPlantFertilizationBusy(false);
-        setMeasurements([]);
-        setHomeMeasurements([]);
-        setHomeStockItems([]);
-        setHomeActiveIssueCases([]);
-        setHomeLoading(false);
-        setIsAddMeasurementModalVisible(false);
-        setSelectedHomeScoreSummary(null);
-        setIsTankDiseasesExpanded(true);
-        setIsTankPlantDiseasesExpanded(true);
-        setIsTankAlgaeExpanded(true);
-        setExpandedDiseaseCaseId(null);
-        setExpandedPlantDiseaseCaseId(null);
-        setExpandedAlgaeCaseId(null);
-        setIsWaterTestingExpanded(false);
-        setMaintenanceActionBusyId('');
-        setOnboardingTaskBusy(false);
-        setOnboardingToggleBusy(false);
-        setIsAddingTankModalVisible(false);
-        setEditingTankId(null);
-        setIsEquipmentCatalogModalVisible(false);
-        setEquipmentCatalogType('');
-        setEquipmentCatalogSearch('');
-        setIsCustomEquipmentFormVisible(false);
-        setCustomEquipmentBrand('');
-        setCustomEquipmentModel('');
-        setCustomFilterType('internal');
-        setCustomEquipmentPrimaryValue('');
-        setCustomEquipmentTankMinLiters('');
-        setCustomEquipmentTankMaxLiters('');
-        setEquipmentSavingBusy(false);
-        setTankName('');
-        setTankLiters('');
-        setTankLengthCm('');
-        setTankWidthCm('');
-        setTankHeightCm('');
-        setIsTankDimensionsExpanded(false);
-        setAddTankWizardStepId('basic');
-        setTankStartType('new_from_scratch');
-        setTankBasedOnExistingTankId('');
-        setTankWizardProfile('general');
-        setTankRoomTempTypical('');
-        setTankRoomTempMin('');
-        setTankRoomTempMax('');
-        setTankHasLid(false);
-        setTankSubstrateLayers([]);
-        setTankAquariumType('');
-        setTankOnboardingEnabled(true);
-        setTankOnboardingMode('fresh_start');
-        setSelectedMeasurementId(null);
-        setEditingMeasurementId(null);
-        setDiseaseMode('catalog');
-        setSelectedDiseaseSymptoms({});
-        setIsDiseaseSymptomsDropdownOpen(false);
-        setDiseaseSafetyConfirmed(false);
-        setIsDiseaseImageModalVisible(false);
-        setDiseaseImageModalUri('');
-        setDiseaseImageModalFallbackUri('');
-        setDiseaseImageModalLoadStage(0);
-        setDiseaseImageModalTitle('');
-        setDiseaseImageZoomLevel(1);
-        setDiseasePreviewLoadStageById({});
-        setFishImageUriByKey({});
-        fishImageLookupInFlightRef.current = new Set();
-        fishImageLookupAttemptedRef.current = new Set();
-        setPlantImageUriByKey({});
-        plantImageLookupInFlightRef.current = new Set();
-        plantImageLookupAttemptedRef.current = new Set();
-        setPlantDiseaseMode('catalog');
-        setSelectedPlantDiseaseSymptoms({});
-        setIsPlantDiseaseSymptomsDropdownOpen(false);
-        setPlantDiseaseSafetyConfirmed(false);
-        setExpandedPlantDiseaseCatalogId(null);
-        setAlgaeMode('catalog');
-        setSelectedAlgaeSymptoms({});
-        setIsAlgaeSymptomsDropdownOpen(false);
-        setAlgaeSafetyConfirmed(false);
-        setExpandedAlgaeCatalogId(null);
-        setIsIssueTankPickerVisible(false);
-        setIssueTankPickerPayload(null);
-        setTankDiseaseCases([]);
-        setTankDiseaseHistoryCases([]);
-        setDeleteAccountBusy(false);
-        setIsDeleteAccountReauthModalVisible(false);
-        setDeleteAccountReauthPassword('');
-        setDeleteAccountReauthBusy(false);
+      } catch (error) {
+        console.warn(
+          'Blad obslugi onAuthStateChanged:',
+          error instanceof Error ? error.message : String(error)
+        );
+        logTelemetryError(error, {
+          source: 'auth_state_changed_handler',
+        });
+        setLoading(false);
         setInitialDataReady(true);
       }
     });
 
     return () => unsubscribe();
-  }, [setActiveSection, setSelectedTank, setTanks, showUnverifiedEmailAlert]);
+  }, [
+    setActiveSection,
+    setSelectedTank,
+    setTanks,
+    showUnverifiedEmailAlert,
+    setCustomEquipmentBrand,
+    setCustomEquipmentModel,
+    setCustomEquipmentPrimaryValue,
+    setCustomEquipmentTankMaxLiters,
+    setCustomEquipmentTankMinLiters,
+    setCustomFilterType,
+    setEditingFishItemId,
+    setEditingPlantFertilizationEntryId,
+    setEditingPlantFertilizerName,
+    setEditingPlantFertilizerNote,
+    setEditingPlantFertilizerQuantityInput,
+    setEditingPlantItemId,
+    setEditingRootTabsDurationDaysInput,
+    setEquipmentCatalogSearch,
+    setEquipmentCatalogType,
+    setEquipmentSavingBusy,
+    setExpandedAlgaeCaseId,
+    setExpandedDiseaseCaseId,
+    setExpandedPlantDiseaseCaseId,
+    setIsCustomEquipmentFormVisible,
+    setIsEditingFish,
+    setIsEditingPlant,
+    setIsEquipmentCatalogModalVisible,
+    setIsPlantFertilizationAddFormVisible,
+    setIsPlantFertilizationExpanded,
+    setIsPlantStockExpanded,
+    setIsTankAlgaeExpanded,
+    setIsTankDiseasesExpanded,
+    setIsTankPlantDiseasesExpanded,
+    setIsWaterTestingExpanded,
+    setMaintenanceActionBusyId,
+    setOnboardingTaskBusy,
+    setOnboardingToggleBusy,
+    setPlantFertilizationBusy,
+    setPlantFertilizerName,
+    setPlantFertilizerNote,
+    setPlantFertilizerQuantityInput,
+    setRootTabsDurationDaysInput,
+    setSelectedCatalogFishId,
+    setSelectedCatalogPlantIds,
+    setStockItems,
+  ]);
 
   useEffect(() => {
     auth.languageCode = appSettings.language || 'pl';
-  }, [appSettings.language]);
+  }, [appSettings.language, setStockItems]);
 
   const fetchTanks = useCallback(
     async (userId, preferredTankId = null) => {
@@ -10119,7 +10198,13 @@ export default function HomeScreen() {
         setTanksLoading(false);
       }
     },
-    [setSelectedTank, setTanks]
+    [
+      setSelectedTank,
+      setTanks,
+      setIsWaterTestingExpanded,
+      setMaintenanceActionBusyId,
+      setStockItems,
+    ]
   );
 
   const fetchMeasurements = useCallback(async (userId, tankId) => {
@@ -10219,7 +10304,7 @@ export default function HomeScreen() {
     } finally {
       setStockLoading(false);
     }
-  }, []);
+  }, [setStockItems, setStockLoading]);
 
   const fetchHomeData = useCallback(async (userId) => {
     if (!userId) {
@@ -11320,7 +11405,7 @@ export default function HomeScreen() {
 
   useEffect(() => {
     catalogLanguageRef.current = appSettings.language;
-  }, [appSettings.language]);
+  }, [appSettings.language, setStockItems]);
 
   useEffect(() => {
     setFishCatalog((prev) =>
@@ -11341,7 +11426,7 @@ export default function HomeScreen() {
     setHomeStockItems((prev) =>
       localizeStockItemsForLanguage(prev, appSettings.language)
     );
-  }, [appSettings.language]);
+  }, [appSettings.language, setStockItems]);
 
   useEffect(() => {
     if (!user?.uid || !selectedTank?.id) {
@@ -11350,7 +11435,7 @@ export default function HomeScreen() {
     }
 
     fetchStockItems(user.uid, selectedTank.id);
-  }, [user?.uid, selectedTank?.id, fetchStockItems]);
+  }, [user?.uid, selectedTank?.id, fetchStockItems, setStockItems]);
 
   useEffect(() => {
     if (!user?.uid || !selectedTank?.id) {
@@ -11377,7 +11462,7 @@ export default function HomeScreen() {
 
     setFishQuantityDrafts(nextFishDrafts);
     setPlantQuantityDrafts(nextPlantDrafts);
-  }, [stockItems, selectedTank?.id]);
+  }, [stockItems, selectedTank?.id, setFishQuantityDrafts, setPlantQuantityDrafts]);
 
   useEffect(() => {
     if (editingTankId && editingTankId !== selectedTank?.id) {
@@ -11448,7 +11533,41 @@ export default function HomeScreen() {
     setEquipmentCatalogSearch('');
     setSelectedMeasurementId(null);
     setEditingMeasurementId(null);
-  }, [createEmptySubstrateLayer, selectedTank?.id, editingTankId]);
+  }, [
+    createEmptySubstrateLayer,
+    selectedTank?.id,
+    editingTankId,
+    setEditingFishItemId,
+    setEditingPlantFertilizationEntryId,
+    setEditingPlantFertilizerName,
+    setEditingPlantFertilizerNote,
+    setEditingPlantFertilizerQuantityInput,
+    setEditingPlantItemId,
+    setEditingRootTabsDurationDaysInput,
+    setEquipmentCatalogSearch,
+    setEquipmentCatalogType,
+    setExpandedAlgaeCaseId,
+    setExpandedDiseaseCaseId,
+    setIsEditingFish,
+    setIsEditingPlant,
+    setIsEquipmentCatalogModalVisible,
+    setIsPlantFertilizationAddFormVisible,
+    setIsPlantFertilizationExpanded,
+    setIsPlantStockExpanded,
+    setIsTankAlgaeExpanded,
+    setIsTankDiseasesExpanded,
+    setIsWaterTestingExpanded,
+    setMaintenanceActionBusyId,
+    setOnboardingTaskBusy,
+    setPlantFertilizerName,
+    setPlantFertilizerNote,
+    setPlantFertilizerQuantityInput,
+    setRootTabsDurationDaysInput,
+    setSelectedCatalogFishId,
+    setSelectedCatalogPlantIds,
+    setStockFishSearch,
+    setStockPlantSearch,
+  ]);
 
   useEffect(() => {
     if (activeSection === 'fish' && stockType !== 'fish') {
@@ -11458,7 +11577,7 @@ export default function HomeScreen() {
     if (activeSection === 'plant' && stockType !== 'plant') {
       setStockType('plant');
     }
-  }, [activeSection, stockType]);
+  }, [activeSection, stockType, setStockType]);
 
   useEffect(() => {
     if (!user?.uid || activeSection !== 'home') {
@@ -11499,13 +11618,28 @@ export default function HomeScreen() {
       setPlantCatalogMenuSearch('');
       setExpandedPlantCatalogId(null);
     }
-  }, [activeSection]);
+  }, [
+    activeSection,
+    setEditingFishItemId,
+    setEditingPlantItemId,
+    setExpandedFishCatalogId,
+    setExpandedPlantCatalogId,
+    setFishCatalogMenuSearch,
+    setIsEditingFish,
+    setIsEditingPlant,
+    setPlantCatalogMenuSearch,
+  ]);
 
   useEffect(() => {
     setExpandedStockingSectionKey('');
     setExpandedHistoryIssueId(null);
     setHistoryIssueDeleteBusyId(null);
-  }, [selectedTank?.id]);
+  }, [
+    selectedTank?.id,
+    setExpandedHistoryIssueId,
+    setExpandedStockingSectionKey,
+    setHistoryIssueDeleteBusyId,
+  ]);
 
   const handleRefresh = useCallback(async () => {
     if (!user?.uid || refreshing) {
@@ -12039,7 +12173,7 @@ export default function HomeScreen() {
   }, []);
   const handleCloseMeasurementTileDetails = useCallback(() => {
     setSelectedMeasurementTileDetails(null);
-  }, []);
+  }, [setSelectedMeasurementTileDetails]);
 
   const selectedSingleSpeciesFish = useMemo(
     () =>
@@ -13834,7 +13968,15 @@ export default function HomeScreen() {
     setCustomEquipmentPrimaryValue('');
     setCustomEquipmentTankMinLiters('');
     setCustomEquipmentTankMaxLiters('');
-  }, []);
+  }, [
+    setCustomEquipmentBrand,
+    setCustomEquipmentModel,
+    setCustomEquipmentPrimaryValue,
+    setCustomEquipmentTankMaxLiters,
+    setCustomEquipmentTankMinLiters,
+    setCustomFilterType,
+    setIsCustomEquipmentFormVisible,
+  ]);
 
   const handleOpenEquipmentCatalog = (type) => {
     if (!selectedTank?.id || !user?.uid) {
@@ -13866,7 +14008,12 @@ export default function HomeScreen() {
     setIsEquipmentCatalogModalVisible(false);
     setEquipmentCatalogType('');
     setEquipmentCatalogSearch('');
-  }, [resetCustomEquipmentForm]);
+  }, [
+    resetCustomEquipmentForm,
+    setEquipmentCatalogSearch,
+    setEquipmentCatalogType,
+    setIsEquipmentCatalogModalVisible,
+  ]);
 
   const handleAssignEquipmentToTank = async (equipmentItem) => {
     if (
@@ -15549,7 +15696,7 @@ export default function HomeScreen() {
 
       return [...prev, normalizedPlantId];
     });
-  }, []);
+  }, [setSelectedCatalogPlantIds]);
 
   const handleCloseFishAddModal = useCallback(() => {
     Keyboard.dismiss();
@@ -15560,7 +15707,7 @@ export default function HomeScreen() {
     }
 
     setIsEditingFish(false);
-  }, [isDiseaseImageModalVisible]);
+  }, [isDiseaseImageModalVisible, setIsEditingFish]);
 
   const handleClosePlantAddModal = useCallback(() => {
     Keyboard.dismiss();
@@ -15569,7 +15716,12 @@ export default function HomeScreen() {
     setEditingPlantItemId(null);
     setStockPlantSearch('');
     setSelectedCatalogPlantIds([]);
-  }, []);
+  }, [
+    setEditingPlantItemId,
+    setIsEditingPlant,
+    setSelectedCatalogPlantIds,
+    setStockPlantSearch,
+  ]);
 
   useEffect(() => {
     if (Platform.OS !== 'android') {
@@ -15661,6 +15813,7 @@ export default function HomeScreen() {
     selectedHomeScoreSummary,
     selectedMeasurementTileDetails,
     setActiveSection,
+    setSelectedMeasurementTileDetails,
   ]);
 
   const handleSaveMeasurement = async () => {
@@ -16111,6 +16264,7 @@ export default function HomeScreen() {
       setSelectedTank,
       setTanks,
       user?.uid,
+      setMaintenanceActionBusyId,
     ]
   );
 
@@ -16978,9 +17132,35 @@ export default function HomeScreen() {
     updateAppSettings({ language });
   };
 
-  const handleSubscriptionTierManualChange = (tier) => {
+  const handleSubscriptionTierManualChange = async (tier) => {
     if (!canManualSwitchSubscriptionPlan) {
-      alert(t('settingsSubscriptionManualSwitchUnavailable'));
+      if (!billingEnabled) {
+        alert(
+          'Zakupy subskrypcji nie sa jeszcze skonfigurowane dla tej platformy.'
+        );
+        return;
+      }
+
+      if (!tier || tier === subscription.tier) {
+        const refreshed = await refreshSubscriptionFromBilling();
+        if (!refreshed) {
+          alert('Nie udalo sie odswiezyc statusu subskrypcji.');
+        }
+        return;
+      }
+
+      if (tier === 'free') {
+        alert(
+          'Powrot do planu Free oraz anulowanie odnowienia wykonujesz w ustawieniach subskrypcji sklepu (Google Play / App Store).'
+        );
+        return;
+      }
+
+      try {
+        await purchaseSubscriptionTier(tier);
+      } catch (error) {
+        alert(mapBillingErrorToUserMessage(error, 'purchase'));
+      }
       return;
     }
 
@@ -16995,11 +17175,35 @@ export default function HomeScreen() {
     }
   };
 
+  const handleRestoreSubscriptionPurchases = async () => {
+    if (!billingEnabled) {
+      alert('Przywracanie zakupow nie jest skonfigurowane dla tej platformy.');
+      return;
+    }
+
+    try {
+      await restoreSubscriptionPurchases();
+      alert('Zakupy zostaly przywrocone.');
+    } catch (error) {
+      alert(mapBillingErrorToUserMessage(error, 'restore'));
+    }
+  };
+
   const handleToggleMeasurementPrefillFromLast = () => {
     updateAppSettings((prev) => ({
       prefillMeasurementFromLast: !Boolean(prev.prefillMeasurementFromLast),
     }));
   };
+  const handleToggleAiConsentDataProcessing = useCallback(() => {
+    updateAppSettings((prev) => ({
+      aiConsentDataProcessing: !Boolean(prev.aiConsentDataProcessing),
+    }));
+  }, [updateAppSettings]);
+  const handleToggleAiConsentImageAnalysis = useCallback(() => {
+    updateAppSettings((prev) => ({
+      aiConsentImageAnalysis: !Boolean(prev.aiConsentImageAnalysis),
+    }));
+  }, [updateAppSettings]);
 
   const handleToggleEnabledTest = (testKey) => {
     if (!testKey) {
@@ -17634,6 +17838,7 @@ export default function HomeScreen() {
       currentMeasurementRecommendationsByKey,
       currentRiskNotes,
       selectedTankTargetRanges,
+      setSelectedMeasurementTileDetails,
     ]
   );
   const waterTestingSchedule = useMemo(
@@ -18677,7 +18882,7 @@ export default function HomeScreen() {
 
     fishImageLookupAttemptedRef.current = new Set();
     fishImageLookupInFlightRef.current = new Set();
-  }, [isEditingFish]);
+  }, [isEditingFish, setFishQuantity, setSelectedCatalogFishId, setStockFishSearch]);
   useEffect(() => {
     if (isEditingFish) {
       return undefined;
@@ -18692,7 +18897,7 @@ export default function HomeScreen() {
     return () => {
       clearTimeout(resetTimer);
     };
-  }, [isEditingFish]);
+  }, [isEditingFish, setFishQuantity, setSelectedCatalogFishId, setStockFishSearch]);
   useEffect(() => {
     if (!ENABLE_FISH_IMAGES) {
       return;
@@ -19359,7 +19564,9 @@ export default function HomeScreen() {
           ? t('settingsSubscriptionStatusPaused')
           : subscription.status === 'cancelled'
             ? t('settingsSubscriptionStatusCancelled')
-            : t('settingsSubscriptionStatusInactive');
+            : subscription.status === 'expired'
+              ? t('settingsSubscriptionStatusInactive')
+              : t('settingsSubscriptionStatusInactive');
   const currentSubscriptionTierLabel =
     subscriptionPlan.tier === 'free'
       ? t('settingsSubscriptionTierFree')
@@ -19386,6 +19593,19 @@ export default function HomeScreen() {
     subscriptionEntitlements?.taskAccess === 'checklists_and_plan';
   const hasTaskChecklistAccess =
     subscriptionEntitlements?.taskAccess === 'checklists_and_plan';
+  const aiAssistantGate = useMemo(
+    () =>
+      resolveAiAssistantGate({
+        hasAiAssistantFeature: hasSubscriptionFeature('ai_assistant'),
+        currentPlan,
+        defaultLockMessage: getFeatureLockMessage('ai_assistant', currentPlan),
+      }),
+    [currentPlan, hasSubscriptionFeature]
+  );
+  const hasAiAssistantAccess = aiAssistantGate.hasAccess;
+  const aiAssistantLockMessage = aiAssistantGate.lockMessage;
+  const aiAssistantUpgradePromptMessage = aiAssistantGate.upgradePromptMessage;
+  const showAiAssistantUpgradePrompt = aiAssistantGate.showUpgradePrompt;
   const onboardingPanelModel = useMemo(
     () =>
       buildOnboardingPanelModel({
@@ -19513,7 +19733,7 @@ export default function HomeScreen() {
         ? ''
         : String(selectedTankLighting.lightHours)
     );
-  }, [selectedTank?.id, selectedTankLighting.lightHours]);
+  }, [selectedTank?.id, selectedTankLighting.lightHours, setEquipmentLightHoursDraft]);
   const selectedTankWaterProfileOption = WATER_PROFILE_OPTIONS.find(
     (item) => item.value === selectedTankWaterProfile
   );
@@ -20117,7 +20337,8 @@ export default function HomeScreen() {
     ];
 
     if (
-      equipmentEntries.some(
+      safeSome(
+        equipmentEntries,
         (entry) => String(entry?.status ?? '').toLowerCase() === 'critical'
       )
     ) {
@@ -20125,7 +20346,8 @@ export default function HomeScreen() {
     }
 
     if (
-      equipmentEntries.some(
+      safeSome(
+        equipmentEntries,
         (entry) => {
           const status = String(entry?.status ?? '').toLowerCase();
           return status === 'warning' || status === 'none';
@@ -22895,7 +23117,7 @@ export default function HomeScreen() {
                               fishQuantityDrafts[item.id] ?? String(itemQuantity);
                             const isExpanded = editingFishItemId === item.id;
                             const itemWarnings = fishWarningsByItemId.get(item.id) ?? [];
-                            const hasCriticalWarning = itemWarnings.some(
+                            const hasCriticalWarning = safeSome(itemWarnings,
                               (warningItem) => warningItem.severity === 'critical'
                             );
 
@@ -23759,7 +23981,7 @@ export default function HomeScreen() {
                             const itemWarnings = plantWarningsByItemId.get(item.id) ?? [];
                             const itemLightAssessment =
                               plantLightingStatusByItemId.get(item.id) ?? null;
-                            const hasCriticalWarning = itemWarnings.some(
+                            const hasCriticalWarning = safeSome(itemWarnings,
                               (warningItem) => warningItem.severity === 'critical'
                             );
                             const isExpanded = editingPlantItemId === item.id;
@@ -26853,6 +27075,39 @@ export default function HomeScreen() {
           )}
 
           {isSettingsSection && (
+            <AiAssistantPanel
+              user={user}
+              selectedTankId={selectedTank?.id ?? null}
+              hasAiAssistantAccess={hasAiAssistantAccess}
+              aiAssistantLockMessage={aiAssistantLockMessage}
+              aiAssistantUpgradePromptMessage={aiAssistantUpgradePromptMessage}
+              showAiAssistantUpgradePrompt={showAiAssistantUpgradePrompt}
+              onPressUpgradePrompt={() => setIsSubscriptionExpanded(true)}
+              aiConsentDataProcessing={Boolean(appSettings.aiConsentDataProcessing)}
+              aiConsentImageAnalysis={Boolean(appSettings.aiConsentImageAnalysis)}
+              onToggleAiConsentDataProcessing={handleToggleAiConsentDataProcessing}
+              onToggleAiConsentImageAnalysis={handleToggleAiConsentImageAnalysis}
+              theme={{
+                isLightTheme,
+                themeCardBg,
+                themeCardBgAlt,
+                themeBorder,
+                themeBorderStrong,
+                themeTextPrimary,
+                themeTextSecondary,
+                themeAccent,
+                themeAccentOnStrong,
+                themeWarningText,
+                themeDangerText,
+                themeInputBg,
+                themeInputBorder,
+                themeInputText,
+                themePlaceholder,
+              }}
+            />
+          )}
+
+          {isSettingsSection && (
             <View
               style={{
                 borderWidth: 1,
@@ -27217,9 +27472,10 @@ export default function HomeScreen() {
                       return (
                         <Pressable
                           key={`subscription-quick-switch-${plan.tier}`}
-                          onPress={() =>
-                            handleSubscriptionTierManualChange(plan.tier)
-                          }
+                          onPress={() => {
+                            void handleSubscriptionTierManualChange(plan.tier);
+                          }}
+                          disabled={billingBusy || billingRestoreBusy}
                           style={{
                             flex: 1,
                             borderWidth: 1,
@@ -27227,6 +27483,7 @@ export default function HomeScreen() {
                             borderRadius: 8,
                             paddingVertical: 9,
                             backgroundColor: isCurrent ? themeAccentStrongBg : themeCardBg,
+                            opacity: billingBusy || billingRestoreBusy ? 0.65 : 1,
                           }}>
                           <Text
                             style={{
@@ -27324,10 +27581,10 @@ export default function HomeScreen() {
                           return (
                             <Pressable
                               key={`subscription-table-header-${plan.tier}`}
-                              onPress={() =>
-                                handleSubscriptionTierManualChange(plan.tier)
-                              }
-                              disabled={!canManualSwitchSubscriptionPlan}
+                              onPress={() => {
+                                void handleSubscriptionTierManualChange(plan.tier);
+                              }}
+                              disabled={billingBusy || billingRestoreBusy}
                               style={{
                                 width: 132,
                                 padding: 10,
@@ -27339,7 +27596,12 @@ export default function HomeScreen() {
                                 backgroundColor: isCurrent
                                   ? themeAccentSoftBg
                                   : themeCardBg,
-                                opacity: !canManualSwitchSubscriptionPlan ? 0.9 : 1,
+                                opacity:
+                                  billingBusy || billingRestoreBusy
+                                    ? 0.65
+                                    : !canManualSwitchSubscriptionPlan
+                                      ? 0.9
+                                      : 1,
                               }}>
                               <Text
                                 style={{
@@ -27476,6 +27738,45 @@ export default function HomeScreen() {
                         </Text>
                       );
                     })}
+                    {billingEnabled ? (
+                      <Pressable
+                        onPress={() => {
+                          void handleRestoreSubscriptionPurchases();
+                        }}
+                        disabled={billingBusy || billingRestoreBusy}
+                        style={{
+                          marginTop: 10,
+                          borderWidth: 1,
+                          borderColor: themeBorderStrong,
+                          borderRadius: 8,
+                          paddingVertical: 9,
+                          paddingHorizontal: 10,
+                          backgroundColor: themeCardBgAlt,
+                          opacity: billingBusy || billingRestoreBusy ? 0.65 : 1,
+                        }}>
+                        <Text
+                          style={{
+                            color: themeTextPrimary,
+                            fontWeight: '700',
+                            textAlign: 'center',
+                            fontSize: 12,
+                          }}>
+                          {billingRestoreBusy
+                            ? 'Przywracanie zakupow...'
+                            : 'Przywroc zakupy'}
+                        </Text>
+                      </Pressable>
+                    ) : null}
+                    {subscriptionManagementUrl ? (
+                      <Text
+                        style={{
+                          color: themeTextSecondary,
+                          fontSize: 11,
+                          marginTop: 8,
+                        }}>
+                        Zarzadzanie subskrypcja jest dostepne w ustawieniach sklepu.
+                      </Text>
+                    ) : null}
                   </View>
                 </View>
               )}

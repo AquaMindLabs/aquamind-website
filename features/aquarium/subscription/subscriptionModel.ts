@@ -6,7 +6,8 @@ export type SubscriptionStatus =
   | 'inactive'
   | 'grace_period'
   | 'paused'
-  | 'cancelled';
+  | 'cancelled'
+  | 'expired';
 
 export type SubscriptionSource =
   | 'system'
@@ -702,7 +703,8 @@ export function normalizeSubscriptionState(
       status === 'inactive' ||
       status === 'grace_period' ||
       status === 'paused' ||
-      status === 'cancelled'
+      status === 'cancelled' ||
+      status === 'expired'
         ? status
         : DEFAULT_SUBSCRIPTION_STATE.status,
     source:
@@ -1046,4 +1048,32 @@ export function hasSubscriptionStoreProductId(
   platform: SubscriptionStorePlatform
 ): boolean {
   return Boolean(getSubscriptionStoreProductId(tier, platform));
+}
+
+export function getSubscriptionTierByStoreProductId(
+  productId: unknown
+): SubscriptionTier | null {
+  const normalizedProductId = String(productId ?? '').trim().toLowerCase();
+  if (!normalizedProductId) {
+    return null;
+  }
+
+  const tiers = Object.keys(SUBSCRIPTION_STORE_PRODUCT_MAP) as SubscriptionTier[];
+  for (const tier of tiers) {
+    const mapEntry = SUBSCRIPTION_STORE_PRODUCT_MAP[tier];
+    if (!mapEntry) {
+      continue;
+    }
+
+    const iosId = String(mapEntry.ios ?? '').trim().toLowerCase();
+    const androidId = String(mapEntry.android ?? '').trim().toLowerCase();
+    if (
+      (iosId && iosId === normalizedProductId) ||
+      (androidId && androidId === normalizedProductId)
+    ) {
+      return tier;
+    }
+  }
+
+  return null;
 }

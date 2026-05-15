@@ -5,6 +5,15 @@ import { onAuthStateChanged } from 'firebase/auth';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { Platform } from 'react-native';
 import {
+  addBillingCustomerInfoListener,
+  ensureBillingConfigured,
+  isBillingEnabledForCurrentPlatform,
+  purchaseSubscriptionByProductId,
+  refreshBillingCustomerInfo,
+  restoreBillingPurchases,
+  type BillingSyncResult,
+} from '@/features/aquarium/subscription/billingService';
+import {
   DEFAULT_SUBSCRIPTION_STATE,
   canCreateTank as canCreateTankForPlan,
   canAccessMeasurementKey,
@@ -34,6 +43,10 @@ import {
 } from '@/features/aquarium/subscription/subscriptionModel';
 import { auth, db } from '@/shared/services/firebase';
 import {
+  trackBillingPurchaseFailure,
+  trackBillingPurchaseStarted,
+  trackBillingPurchaseSuccess,
+  trackBillingRestore,
   logTelemetryError,
   logTelemetryEvent,
   trackPurchaseAttempt,
@@ -66,6 +79,8 @@ type AppSettings = {
   language: AppLanguage;
   enabledTests: EnabledTests;
   prefillMeasurementFromLast: boolean;
+  aiConsentDataProcessing: boolean;
+  aiConsentImageAnalysis: boolean;
   subscription: SubscriptionState;
 };
 
@@ -121,6 +136,13 @@ type TankContextValue = {
   applyAdminSubscriptionTier: (tier: SubscriptionTier) => boolean;
   canManageSubscriptionManually: boolean;
   getStoreProductIdForTier: (tier: SubscriptionTier) => string | null;
+  billingEnabled: boolean;
+  billingBusy: boolean;
+  billingRestoreBusy: boolean;
+  subscriptionManagementUrl: string | null;
+  purchaseSubscriptionTier: (tier: SubscriptionTier) => Promise<boolean>;
+  restoreSubscriptionPurchases: () => Promise<boolean>;
+  refreshSubscriptionFromBilling: () => Promise<boolean>;
   canUseFeature: (featureKey: SubscriptionFeatureKey) => boolean;
   isFeatureLocked: (featureKey: SubscriptionFeatureKey) => boolean;
   canCreateTank: (currentTankCount: number) => boolean;
@@ -261,6 +283,8 @@ const DEFAULT_APP_SETTINGS: AppSettings = {
   language: 'pl',
   enabledTests: DEFAULT_ENABLED_TESTS,
   prefillMeasurementFromLast: false,
+  aiConsentDataProcessing: false,
+  aiConsentImageAnalysis: false,
   subscription: DEFAULT_SUBSCRIPTION_STATE,
 };
 
@@ -275,8 +299,12 @@ export function TankProvider({ children }: TankProviderProps) {
   const [sectionEntrySource, setSectionEntrySource] = useState<SectionEntrySource>('internal');
   const [appSettings, setAppSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [billingBusy, setBillingBusy] = useState(false);
+  const [billingRestoreBusy, setBillingRestoreBusy] = useState(false);
+  const [subscriptionManagementUrl, setSubscriptionManagementUrl] = useState<string | null>(null);
   const previousSubscriptionRef = useRef<SubscriptionState | null>(null);
   const hasRemoteSubscriptionRef = useRef(false);
+  const billingEnabled = isBillingEnabledForCurrentPlatform();
 
   useEffect(() => {
     let cancelled = false;
@@ -309,6 +337,14 @@ export function TankProvider({ children }: TankProviderProps) {
               ...prev.enabledTests,
               ...(parsed?.enabledTests ?? {}),
             },
+            aiConsentDataProcessing:
+              typeof parsed?.aiConsentDataProcessing === 'boolean'
+                ? parsed.aiConsentDataProcessing
+                : prev.aiConsentDataProcessing,
+            aiConsentImageAnalysis:
+              typeof parsed?.aiConsentImageAnalysis === 'boolean'
+                ? parsed.aiConsentImageAnalysis
+                : prev.aiConsentImageAnalysis,
             subscription: nextSubscription,
           };
         });
@@ -458,6 +494,14 @@ export function TankProvider({ children }: TankProviderProps) {
           ...prev.enabledTests,
           ...(nextPatch?.enabledTests ?? {}),
         },
+        aiConsentDataProcessing:
+          typeof nextPatch?.aiConsentDataProcessing === 'boolean'
+            ? nextPatch.aiConsentDataProcessing
+            : prev.aiConsentDataProcessing,
+        aiConsentImageAnalysis:
+          typeof nextPatch?.aiConsentImageAnalysis === 'boolean'
+            ? nextPatch.aiConsentImageAnalysis
+            : prev.aiConsentImageAnalysis,
         subscription: normalizedSubscription,
       };
 
@@ -508,6 +552,77 @@ export function TankProvider({ children }: TankProviderProps) {
     },
     [updateAppSettings]
   );
+
+  const applyBillingSyncResult = useCallback(
+    (result: BillingSyncResult) => {
+      if (!result) {
+        return;
+      }
+
+      setSubscriptionManagementUrl(result.managementUrl ?? null);
+      updateSubscription((prev) =>
+        normalizeSubscriptionState({
+          ...prev,
+          ...result.patch,
+        })
+      );
+    },
+    [updateSubscription]
+  );
+
+  useEffect(() => {
+    if (!billingEnabled) {
+      return;
+    }
+
+    let removeCustomerInfoListener: (() => void) | null = null;
+
+    const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
+      const appUserId = user?.uid ?? null;
+
+      try {
+        await ensureBillingConfigured(appUserId);
+      } catch (error) {
+        logTelemetryError(error, {
+          source: 'billing_configure',
+          userId: appUserId,
+        });
+        return;
+      }
+
+      if (removeCustomerInfoListener) {
+        removeCustomerInfoListener();
+      }
+      try {
+        removeCustomerInfoListener = addBillingCustomerInfoListener((result) => {
+          applyBillingSyncResult(result);
+        });
+      } catch (error) {
+        removeCustomerInfoListener = null;
+        logTelemetryError(error, {
+          source: 'billing_listener_register',
+          userId: appUserId,
+        });
+      }
+
+      try {
+        const result = await refreshBillingCustomerInfo(appUserId);
+        applyBillingSyncResult(result);
+      } catch (error) {
+        logTelemetryError(error, {
+          source: 'billing_refresh_auth_state',
+          userId: appUserId,
+        });
+      }
+    });
+
+    return () => {
+      if (removeCustomerInfoListener) {
+        removeCustomerInfoListener();
+      }
+      unsubscribeAuth();
+    };
+  }, [applyBillingSyncResult, billingEnabled]);
 
   const applySubscriptionTierWithSource = useCallback(
     (tier: SubscriptionTier, source: SubscriptionSource) => {
@@ -597,6 +712,112 @@ export function TankProvider({ children }: TankProviderProps) {
     },
     []
   );
+
+  const refreshSubscriptionFromBilling = useCallback(async () => {
+    if (!billingEnabled) {
+      return false;
+    }
+
+    try {
+      const result = await refreshBillingCustomerInfo(auth.currentUser?.uid ?? null);
+      applyBillingSyncResult(result);
+      return true;
+    } catch (error) {
+      logTelemetryError(error, {
+        source: 'billing_refresh_manual',
+        userId: auth.currentUser?.uid ?? null,
+      });
+      return false;
+    }
+  }, [applyBillingSyncResult, billingEnabled]);
+
+  const purchaseSubscriptionTier = useCallback(
+    async (tier: SubscriptionTier) => {
+      if (!billingEnabled || tier === 'free') {
+        return false;
+      }
+
+      const productId = getStoreProductIdForTier(tier);
+      if (!productId) {
+        return false;
+      }
+
+      const currentUserId = auth.currentUser?.uid ?? null;
+      setBillingBusy(true);
+      trackBillingPurchaseStarted({
+        purchaseType: 'subscription_purchase',
+        targetTier: tier,
+        productId,
+        userId: currentUserId,
+      });
+
+      try {
+        const result = await purchaseSubscriptionByProductId(currentUserId, productId);
+        applyBillingSyncResult(result);
+        trackBillingPurchaseSuccess({
+          purchaseType: 'subscription_purchase',
+          targetTier: tier,
+          productId,
+          resolvedTier: result.resolvedTier,
+          resolvedStatus: result.resolvedStatus,
+          source: result.source,
+          sandbox: result.isSandbox,
+          userId: currentUserId,
+        });
+        return true;
+      } catch (error) {
+        trackBillingPurchaseFailure(error, {
+          purchaseType: 'subscription_purchase',
+          targetTier: tier,
+          productId,
+          userId: currentUserId,
+        });
+        throw error;
+      } finally {
+        setBillingBusy(false);
+      }
+    },
+    [applyBillingSyncResult, billingEnabled, getStoreProductIdForTier]
+  );
+
+  const restoreSubscriptionPurchases = useCallback(async () => {
+    if (!billingEnabled) {
+      return false;
+    }
+
+    const currentUserId = auth.currentUser?.uid ?? null;
+    setBillingRestoreBusy(true);
+    trackBillingRestore({
+      phase: 'started',
+      userId: currentUserId,
+    });
+
+    try {
+      const result = await restoreBillingPurchases(currentUserId);
+      applyBillingSyncResult(result);
+      trackBillingRestore({
+        phase: 'success',
+        resolvedTier: result.resolvedTier,
+        resolvedStatus: result.resolvedStatus,
+        source: result.source,
+        sandbox: result.isSandbox,
+        userId: currentUserId,
+      });
+      return true;
+    } catch (error) {
+      trackBillingRestore({
+        phase: 'failure',
+        userId: currentUserId,
+      });
+      logTelemetryError(error, {
+        source: 'billing_restore',
+        userId: currentUserId,
+      });
+      throw error;
+    } finally {
+      setBillingRestoreBusy(false);
+    }
+  }, [applyBillingSyncResult, billingEnabled]);
 
   const canUseFeature = useCallback(
     (featureKey: SubscriptionFeatureKey) =>
@@ -699,6 +920,13 @@ export function TankProvider({ children }: TankProviderProps) {
         applyAdminSubscriptionTier,
         canManageSubscriptionManually,
         getStoreProductIdForTier,
+        billingEnabled,
+        billingBusy,
+        billingRestoreBusy,
+        subscriptionManagementUrl,
+        purchaseSubscriptionTier,
+        restoreSubscriptionPurchases,
+        refreshSubscriptionFromBilling,
         canUseFeature,
         isFeatureLocked,
         canCreateTank,

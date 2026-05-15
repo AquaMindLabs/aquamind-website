@@ -349,6 +349,52 @@ export function trackPurchaseFailure(error, payload = {}) {
   logTelemetryEvent('purchase_failure', payload, { level: 'error' });
 }
 
+export function trackBillingPurchaseStarted(payload = {}) {
+  logTelemetryEvent('purchase_started', payload, { level: 'info' });
+}
+
+export function trackBillingPurchaseSuccess(payload = {}) {
+  logTelemetryEvent('purchase_success', payload, { level: 'info' });
+}
+
+export function trackBillingPurchaseFailure(error, payload = {}) {
+  logTelemetryError(error, {
+    source: 'purchase_billing_flow',
+    ...normalizeValue(payload),
+  });
+  logTelemetryEvent('purchase_failure', payload, { level: 'error' });
+}
+
+export function trackBillingRestore(payload = {}) {
+  logTelemetryEvent('restore', payload, { level: 'info' });
+}
+
+export function trackAiRequestStarted(payload = {}) {
+  logTelemetryEvent('ai_request_started', payload, { level: 'info' });
+}
+
+export function trackAiRequestSuccess(payload = {}) {
+  logTelemetryEvent('ai_request_success', payload, { level: 'info' });
+}
+
+export function trackAiRequestFailure(error, payload = {}) {
+  logTelemetryError(error, {
+    source: 'ai_request',
+    ...normalizeValue(payload),
+  });
+  logTelemetryEvent('ai_request_failure', payload, { level: 'error' });
+}
+
+export function logAiDiagnosticEvent(payload = {}) {
+  logTelemetryEvent(
+    'ai_diagnostic',
+    {
+      ...normalizeValue(payload),
+    },
+    { level: 'info' }
+  );
+}
+
 export function flushTelemetry() {
   return flushQueue();
 }
