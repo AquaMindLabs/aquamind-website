@@ -189,6 +189,84 @@ test('owner can save new onboarding modes for tank', async () => {
   );
 });
 
+test('owner can update onboardingEnabled and onboardingMode with valid values only', async () => {
+  const db = asUser('user_a');
+  const tankRef = doc(db, 'tanks', 'tank_onboarding_toggle');
+  const createdAt = new Date('2026-05-10T09:00:00.000Z');
+
+  await assertSucceeds(
+    setDoc(tankRef, {
+      userId: 'user_a',
+      name: 'Akwarium Toggle',
+      liters: 120,
+      onboardingEnabled: true,
+      onboardingMode: 'fresh_start',
+      onboardingStartAt: createdAt,
+      createdAt,
+    })
+  );
+
+  await assertSucceeds(
+    updateDoc(tankRef, {
+      onboardingEnabled: false,
+      onboardingMode: 'restart',
+      onboardingStartAt: new Date('2026-05-11T09:00:00.000Z'),
+      updatedAt: new Date('2026-05-11T09:05:00.000Z'),
+    })
+  );
+
+  await assertFails(
+    updateDoc(tankRef, {
+      onboardingEnabled: 'false',
+      updatedAt: new Date('2026-05-11T09:06:00.000Z'),
+    })
+  );
+
+  await assertFails(
+    updateDoc(tankRef, {
+      onboardingMode: 'new_from_scratch',
+      updatedAt: new Date('2026-05-11T09:07:00.000Z'),
+    })
+  );
+});
+
+test('owner can update maintenanceActionState map for action calendar', async () => {
+  const db = asUser('user_a');
+  const tankRef = doc(db, 'tanks', 'tank_maintenance_state');
+  const createdAt = new Date('2026-05-10T09:00:00.000Z');
+
+  await assertSucceeds(
+    setDoc(tankRef, {
+      userId: 'user_a',
+      name: 'Akwarium Maintenance',
+      liters: 200,
+      onboardingMode: 'fresh_start',
+      onboardingStartAt: createdAt,
+      createdAt,
+    })
+  );
+
+  await assertSucceeds(
+    updateDoc(tankRef, {
+      maintenanceActionState: {
+        water_change: {
+          lastCompletedAtMs: Date.parse('2026-05-11T08:00:00.000Z'),
+          lastSkippedAtMs: null,
+          postponedUntilMs: null,
+          updatedAtMs: Date.parse('2026-05-11T08:10:00.000Z'),
+        },
+        water_tests: {
+          lastCompletedAtMs: Date.parse('2026-05-11T08:30:00.000Z'),
+          lastSkippedAtMs: null,
+          postponedUntilMs: Date.parse('2026-05-12T08:30:00.000Z'),
+          updatedAtMs: Date.parse('2026-05-11T08:31:00.000Z'),
+        },
+      },
+      updatedAt: new Date('2026-05-11T08:40:00.000Z'),
+    })
+  );
+});
+
 test('cannot read or mutate another user tank', async () => {
   await seedDoc('tanks', 'tank_owned_by_a', {
     userId: 'user_a',
@@ -248,6 +326,53 @@ test('cannot update measurement owner identity fields', async () => {
 
   await assertFails(updateDoc(measurementRef, { userId: 'user_b' }));
   await assertFails(updateDoc(measurementRef, { tankId: 'tank_b' }));
+});
+
+test('measurement create/update supports extended parameters within rules ranges', async () => {
+  const dbA = asUser('user_a');
+  const measurementRef = doc(dbA, 'measurements', 'm_extended_1');
+
+  await assertSucceeds(
+    setDoc(measurementRef, {
+      userId: 'user_a',
+      tankId: 'tank_a',
+      tankName: 'Akwarium A',
+      note: 'Pomiar rozszerzony',
+      measuredAt: new Date('2026-05-10T08:00:00.000Z'),
+      ph: 6.9,
+      gh: 8,
+      kh: 4,
+      no2: 0,
+      no3: 18,
+      temperature: 25.2,
+      nh3nh4: 0,
+      po4: 0.7,
+      fe: 0.1,
+      ca: 42,
+      mg: 11,
+      k: 16,
+      tds: 210,
+      co2: 19,
+      createdAt: new Date('2026-05-10T08:01:00.000Z'),
+    })
+  );
+
+  await assertSucceeds(
+    updateDoc(measurementRef, {
+      no3: 22,
+      nh3nh4: 0.02,
+      po4: 0.9,
+      co2: 24,
+      updatedAt: new Date('2026-05-10T09:00:00.000Z'),
+    })
+  );
+
+  await assertFails(
+    updateDoc(measurementRef, {
+      co2: 250,
+      updatedAt: new Date('2026-05-10T09:05:00.000Z'),
+    })
+  );
 });
 
 test('stock item field validation blocks invalid plant payload', async () => {

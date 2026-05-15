@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text } from 'react-native';
+import { View, Text, Pressable } from 'react-native';
 import { logTelemetryError } from '@/shared/services/observability';
 
 export default class ObservabilityErrorBoundary extends React.Component {
@@ -7,6 +7,7 @@ export default class ObservabilityErrorBoundary extends React.Component {
     super(props);
     this.state = {
       hasError: false,
+      errorMessage: '',
     };
   }
 
@@ -15,8 +16,15 @@ export default class ObservabilityErrorBoundary extends React.Component {
   }
 
   componentDidCatch(error, errorInfo) {
+    const errorMessage =
+      error instanceof Error ? String(error.message || error.name || '') : String(error ?? '');
+    this.setState({
+      errorMessage: errorMessage.slice(0, 240),
+    });
+
     logTelemetryError(error, {
       source: 'react_error_boundary',
+      errorMessage,
       componentStack: errorInfo?.componentStack ?? '',
     });
   }
@@ -52,6 +60,30 @@ export default class ObservabilityErrorBoundary extends React.Component {
           }}>
           Uruchom aplikacje ponownie. Zgloszenie bledu zostalo zapisane.
         </Text>
+        {this.state.errorMessage ? (
+          <Text
+            style={{
+              color: '#AEB8C6',
+              textAlign: 'center',
+              lineHeight: 18,
+              marginTop: 10,
+              fontSize: 12,
+            }}>
+            Szczegoly: {this.state.errorMessage}
+          </Text>
+        ) : null}
+        <Pressable
+          onPress={() => this.setState({ hasError: false, errorMessage: '' })}
+          style={{
+            marginTop: 14,
+            borderWidth: 1,
+            borderColor: '#4A5E78',
+            borderRadius: 8,
+            paddingVertical: 8,
+            paddingHorizontal: 12,
+          }}>
+          <Text style={{ color: '#FFFFFF', fontWeight: '700' }}>Sprobuj ponownie</Text>
+        </Pressable>
       </View>
     );
   }

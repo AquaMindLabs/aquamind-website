@@ -50,9 +50,47 @@ import * as WebBrowser from 'expo-web-browser';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { createTranslator } from '@/constants/translations';
+import { ActionCalendarPanel } from '@/features/aquarium/components/ActionCalendarPanel';
+import {
+  buildMeasurementSanitizationPatchRuntime,
+  normalizeMeasurementRuntime,
+  validateMeasurementRuntime,
+} from '@/features/aquarium/model/measurementModel';
+import {
+  buildStockItemPayload,
+  normalizeStockItemRuntime,
+  validateStockItemRuntime,
+} from '@/features/aquarium/model/stockItemModel';
+import {
+  buildTankSanitizationPatchRuntime,
+  buildTankUpdatePayloadRuntime,
+  normalizeTankRuntime,
+  validateTankRuntime,
+} from '@/features/aquarium/model/tankModel';
+import {
+  buildTankDiseaseCasePayload,
+  normalizeTankDiseaseCaseRuntime,
+  validateTankDiseaseCaseRuntime,
+} from '@/features/aquarium/model/tankDiseaseCaseModel';
+import { OnboardingPanel } from '@/features/aquarium/components/OnboardingPanel';
 import { useAppTheme } from '@/features/aquarium/context/AppThemeContext';
 import { useTank } from '@/features/aquarium/context/TankContext';
+import { useAquariumSectionState } from '@/features/aquarium/hooks/useAquariumSectionState';
+import { useFishPlantSectionInsights } from '@/features/aquarium/hooks/useFishPlantSectionInsights';
+import { useHistorySectionChart } from '@/features/aquarium/hooks/useHistorySectionChart';
+import { useReviewSectionInsights } from '@/features/aquarium/hooks/useReviewSectionInsights';
 import { useSectionVisibility } from '@/features/aquarium/hooks/useSectionVisibility';
+import { EquipmentSection } from '@/features/aquarium/sections/EquipmentSection';
+import { FishSection } from '@/features/aquarium/sections/FishSection';
+import { HistorySection } from '@/features/aquarium/sections/HistorySection';
+import { PlantSection } from '@/features/aquarium/sections/PlantSection';
+import { ReviewSection } from '@/features/aquarium/sections/ReviewSection';
+import { TankInfoSection } from '@/features/aquarium/sections/TankInfoSection';
+import {
+  buildAttentionItemsForTank,
+  buildHomeSectionCounts,
+  buildTrendSuggestedEnvironmentForTank,
+} from '@/features/aquarium/sections/ReviewSectionHelpers';
 import {
   filterMeasurementFieldsByPlan,
   filterMeasurementsByPlan,
@@ -86,15 +124,21 @@ import {
   getTankEquipmentListFieldService,
   getTankEquipmentListService,
 } from '@/features/aquarium/services/equipmentService';
+import { buildWaterActionCalendar } from '@/features/aquarium/services/actionCalendarService';
 import {
   buildFishStockingSummaryService,
   getFishQuantityService,
 } from '@/features/aquarium/services/stockingService';
 import {
+  buildNextMaintenanceActionState,
+  normalizeMaintenanceActionState,
+} from '@/features/aquarium/services/actionStateService';
+import {
   buildTodayActionPlanService,
   buildTankOnboardingPlanService,
   generateAdaptiveTaskSchedule,
 } from '@/features/aquarium/services/tasksService';
+import { buildOnboardingPanelModel } from '@/features/aquarium/services/onboardingAdapter';
 import { evaluateEmergencyState } from '@/features/aquarium/services/emergencyService';
 import {
   buildTargetRangeInputDraftFromRangesService,
@@ -117,6 +161,7 @@ import {
   getRecommendationDueAtMs as getRecommendationDueAtMsLogic,
 } from '@/logic/waterAnalysis';
 import { auth, db } from '@/shared/services/firebase';
+import { logTelemetryError } from '@/shared/services/observability';
 
 let notificationsModulePromise = null;
 let notificationsHandlerConfigured = false;
@@ -665,403 +710,83 @@ function getTankEquipmentList(tank, type) {
 }
 
 function buildTankRuleSanitizationPatch(tank) {
-  const patch = {};
-  const hasField = (field) =>
-    Boolean(tank && Object.prototype.hasOwnProperty.call(tank, field));
-  const isTimestampLike = (value) => {
-    if (value === null || value === undefined) {
-      return true;
-    }
-    if (value instanceof Date) {
-      return true;
-    }
-    return (
-      typeof value === 'object' &&
-      typeof value?.toMillis === 'function'
-    );
-  };
-  const isPlainMap = (value) =>
-    value !== null &&
-    typeof value === 'object' &&
-    !Array.isArray(value);
-  const fieldsToDeleteWhenNull = [
-    'aquariumType',
-    'substrateType',
-    'substrateTypes',
-    'lightIntensity',
-    'lightModelId',
-    'lightModelName',
-    'lightLumens',
-    'targetTemperatureC',
-    'ambientTemperatureC',
-    'roomTemperatureMode',
-    'waterProfile',
-    'singleSpeciesFishId',
-    'targetRanges',
-    'plantFertilizationEntries',
-    'heaterEquipments',
-    'filterEquipments',
-    'heaterEquipment',
-    'filterEquipment',
-    'lengthCm',
-    'widthCm',
-    'heightCm',
-    'plantDensity',
-    'hardscapeDensity',
-    'hidingPlacesCount',
-    'hidingPlacesEstimated',
-    'lineOfSightBreaks',
-    'zones',
-    'onboardingTaskChecks',
-    'onboardingEnabled',
-    'maintenanceActionState',
-  ];
-  const allowedTankFields = new Set([
-    'userId',
-    'name',
-    'liters',
-    'aquariumType',
-    'substrateType',
-    'substrateTypes',
-    'lightIntensity',
-    'lightModelId',
-    'lightModelName',
-    'lightLumens',
-    'lightHours',
-    'targetTemperatureC',
-    'ambientTemperatureC',
-    'roomTemperatureMode',
-    'lengthCm',
-    'widthCm',
-    'heightCm',
-    'plantDensity',
-    'hardscapeDensity',
-    'hidingPlacesCount',
-    'hidingPlacesEstimated',
-    'lineOfSightBreaks',
-    'zones',
-    'waterProfile',
-    'singleSpeciesFishId',
-    'targetRanges',
-    'onboardingMode',
-    'onboardingEnabled',
-    'onboardingStartAt',
-    'onboardingTaskChecks',
-    'maintenanceActionState',
-    'plantFertilizationEntries',
-    'heaterEquipments',
-    'filterEquipments',
-    'heaterEquipment',
-    'filterEquipment',
-    'createdAt',
-    'updatedAt',
-  ]);
-
-  Object.keys(tank ?? {}).forEach((field) => {
-    if (field === 'id') {
-      return;
-    }
-    if (!allowedTankFields.has(field)) {
-      patch[field] = deleteField();
-    }
+  return buildTankSanitizationPatchRuntime(normalizeTankRuntime(tank), {
+    deleteFieldFn: deleteField,
+    normalizeRoomTemperatureMode,
+    normalizeDensityLevel,
+    normalizeSubstrateTypes,
+    waterProfileOptionsValues: WATER_PROFILE_OPTIONS.map((item) => item.value),
   });
+}
 
-  fieldsToDeleteWhenNull.forEach((field) => {
-    if (tank?.[field] === null) {
-      patch[field] = deleteField();
-    }
+function validateTankModelRuntime(tank) {
+  return validateTankRuntime(normalizeTankRuntime(tank), {
+    deleteFieldFn: deleteField,
+    normalizeRoomTemperatureMode,
+    normalizeDensityLevel,
+    normalizeSubstrateTypes,
+    waterProfileOptionsValues: WATER_PROFILE_OPTIONS.map((item) => item.value),
   });
+}
 
-  const optionalStringFields = [
-    ['aquariumType', 20],
-    ['substrateType', 40],
-    ['lightIntensity', 20],
-    ['lightModelId', 120],
-    ['lightModelName', 160],
-    ['roomTemperatureMode', 30],
-    ['plantDensity', 20],
-    ['hardscapeDensity', 20],
-    ['hidingPlacesEstimated', 20],
-    ['lineOfSightBreaks', 20],
-    ['waterProfile', 30],
-    ['singleSpeciesFishId', 128],
-    ['onboardingMode', 30],
-  ];
-  optionalStringFields.forEach(([field, maxLen]) => {
-    if (!hasField(field)) {
-      return;
-    }
-    const value = tank[field];
-    if (value === null || value === undefined) {
-      return;
-    }
-    if (typeof value !== 'string' || value.length > maxLen) {
-      patch[field] = deleteField();
-    }
+function buildTankUpdatePayload(tank, updates, options = {}) {
+  const includeUpdatedAt = options?.includeUpdatedAt !== false;
+  return buildTankUpdatePayloadRuntime({
+    currentTank: normalizeTankRuntime(tank),
+    updates,
+    includeUpdatedAt,
+    now: options?.now,
+    deps: {
+      deleteFieldFn: deleteField,
+      normalizeRoomTemperatureMode,
+      normalizeDensityLevel,
+      normalizeSubstrateTypes,
+      waterProfileOptionsValues: WATER_PROFILE_OPTIONS.map((item) => item.value),
+    },
   });
-
-  const optionalTimestampFields = ['onboardingStartAt'];
-  optionalTimestampFields.forEach((field) => {
-    if (!hasField(field)) {
-      return;
-    }
-    const value = tank[field];
-    if (!isTimestampLike(value)) {
-      patch[field] = deleteField();
-    }
-  });
-
-  if (hasField('lightHours')) {
-    const lightHours = Number(tank.lightHours);
-    if (!Number.isFinite(lightHours) || lightHours < 1 || lightHours > 24) {
-      patch.lightHours = deleteField();
-    }
-  }
-
-  if (hasField('lightLumens')) {
-    const lightLumens = Number(tank.lightLumens);
-    if (!Number.isFinite(lightLumens) || lightLumens <= 0) {
-      patch.lightLumens = deleteField();
-    }
-  }
-
-  ['lengthCm', 'widthCm', 'heightCm', 'hidingPlacesCount', 'targetTemperatureC', 'ambientTemperatureC'].forEach((field) => {
-    if (!hasField(field)) {
-      return;
-    }
-    const parsed = Number(tank[field]);
-    if (!Number.isFinite(parsed) || parsed < 0) {
-      patch[field] = deleteField();
-    }
-  });
-  if (hasField('targetTemperatureC')) {
-    const targetTemp = Number(tank.targetTemperatureC);
-    if (!Number.isFinite(targetTemp) || targetTemp < 5 || targetTemp > 40) {
-      patch.targetTemperatureC = deleteField();
-    }
-  }
-  if (hasField('ambientTemperatureC')) {
-    const ambientTemp = Number(tank.ambientTemperatureC);
-    if (!Number.isFinite(ambientTemp) || ambientTemp < 0 || ambientTemp > 45) {
-      patch.ambientTemperatureC = deleteField();
-    }
-  }
-  if (hasField('roomTemperatureMode')) {
-    const mode = normalizeRoomTemperatureMode(tank.roomTemperatureMode);
-    if (!mode) {
-      patch.roomTemperatureMode = deleteField();
-    }
-  }
-
-  if (hasField('aquariumType')) {
-    const allowedAquariumTypes = new Set([
-      'plant',
-      'shrimp',
-      'mixed',
-      'general',
-      'planted_low_tech',
-      'planted_high_tech',
-      'malawi',
-      'tanganyika',
-      'betta_or_calm_fish',
-      '',
-    ]);
-    const value = String(tank.aquariumType ?? '').trim().toLowerCase();
-    if (!allowedAquariumTypes.has(value)) {
-      patch.aquariumType = deleteField();
-    }
-  }
-
-  if (hasField('lightIntensity')) {
-    const allowedLightIntensities = new Set(['low', 'medium', 'high', '']);
-    const value = String(tank.lightIntensity ?? '').trim().toLowerCase();
-    if (!allowedLightIntensities.has(value)) {
-      patch.lightIntensity = deleteField();
-    }
-  }
-
-  if (hasField('lightModelId')) {
-    const value = String(tank.lightModelId ?? '').trim().toLowerCase();
-    if (!value || value.length > 120) {
-      patch.lightModelId = deleteField();
-    }
-  }
-
-  if (hasField('onboardingMode')) {
-    const allowedModes = new Set([
-      'fresh_start',
-      'restart',
-      'mature_media_start',
-    ]);
-    const value = String(tank.onboardingMode ?? '').trim().toLowerCase();
-    if (value === 'existing_running') {
-      patch.onboardingMode = 'mature_media_start';
-    } else if (!allowedModes.has(value)) {
-      patch.onboardingMode = deleteField();
-    }
-  }
-
-  if (hasField('onboardingEnabled')) {
-    const value = tank.onboardingEnabled;
-    if (value !== null && value !== undefined && typeof value !== 'boolean') {
-      patch.onboardingEnabled = deleteField();
-    }
-  }
-
-  if (hasField('waterProfile')) {
-    const allowedWaterProfiles = new Set(
-      WATER_PROFILE_OPTIONS.map((item) => item.value)
-    );
-    const value = String(tank.waterProfile ?? '').trim().toLowerCase();
-    if (!allowedWaterProfiles.has(value)) {
-      patch.waterProfile = deleteField();
-    }
-  }
-
-  ['plantDensity', 'hardscapeDensity', 'hidingPlacesEstimated', 'lineOfSightBreaks'].forEach((field) => {
-    if (!hasField(field)) {
-      return;
-    }
-    const normalized = normalizeDensityLevel(tank[field]);
-    if (!normalized) {
-      patch[field] = deleteField();
-    }
-  });
-
-  if (hasField('substrateTypes')) {
-    const value = tank.substrateTypes;
-    if (!Array.isArray(value)) {
-      patch.substrateTypes = deleteField();
-    } else {
-      const normalized = normalizeSubstrateTypes(value).slice(0, 12);
-      patch.substrateTypes = normalized;
-      if (!hasField('substrateType')) {
-        patch.substrateType = normalized[0] ?? '';
-      }
-    }
-  }
-
-  const optionalListFields = [
-    ['plantFertilizationEntries', 200],
-    ['heaterEquipments', 30],
-    ['filterEquipments', 30],
-  ];
-  optionalListFields.forEach(([field, maxSize]) => {
-    if (!hasField(field)) {
-      return;
-    }
-    const value = tank[field];
-    if (!Array.isArray(value)) {
-      if (value !== null && value !== undefined) {
-        patch[field] = deleteField();
-      }
-      return;
-    }
-    if (value.length > maxSize) {
-      patch[field] = value.slice(0, maxSize);
-    }
-  });
-
-  const optionalMapFields = [
-    ['targetRanges', 40],
-    ['heaterEquipment', 30],
-    ['filterEquipment', 30],
-    ['zones', 20],
-    ['onboardingTaskChecks', 300],
-    ['maintenanceActionState', 60],
-  ];
-  optionalMapFields.forEach(([field, maxSize]) => {
-    if (!hasField(field)) {
-      return;
-    }
-    const value = tank[field];
-    if (value === null || value === undefined) {
-      return;
-    }
-    if (!isPlainMap(value)) {
-      patch[field] = deleteField();
-      return;
-    }
-    const keys = Object.keys(value);
-    if (keys.length > maxSize) {
-      const trimmed = {};
-      keys.slice(0, maxSize).forEach((key) => {
-        trimmed[key] = value[key];
-      });
-      patch[field] = trimmed;
-    }
-  });
-
-  if (hasField('zones')) {
-    const value = tank.zones;
-    if (value === null || value === undefined) {
-      patch.zones = deleteField();
-    } else if (!isPlainMap(value)) {
-      patch.zones = deleteField();
-    } else {
-      const allowedZoneKeys = [
-        'openSwimmingSpace',
-        'bottomArea',
-        'caveArea',
-        'plantArea',
-      ];
-      const normalizedZones = {};
-      allowedZoneKeys.forEach((key) => {
-        if (!Object.prototype.hasOwnProperty.call(value, key)) {
-          return;
-        }
-        const normalized = normalizeDensityLevel(value[key]);
-        if (normalized) {
-          normalizedZones[key] = normalized;
-        }
-      });
-      patch.zones = normalizedZones;
-    }
-  }
-
-  return patch;
 }
 
 function buildMeasurementRuleSanitizationPatch(measurement) {
-  const patch = {};
-  if (!measurement || typeof measurement !== 'object') {
-    return patch;
-  }
+  return buildMeasurementSanitizationPatchRuntime(
+    normalizeMeasurementRuntime(measurement),
+    { deleteFieldFn: deleteField }
+  );
+}
 
-  const allowedMeasurementFields = new Set([
-    'userId',
-    'tankId',
-    'tankName',
-    'note',
-    'measuredAt',
-    'ph',
-    'gh',
-    'kh',
-    'no2',
-    'no3',
-    'temperature',
-    'nh3nh4',
-    'po4',
-    'fe',
-    'ca',
-    'mg',
-    'k',
-    'tds',
-    'co2',
-    'createdAt',
-    'updatedAt',
-  ]);
+function validateMeasurementModelRuntime(measurement) {
+  return validateMeasurementRuntime(normalizeMeasurementRuntime(measurement));
+}
 
-  Object.keys(measurement).forEach((field) => {
-    if (field === 'id') {
-      return;
-    }
-    if (!allowedMeasurementFields.has(field)) {
-      patch[field] = deleteField();
-    }
+function validateStockItemModelRuntime(stockItem) {
+  return validateStockItemRuntime(normalizeStockItemRuntime(stockItem));
+}
+
+function buildStockItemWritePayload(stockItem, options = {}) {
+  return buildStockItemPayload({
+    currentItem: options?.currentItem,
+    updates: normalizeStockItemRuntime(stockItem),
+    mode: options?.mode ?? 'create',
+    includeUpdatedAt: options?.includeUpdatedAt,
+    includeCreatedAtIfMissing: options?.includeCreatedAtIfMissing,
+    now: options?.now,
+    deps: { deleteFieldFn: deleteField },
   });
+}
 
-  return patch;
+function validateTankDiseaseCaseModelRuntime(caseItem) {
+  return validateTankDiseaseCaseRuntime(normalizeTankDiseaseCaseRuntime(caseItem));
+}
+
+function buildTankDiseaseCaseWritePayload(caseItem, options = {}) {
+  return buildTankDiseaseCasePayload({
+    currentCase: options?.currentCase,
+    updates: normalizeTankDiseaseCaseRuntime(caseItem),
+    mode: options?.mode ?? 'create',
+    includeUpdatedAt: options?.includeUpdatedAt,
+    includeCreatedAtIfMissing: options?.includeCreatedAtIfMissing,
+    now: options?.now,
+    deps: { deleteFieldFn: deleteField },
+  });
 }
 
 function buildTankEquipmentFromCatalogItem(equipmentItem, equipmentType) {
@@ -1546,637 +1271,6 @@ function getMeasurementDefaultImpact(key, severity) {
   return severity === 'critical'
     ? 'Bez korekty moze dojsc do pogorszenia kondycji zbiornika i obsady.'
     : 'Bez korekty moze stopniowo obnizac komfort zycia ryb i roslin.';
-}
-
-function buildTrendSuggestedEnvironmentForTank({
-  fishItems = [],
-  plantItems = [],
-  activeDiseaseCases = [],
-  activePlantDiseaseCases = [],
-  activeAlgaeCases = [],
-  measurement = null,
-  tankProfile = null,
-}) {
-  const fishTempRange = buildRecommendedRange(
-    fishItems.map((item) => item.tempMin),
-    fishItems.map((item) => item.tempMax)
-  );
-  const plantTempRange = buildRecommendedRange(
-    plantItems.map((item) => item.tempMin),
-    plantItems.map((item) => item.tempMax)
-  );
-
-  const baseTempRanges = [fishTempRange, plantTempRange].filter(Boolean);
-  const baseTempRange =
-    baseTempRanges.length === 0
-      ? null
-      : buildRecommendedRange(
-          baseTempRanges.map((range) => range.min),
-          baseTempRanges.map((range) => range.max)
-        );
-
-  const plantLightRanges = plantItems
-    .map((item) => getPlantLightRequirements(item))
-    .filter(Boolean)
-    .map((range) => ({
-      min: Number(range.minHours),
-      max: Number(range.maxHours),
-    }))
-    .filter(
-      (range) =>
-        Number.isFinite(range.min) &&
-        Number.isFinite(range.max) &&
-        range.min <= range.max
-    );
-  const baseLightRange =
-    plantLightRanges.length === 0
-      ? null
-      : buildRecommendedRange(
-          plantLightRanges.map((range) => range.min),
-          plantLightRanges.map((range) => range.max)
-        );
-
-  let recommendedTempRange = baseTempRange;
-  let recommendedLightRange = baseLightRange;
-
-  const activeFishDiseaseIds = new Set(
-    activeDiseaseCases.map((item) =>
-      String(item.issueId ?? item.diseaseId ?? '').toLowerCase()
-    )
-  );
-  const activePlantDiseaseIds = new Set(
-    activePlantDiseaseCases.map((item) =>
-      String(item.issueId ?? item.diseaseId ?? '').toLowerCase()
-    )
-  );
-  const activeAlgaeIds = new Set(
-    activeAlgaeCases.map((item) =>
-      String(item.issueId ?? item.diseaseId ?? '').toLowerCase()
-    )
-  );
-
-  if (activeFishDiseaseIds.has('ich')) {
-    recommendedTempRange = { min: 28, max: 30, conflict: false };
-    recommendedLightRange = { min: 6, max: 8, conflict: false };
-  }
-
-  if (activeFishDiseaseIds.has('velvet')) {
-    recommendedTempRange = { min: 27, max: 28, conflict: false };
-    recommendedLightRange = { min: 4, max: 6, conflict: false };
-  }
-
-  if (activePlantDiseaseIds.size > 0) {
-    recommendedLightRange = { min: 6, max: 8, conflict: false };
-  }
-
-  if (activeAlgaeIds.has('black-beard-algae')) {
-    recommendedLightRange = { min: 6, max: 7, conflict: false };
-  } else if (activeAlgaeIds.has('cyanobacteria')) {
-    recommendedLightRange = { min: 5, max: 6, conflict: false };
-  } else if (activeAlgaeIds.has('green-hair-algae')) {
-    recommendedLightRange = { min: 6, max: 7, conflict: false };
-  }
-
-  const latestTemperature = Number(measurement?.temperature);
-  const currentTempValue = Number.isFinite(latestTemperature)
-    ? roundToOneDecimal(latestTemperature)
-    : null;
-  const currentLightHours = Number(tankProfile?.lightHours);
-  const currentLightValue = Number.isFinite(currentLightHours)
-    ? roundToOneDecimal(currentLightHours)
-    : null;
-
-  const isTempWithinSuggested =
-    recommendedTempRange && currentTempValue !== null
-      ? currentTempValue >= recommendedTempRange.min &&
-        currentTempValue <= recommendedTempRange.max
-      : null;
-  const isLightWithinSuggested =
-    recommendedLightRange && currentLightValue !== null
-      ? currentLightValue >= recommendedLightRange.min &&
-        currentLightValue <= recommendedLightRange.max
-      : null;
-
-  return {
-    recommendedTempRange,
-    recommendedLightRange,
-    currentTempValue,
-    currentLightValue,
-    isTempWithinSuggested,
-    isLightWithinSuggested,
-  };
-}
-
-function buildHomeSectionCounts({
-  tank,
-  measurement,
-  stockItems = [],
-  issueCases = [],
-  enabledTests = {},
-  equipmentCatalog = EQUIPMENT_CATALOG,
-}) {
-  if (!tank) {
-    return {
-      planCount: 0,
-      attentionCount: 0,
-    };
-  }
-
-  const tankLiters = Number(tank?.liters);
-  const tankProfile = buildTankEnvironmentProfile(tank);
-  const equipmentAssessment = buildTankEquipmentAssessment(tank, equipmentCatalog);
-  const fishItems = stockItems.filter((item) => item.type === 'fish');
-  const plantItems = stockItems.filter((item) => item.type === 'plant');
-  const activeDiseaseCases = issueCases.filter(
-    (item) => String(item.caseType ?? 'disease').toLowerCase() === 'disease'
-  );
-  const activePlantDiseaseCases = issueCases.filter(
-    (item) => String(item.caseType ?? '').toLowerCase() === 'plant_disease'
-  );
-  const activeAlgaeCases = issueCases.filter(
-    (item) => String(item.caseType ?? '').toLowerCase() === 'algae'
-  );
-
-  const fishCompatibilityResults = fishItems.map((item) => ({
-    id: item.id,
-    label: `${item.commonName ?? item.name ?? item.latinName ?? 'Ryba'} (${item.latinName ?? 'brak nazwy lacinskiej'})`,
-    issues: checkFishCompatibility(item, measurement, tankLiters, tankProfile),
-  }));
-  const fishCompatibilitySummary = summarizeCompatibilityResults(
-    fishCompatibilityResults
-  );
-  const incompatibleFishCount = fishCompatibilitySummary.speciesWithIssues;
-
-  const fishSchoolingWarnings = fishItems
-    .map((item) => {
-      const schoolingProfile = resolveFishSchoolingProfile(item);
-      const quantity = getFishQuantity(item);
-
-      if (!schoolingProfile.isSchooling || quantity >= schoolingProfile.minGroupSize) {
-        return null;
-      }
-
-      return {
-        id: item.id,
-        label: `${item.commonName ?? item.name ?? item.latinName ?? 'Ryba'} (${item.latinName ?? 'brak nazwy lacinskiej'})`,
-        quantity,
-        minGroupSize: schoolingProfile.minGroupSize,
-      };
-    })
-    .filter(Boolean);
-  const fishSchoolingWarningsCount = fishSchoolingWarnings.length;
-
-  const stockingCompatibility = evaluateStockingCompatibility(
-    tank,
-    stockItems,
-    measurement
-  );
-  const fishAggressionConflicts = (stockingCompatibility?.conflicts ?? [])
-    .filter((item) =>
-      ['aggression', 'territoriality', 'predation', 'finNipping'].includes(
-        String(item?.category ?? '')
-      )
-    )
-    .map((item, index) => ({
-      id: String(item?.id ?? `home-conflict-${index}`),
-      firstFish: item?.firstFish,
-      secondFish: item?.secondFish,
-      label: item?.severity === 'critical' ? 'niezgodne' : 'ryzykowne',
-      reasons: [String(item?.message ?? '').trim()].filter(Boolean),
-    }))
-    .filter((item) => item?.firstFish && item?.secondFish);
-  const fishAggressionConflictsCount = fishAggressionConflicts.length;
-
-  const plantCompatibilityResults = plantItems.map((item) => ({
-    id: item.id,
-    label: `${item.commonName ?? item.name ?? item.latinName ?? 'Roslina'} (${item.latinName ?? 'brak nazwy lacinskiej'})`,
-    issues: checkPlantCompatibility(item, measurement, tankLiters, tankProfile, {
-      fishItems,
-    }),
-  }));
-  const plantCompatibilitySummary = summarizeCompatibilityResults(
-    plantCompatibilityResults
-  );
-  const incompatiblePlantCount = plantCompatibilitySummary.speciesWithIssues;
-
-  const fishStockingSummary = buildFishStockingSummary(stockItems, tankLiters);
-  const activeIssueCasesCount = issueCases.length;
-
-  const contextInsights = buildContextualEcosystemInsights({
-    measurement,
-    enabledTests,
-    stockItems,
-    tank,
-    equipmentAssessment,
-    targetRanges: getWaterAnalysisOptionsForTank(tank)?.targetRanges,
-  });
-  const baseAnalysis = measurement
-    ? analyzeMeasurementLogic(
-        measurement,
-        enabledTests,
-        getWaterAnalysisOptionsForTank(tank)
-      )
-    : null;
-  const analysis = mergeWaterAnalysisWithContext(baseAnalysis, contextInsights);
-  const trendSuggestedEnvironment = buildTrendSuggestedEnvironmentForTank({
-    fishItems,
-    plantItems,
-    activeDiseaseCases,
-    activePlantDiseaseCases,
-    activeAlgaeCases,
-    measurement,
-    tankProfile,
-  });
-
-  const attentionKeys = new Set();
-  const addAttention = (key, condition) => {
-    if (condition) {
-      attentionKeys.add(key);
-    }
-  };
-
-  addAttention(
-    'equipment-heater',
-    (equipmentAssessment.heater.status === 'warning' ||
-      equipmentAssessment.heater.status === 'critical') &&
-      (equipmentAssessment.heater.actions?.[0] || equipmentAssessment.heater.details)
-  );
-  addAttention(
-    'equipment-filter',
-    (equipmentAssessment.filter.status === 'warning' ||
-      equipmentAssessment.filter.status === 'critical') &&
-      (equipmentAssessment.filter.actions?.[0] || equipmentAssessment.filter.details)
-  );
-  addAttention(
-    'temp',
-    Boolean(
-      trendSuggestedEnvironment.recommendedTempRange &&
-        (trendSuggestedEnvironment.currentTempValue === null ||
-          trendSuggestedEnvironment.isTempWithinSuggested === false)
-    )
-  );
-  addAttention(
-    'light',
-    Boolean(
-      trendSuggestedEnvironment.recommendedLightRange &&
-        (trendSuggestedEnvironment.currentLightValue === null ||
-          trendSuggestedEnvironment.isLightWithinSuggested === false)
-    )
-  );
-  addAttention('fish-compat', incompatibleFishCount > 0);
-  addAttention(
-    'fish-aggression',
-    fishAggressionConflictsCount > 0 ||
-      ['high_risk', 'incompatible'].includes(
-        String(stockingCompatibility?.overallStatus ?? '')
-      )
-  );
-  addAttention('fish-schooling', fishSchoolingWarningsCount > 0);
-  addAttention(
-    'stocking',
-    fishStockingSummary.hasFish &&
-      ((!fishStockingSummary.hasTankLiters && fishStockingSummary.hasFish) ||
-        fishStockingSummary.ratio > 1.2 ||
-        fishStockingSummary.isOverstocked)
-  );
-  addAttention('plant-compat', incompatiblePlantCount > 0);
-  addAttention('issues', activeIssueCasesCount > 0);
-
-  const planKeys = new Set();
-  const addPlan = (key, condition = true) => {
-    if (condition) {
-      planKeys.add(key);
-    }
-  };
-
-  (analysis?.recommendations ?? [])
-    .slice(0, 3)
-    .forEach((item, index) => {
-      addPlan(`param-${item.parameter ?? index}`);
-    });
-  addPlan(
-    'temp-fix',
-    Boolean(
-      trendSuggestedEnvironment.recommendedTempRange &&
-        trendSuggestedEnvironment.isTempWithinSuggested === false
-    )
-  );
-  addPlan(
-    'light-fix',
-    Boolean(
-      trendSuggestedEnvironment.recommendedLightRange &&
-        trendSuggestedEnvironment.isLightWithinSuggested === false
-    )
-  );
-  addPlan(
-    'equipment-heater',
-    equipmentAssessment.heater.status === 'warning' ||
-      equipmentAssessment.heater.status === 'critical'
-  );
-  addPlan(
-    'equipment-filter',
-    equipmentAssessment.filter.status === 'warning' ||
-      equipmentAssessment.filter.status === 'critical'
-  );
-  addPlan('fish-aggression', fishAggressionConflictsCount > 0);
-  addPlan('fish-compat', incompatibleFishCount > 0);
-  addPlan('fish-schooling', fishSchoolingWarningsCount > 0);
-  addPlan(
-    'stocking',
-    fishStockingSummary.hasFish &&
-      fishStockingSummary.hasTankLiters &&
-      (fishStockingSummary.ratio > 1.2 || fishStockingSummary.isOverstocked)
-  );
-  addPlan(
-    'fish-dynamic-compatibility',
-    ['caution', 'high_risk', 'incompatible'].includes(
-      String(stockingCompatibility?.overallStatus ?? '')
-    )
-  );
-  addPlan('plant-compat', incompatiblePlantCount > 0);
-  addPlan('issues', activeIssueCasesCount > 0);
-  [...activeDiseaseCases, ...activeAlgaeCases]
-    .slice(0, 3)
-    .forEach((item, index) => {
-      addPlan(`therapy-${item.issueId ?? item.id ?? index}`);
-    });
-
-  return {
-    planCount: Math.min(planKeys.size, 6),
-    attentionCount: Math.min(attentionKeys.size, 6),
-  };
-}
-
-function buildAttentionItemsForTank({
-  hasEquipmentSaveAccess,
-  equipmentAssessment,
-  trendSuggestedEnvironment,
-  fishCompatibilityResults = [],
-  plantCompatibilityResults = [],
-  fishAggressionConflictsCount = 0,
-  fishAggressionConflicts = [],
-  fishSchoolingWarningsCount = 0,
-  fishSchoolingWarnings = [],
-  fishStockingSummary,
-  activeDiseaseCasesCount = 0,
-  activeDiseaseCases = [],
-  activePlantDiseaseCasesCount = 0,
-  activePlantDiseaseCases = [],
-  activeAlgaeCasesCount = 0,
-  activeAlgaeCases = [],
-  selectedTankHealthAssessment,
-}) {
-  const items = [];
-  const seen = new Set();
-
-  const getSuggestionPriorityScore = (severity, text) => {
-    const normalized = String(text ?? '').toLowerCase();
-    let score = severity === 'critical' ? 300 : 200;
-
-    if (
-      normalized.includes('konflikt') ||
-      normalized.includes('agresj') ||
-      normalized.includes('rozdziel') ||
-      normalized.includes('aktywne problemy') ||
-      normalized.includes('kryty')
-    ) {
-      score += 80;
-    }
-
-    if (
-      normalized.includes('przerybienie') ||
-      normalized.includes('zmniejsz obsade') ||
-      normalized.includes('filtracj') ||
-      normalized.includes('sprzet')
-    ) {
-      score += 50;
-    }
-
-    if (
-      normalized.includes('uzupelnij') ||
-      normalized.includes('dopasuj') ||
-      normalized.includes('lekko')
-    ) {
-      score += 20;
-    }
-
-    return score;
-  };
-
-  const appendItem = (severity, text, details = []) => {
-    const normalizedText = String(text ?? '').trim();
-    if (!normalizedText) {
-      return;
-    }
-    const key = normalizedText.toLowerCase();
-    if (seen.has(key)) {
-      return;
-    }
-    seen.add(key);
-    items.push({
-      id: key,
-      severity: severity === 'critical' ? 'critical' : 'warning',
-      text: normalizedText,
-      details: Array.isArray(details)
-        ? details
-            .map((item) => String(item ?? '').trim())
-            .filter(Boolean)
-        : [],
-      priority: getSuggestionPriorityScore(severity, normalizedText),
-    });
-  };
-
-  if (hasEquipmentSaveAccess) {
-    [equipmentAssessment.heater, equipmentAssessment.filter].forEach((entry) => {
-      if (
-        (entry.status === 'warning' || entry.status === 'critical') &&
-        (entry.actions?.[0] || entry.details)
-      ) {
-        appendItem(
-          entry.status,
-          `Sprzet (${entry.title}) wymaga korekty.`,
-          [
-            entry.details,
-            ...(Array.isArray(entry.actions) ? entry.actions.slice(0, 3) : []),
-          ]
-        );
-      }
-    });
-  }
-
-  if (
-    trendSuggestedEnvironment.recommendedTempRange &&
-    trendSuggestedEnvironment.currentTempValue === null
-  ) {
-    appendItem(
-      'warning',
-      `Dodaj aktualny pomiar temperatury i porownaj go z zakresem ${trendSuggestedEnvironment.recommendedTempRange.min}-${trendSuggestedEnvironment.recommendedTempRange.max} C.`
-    );
-  } else if (
-    trendSuggestedEnvironment.recommendedTempRange &&
-    trendSuggestedEnvironment.isTempWithinSuggested === false
-  ) {
-    appendItem(
-      'critical',
-      `Skoryguj temperature do ${trendSuggestedEnvironment.recommendedTempRange.min}-${trendSuggestedEnvironment.recommendedTempRange.max} C (aktualnie: ${trendSuggestedEnvironment.currentTempValue} C).`
-    );
-  }
-
-  if (
-    trendSuggestedEnvironment.recommendedLightRange &&
-    trendSuggestedEnvironment.currentLightValue === null
-  ) {
-    appendItem(
-      'warning',
-      `Uzupelnij czas swiecenia lampy i porownaj go z zakresem ${trendSuggestedEnvironment.recommendedLightRange.min}-${trendSuggestedEnvironment.recommendedLightRange.max} h/dobe.`
-    );
-  } else if (
-    trendSuggestedEnvironment.recommendedLightRange &&
-    trendSuggestedEnvironment.isLightWithinSuggested === false
-  ) {
-    appendItem(
-      'warning',
-      `Skoryguj czas swiecenia do ${trendSuggestedEnvironment.recommendedLightRange.min}-${trendSuggestedEnvironment.recommendedLightRange.max} h/dobe (aktualnie: ${trendSuggestedEnvironment.currentLightValue} h).`
-    );
-  }
-
-  const fishCompatibilitySummary = summarizeCompatibilityResults(
-    fishCompatibilityResults
-  );
-  const fishMismatch = buildCompatibilityMismatchDetails(fishCompatibilityResults, {
-    maxSpecies: 3,
-    maxIssuesPerSpecies: 2,
-  });
-  const incompatibleFishCount = fishCompatibilitySummary.speciesWithIssues;
-  const incompatibleFishMajorCount = fishCompatibilitySummary.speciesWithMajorIssues;
-  const fishMismatchNames = formatCompactNameList(fishMismatch.names, 3);
-  if (incompatibleFishCount > 0) {
-      appendItem(
-        incompatibleFishMajorCount >= 2 ? 'critical' : 'warning',
-        fishMismatchNames
-        ? `Niedopasowanie warunkow u ryb: ${fishMismatchNames}.`
-        : `Wykryto niezgodnosci dla ryb (${incompatibleFishCount} gat.).`,
-      [
-        ...fishMismatch.details,
-        `Mocniejsze odchylenia: ${incompatibleFishMajorCount}.`,
-        'Dzialanie: dopasuj obsade do parametrow i litrazu akwarium.',
-      ]
-    );
-  }
-
-  const aggressionDetails = buildAggressionConflictDetails(
-    fishAggressionConflicts,
-    4
-  );
-  if (fishAggressionConflictsCount > 0) {
-      appendItem(
-        'critical',
-        aggressionDetails.length > 0
-        ? `Konflikty agresji: ${formatCompactNameList(aggressionDetails, 2)}.`
-        : `Wykryto konflikty agresji miedzy rybami (${fishAggressionConflictsCount}).`,
-      [
-        ...aggressionDetails.map((pair) => `Konflikt: ${pair}.`),
-        `Liczba konfliktow: ${fishAggressionConflictsCount}.`,
-        'Dzialanie: rozdziel konfliktowe gatunki lub zmien obsade.',
-      ]
-    );
-  }
-
-  const schoolingDetails = buildSchoolingWarningDetails(fishSchoolingWarnings, 4);
-  if (fishSchoolingWarningsCount > 0) {
-      appendItem(
-        'warning',
-        schoolingDetails.length > 0
-        ? `Za mala liczebnosc ryb stadnych: ${formatCompactNameList(
-            fishSchoolingWarnings.map((item) => item?.label),
-            3
-          )}.`
-        : `Za mala liczebnosc ryb stadnych (${fishSchoolingWarningsCount} gat.).`,
-      [
-        ...schoolingDetails,
-        'Dzialanie: zwieksz liczebnosc ryb stadnych albo zmien gatunki.',
-      ]
-    );
-  }
-
-  if (fishStockingSummary.hasFish && !fishStockingSummary.hasTankLiters) {
-    appendItem('warning', 'Uzupelnij litraz akwarium, aby poprawnie oceniac przerybienie.');
-  } else if (
-    fishStockingSummary.hasFish &&
-    fishStockingSummary.hasTankLiters &&
-    fishStockingSummary.ratio > 1.2
-  ) {
-    appendItem(
-      'critical',
-      `Zmniejsz obsade lub zwieksz litraz: przerybienie na poziomie ${Math.round(fishStockingSummary.ratio * 100)}%.`
-    );
-  } else if (fishStockingSummary.isOverstocked) {
-    appendItem(
-      'warning',
-      `Obsada jest lekko za duza (${Math.round(fishStockingSummary.ratio * 100)}%). Warto odciazyc zbiornik.`
-    );
-  }
-
-  const plantCompatibilitySummary = summarizeCompatibilityResults(
-    plantCompatibilityResults
-  );
-  const plantMismatch = buildCompatibilityMismatchDetails(plantCompatibilityResults, {
-    maxSpecies: 3,
-    maxIssuesPerSpecies: 2,
-  });
-  const incompatiblePlantCount = plantCompatibilitySummary.speciesWithIssues;
-  const incompatiblePlantMajorCount = plantCompatibilitySummary.speciesWithMajorIssues;
-  const plantMismatchNames = formatCompactNameList(plantMismatch.names, 3);
-  if (incompatiblePlantCount > 0) {
-      appendItem(
-        incompatiblePlantMajorCount >= 2 ? 'critical' : 'warning',
-        plantMismatchNames
-        ? `Niedopasowanie warunkow u roslin: ${plantMismatchNames}.`
-        : `Wykryto niezgodnosci dla roslin (${incompatiblePlantCount} gat.).`,
-      [
-        ...plantMismatch.details,
-        `Mocniejsze odchylenia: ${incompatiblePlantMajorCount}.`,
-        'Dzialanie: dopasuj gatunki do pH, GH/KH, oswietlenia i temperatury.',
-      ]
-    );
-  }
-
-  const activeIssueCasesCount =
-    activeDiseaseCasesCount + activePlantDiseaseCasesCount + activeAlgaeCasesCount;
-  const activeIssueNames = formatCompactNameList(
-    [
-      ...activeDiseaseCases.map((item) => getIssueCaseDisplayName(item)),
-      ...activePlantDiseaseCases.map((item) => getIssueCaseDisplayName(item)),
-      ...activeAlgaeCases.map((item) => getIssueCaseDisplayName(item)),
-    ],
-    4
-  );
-  if (activeIssueCasesCount > 0) {
-      appendItem(
-        activeIssueCasesCount > 1 ? 'critical' : 'warning',
-        activeIssueNames
-        ? `Aktywne problemy: ${activeIssueNames}.`
-        : `Masz aktywne problemy zdrowotne/glony (${activeIssueCasesCount}).`,
-      [
-        `Choroby ryb: ${activeDiseaseCasesCount}.`,
-        `Choroby roslin: ${activePlantDiseaseCasesCount}.`,
-        `Glony: ${activeAlgaeCasesCount}.`,
-        'Dzialanie: realizuj plan leczenia i harmonogram dla aktywnych problemow.',
-      ]
-    );
-  }
-
-  if (items.length === 0 && selectedTankHealthAssessment?.score < 85) {
-    (selectedTankHealthAssessment.penalties ?? [])
-      .slice(0, 2)
-      .forEach((penalty) =>
-        appendItem(penalty.points >= 12 ? 'critical' : 'warning', penalty.text)
-      );
-  }
-
-  return items
-    .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
-    .slice(0, 6);
 }
 
 const SEVERITY_LABEL = {
@@ -2875,12 +1969,133 @@ function parseTankTargetRangeDraftOrThrow(draft, profile = DEFAULT_WATER_PROFILE
 }
 
 function isFirestorePermissionDeniedError(error) {
-  const code = String(error?.code ?? '').toLowerCase();
+  const code = getFirestoreErrorCode(error);
   const message = String(error?.message ?? '').toLowerCase();
   return (
     code.includes('permission-denied') ||
     message.includes('missing or insufficient permissions')
   );
+}
+
+function getFirestoreErrorCode(error) {
+  return String(error?.code ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/^firestore\//, '');
+}
+
+const FIRESTORE_WRITE_DIAGNOSTIC_CODES = Object.freeze({
+  PERMISSION_DENIED: 'FSW_PERMISSION_DENIED',
+  UNAUTHENTICATED: 'FSW_UNAUTHENTICATED',
+  UNAVAILABLE: 'FSW_UNAVAILABLE',
+  TIMEOUT: 'FSW_TIMEOUT',
+  VALIDATION: 'FSW_VALIDATION',
+  NOT_FOUND: 'FSW_NOT_FOUND',
+  UNKNOWN: 'FSW_UNKNOWN',
+});
+
+function mapFirestoreWriteDiagnosticCode(error) {
+  const code = getFirestoreErrorCode(error);
+
+  if (code === 'permission-denied' || isFirestorePermissionDeniedError(error)) {
+    return FIRESTORE_WRITE_DIAGNOSTIC_CODES.PERMISSION_DENIED;
+  }
+  if (code === 'unauthenticated') {
+    return FIRESTORE_WRITE_DIAGNOSTIC_CODES.UNAUTHENTICATED;
+  }
+  if (code === 'unavailable') {
+    return FIRESTORE_WRITE_DIAGNOSTIC_CODES.UNAVAILABLE;
+  }
+  if (code === 'deadline-exceeded') {
+    return FIRESTORE_WRITE_DIAGNOSTIC_CODES.TIMEOUT;
+  }
+  if (code === 'invalid-argument' || code === 'failed-precondition') {
+    return FIRESTORE_WRITE_DIAGNOSTIC_CODES.VALIDATION;
+  }
+  if (code === 'not-found') {
+    return FIRESTORE_WRITE_DIAGNOSTIC_CODES.NOT_FOUND;
+  }
+  return FIRESTORE_WRITE_DIAGNOSTIC_CODES.UNKNOWN;
+}
+
+function getPayloadKeysForLog(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return [];
+  }
+  return Object.keys(payload).slice(0, 80).sort();
+}
+
+function annotateErrorDiagnosticCode(error, diagnosticCode) {
+  if (!error || typeof error !== 'object') {
+    return error;
+  }
+  try {
+    error.diagnosticCode = diagnosticCode;
+  } catch {
+    // Ignore annotation errors.
+  }
+  return error;
+}
+
+function logFirestoreWriteFailure({
+  error,
+  collection,
+  operation,
+  payload,
+  userId = null,
+  tankId = null,
+  docId = null,
+  source = 'firestore_write',
+}) {
+  const diagnosticCode = mapFirestoreWriteDiagnosticCode(error);
+  logTelemetryError(error, {
+    source,
+    diagnosticCode,
+    collection: String(collection ?? '').trim() || 'unknown',
+    operation: String(operation ?? '').trim() || 'unknown',
+    firestoreCode: getFirestoreErrorCode(error),
+    payloadKeys: getPayloadKeysForLog(payload),
+    userId: userId ? String(userId) : null,
+    tankId: tankId ? String(tankId) : null,
+    docId: docId ? String(docId) : null,
+  });
+  return diagnosticCode;
+}
+
+async function addDocWithTelemetry(collectionName, collectionRef, payload, context = {}) {
+  try {
+    return await addDoc(collectionRef, payload);
+  } catch (error) {
+    const diagnosticCode = logFirestoreWriteFailure({
+      error,
+      collection: collectionName,
+      operation: 'addDoc',
+      payload,
+      userId: context?.userId,
+      tankId: context?.tankId,
+      docId: null,
+      source: context?.source ?? 'firestore_add_doc',
+    });
+    throw annotateErrorDiagnosticCode(error, diagnosticCode);
+  }
+}
+
+async function updateDocWithTelemetry(collectionName, docRef, payload, context = {}) {
+  try {
+    return await updateDoc(docRef, payload);
+  } catch (error) {
+    const diagnosticCode = logFirestoreWriteFailure({
+      error,
+      collection: collectionName,
+      operation: 'updateDoc',
+      payload,
+      userId: context?.userId,
+      tankId: context?.tankId,
+      docId: docRef?.id ?? null,
+      source: context?.source ?? 'firestore_update_doc',
+    });
+    throw annotateErrorDiagnosticCode(error, diagnosticCode);
+  }
 }
 
 function normalizeWasteProductionLevelValue(value, fallback = null) {
@@ -2918,43 +2133,6 @@ function normalizeOnboardingTaskChecks(value) {
       return acc;
     }
     acc[normalizedKey] = Boolean(itemValue);
-    return acc;
-  }, {});
-}
-
-function normalizeMaintenanceActionState(value) {
-  if (!value || typeof value !== 'object') {
-    return {};
-  }
-
-  return Object.entries(value).reduce((acc, [rawKey, rawEntry]) => {
-    const key = String(rawKey ?? '').trim().toLowerCase();
-    if (!key || !rawEntry || typeof rawEntry !== 'object') {
-      return acc;
-    }
-
-    const toMs = (entryValue) => {
-      const parsed = Number(entryValue);
-      return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : null;
-    };
-
-    const normalizedEntry = {
-      lastCompletedAtMs: toMs(rawEntry.lastCompletedAtMs),
-      lastSkippedAtMs: toMs(rawEntry.lastSkippedAtMs),
-      postponedUntilMs: toMs(rawEntry.postponedUntilMs),
-      updatedAtMs: toMs(rawEntry.updatedAtMs),
-    };
-
-    if (
-      !normalizedEntry.lastCompletedAtMs &&
-      !normalizedEntry.lastSkippedAtMs &&
-      !normalizedEntry.postponedUntilMs &&
-      !normalizedEntry.updatedAtMs
-    ) {
-      return acc;
-    }
-
-    acc[key] = normalizedEntry;
     return acc;
   }, {});
 }
@@ -7633,7 +6811,7 @@ const PLANT_COMMON_NAME_OVERRIDES_BY_LATIN = Object.freeze({
   'hygrophila polysperma': 'Nadwodka wielonasienna',
   'hygrophila corymbosa': 'Nadwodka corymbosa',
   'hygrophila corymbosa siamensis': 'Nadwodka syjamska',
-  'hygrophila difformis': 'Nadwodka wielokształtna',
+  'hygrophila difformis': 'Nadwodka wieloksztaĹ‚tna',
   'hygrophila pinnatifida': 'Nadwodka pinnatifida',
   'taxiphyllum barbieri': 'Mch jawajski',
   'vesicularia montagnei': 'Mch christmas',
@@ -10218,34 +9396,6 @@ function isWaterParameterIssueText(issueText) {
   );
 }
 
-function getHistoryChartValueStatus(parameterKey, rawValue, targetRanges = null) {
-  const value = Number(rawValue);
-  if (!Number.isFinite(value)) {
-    return 'neutral';
-  }
-
-  const severity = getMeasurementSeverityFromValueWithTargetRanges(
-    parameterKey,
-    value,
-    targetRanges
-  );
-  return severity === 'ok' ? 'ok' : severity;
-}
-
-function getHistoryChartStatusRank(status) {
-  if (status === 'critical') return 3;
-  if (status === 'warning') return 2;
-  if (status === 'ok') return 1;
-  return 0;
-}
-
-function getHistoryChartColorByStatus(status) {
-  if (status === 'critical') return '#ff7b7b';
-  if (status === 'warning') return '#ffd166';
-  if (status === 'ok') return '#6fd98d';
-  return '#8dc7ff';
-}
-
 function buildTodayActionPlan(tank, context = {}) {
   return buildTodayActionPlanService(tank, context);
 }
@@ -10255,20 +9405,47 @@ function buildAdaptiveTaskSchedule(tank, context = {}) {
 }
 
 function buildTankOnboardingPlan(tank, measurements, enabledTests = {}) {
-  return buildTankOnboardingPlanService(
-    tank,
-    measurements,
-    enabledTests,
-    {
-      normalizeOnboardingMode,
-      getCreatedAtMs,
-      getDayBucketMs,
-      analyzeMeasurementLogic,
-      getWaterAnalysisOptionsForTank,
-      getRecentNumericSeries,
-      getRecommendationDueAtMsLogic,
-    }
-  );
+  try {
+    return buildTankOnboardingPlanService(
+      tank,
+      measurements,
+      enabledTests,
+      {
+        normalizeOnboardingMode,
+        getCreatedAtMs,
+        getDayBucketMs,
+        analyzeMeasurementLogic,
+        getWaterAnalysisOptionsForTank,
+        getRecentNumericSeries,
+        getRecommendationDueAtMsLogic,
+      }
+    );
+  } catch (error) {
+    logTelemetryError(error, {
+      source: 'build_tank_onboarding_plan_wrapper',
+      tankId: tank?.id ?? null,
+    });
+    return {
+      isActive: false,
+      mode: normalizeOnboardingMode(tank?.onboardingMode),
+      modeLabel: 'Onboarding',
+      rows: [],
+      dueItems: [],
+      todayItems: [],
+      checklistStart: [],
+      firstMeasurements: [],
+      statusText:
+        'Nie udalo sie zbudowac planu onboardingu dla tego akwarium. Sprawdz dane i sproboj ponownie.',
+      dayNumber: 0,
+      targetEndDay: 0,
+      isStabilized: false,
+      activeStep: null,
+      nextStep: null,
+      delayReason: '',
+      requiredTestsNow: [],
+      actionsToday: [],
+    };
+  }
 }
 
 
@@ -10392,7 +9569,6 @@ export default function HomeScreen() {
     buildTodayDateInputValue()
   );
   const [measurementNote, setMeasurementNote] = useState('');
-  const [stockType, setStockType] = useState('fish');
   const [fishCatalog, setFishCatalog] = useState([]);
   const [fishCatalogLoading, setFishCatalogLoading] = useState(false);
   const [plantCatalog, setPlantCatalog] = useState([]);
@@ -10407,43 +9583,134 @@ export default function HomeScreen() {
   const [equipmentCatalog, setEquipmentCatalog] = useState([]);
   const [equipmentCatalogLoading, setEquipmentCatalogLoading] = useState(false);
   const [equipmentCatalogHydrated, setEquipmentCatalogHydrated] = useState(false);
-  const [stockFishSearch, setStockFishSearch] = useState('');
-  const [stockPlantSearch, setStockPlantSearch] = useState('');
-  const [fishCatalogMenuSearch, setFishCatalogMenuSearch] = useState('');
-  const [plantCatalogMenuSearch, setPlantCatalogMenuSearch] = useState('');
-  const [expandedFishCatalogId, setExpandedFishCatalogId] = useState(null);
-  const [expandedPlantCatalogId, setExpandedPlantCatalogId] = useState(null);
-  const [fishQuantity, setFishQuantity] = useState('1');
-  const [fishQuantityDrafts, setFishQuantityDrafts] = useState({});
-  const [plantQuantityDrafts, setPlantQuantityDrafts] = useState({});
-  const [selectedCatalogFishId, setSelectedCatalogFishId] = useState(null);
-  const [selectedCatalogPlantIds, setSelectedCatalogPlantIds] = useState([]);
-  const [stockBusy, setStockBusy] = useState(false);
-  const [stockLoading, setStockLoading] = useState(false);
-  const [stockItems, setStockItems] = useState([]);
-  const [isEditingFish, setIsEditingFish] = useState(false);
-  const [isEditingPlant, setIsEditingPlant] = useState(false);
-  const [isPlantFertilizationExpanded, setIsPlantFertilizationExpanded] = useState(false);
-  const [isPlantStockExpanded, setIsPlantStockExpanded] = useState(true);
-  const [isPlantFertilizationAddFormVisible, setIsPlantFertilizationAddFormVisible] =
-    useState(false);
-  const [editingFishItemId, setEditingFishItemId] = useState(null);
-  const [editingPlantItemId, setEditingPlantItemId] = useState(null);
-  const [plantFertilizerName, setPlantFertilizerName] = useState('');
-  const [plantFertilizerQuantityInput, setPlantFertilizerQuantityInput] = useState('1');
-  const [plantFertilizerNote, setPlantFertilizerNote] = useState('');
-  const [rootTabsDurationDaysInput, setRootTabsDurationDaysInput] = useState(
-    String(ROOT_TABS_DEFAULT_DURATION_DAYS)
-  );
-  const [editingPlantFertilizationEntryId, setEditingPlantFertilizationEntryId] = useState(null);
-  const [editingPlantFertilizerName, setEditingPlantFertilizerName] = useState('');
-  const [editingPlantFertilizerQuantityInput, setEditingPlantFertilizerQuantityInput] =
-    useState('1');
-  const [editingRootTabsDurationDaysInput, setEditingRootTabsDurationDaysInput] = useState(
-    String(ROOT_TABS_DEFAULT_DURATION_DAYS)
-  );
-  const [editingPlantFertilizerNote, setEditingPlantFertilizerNote] = useState('');
-  const [plantFertilizationBusy, setPlantFertilizationBusy] = useState(false);
+  const {
+    stockType,
+    setStockType,
+    stockFishSearch,
+    setStockFishSearch,
+    stockPlantSearch,
+    setStockPlantSearch,
+    fishCatalogMenuSearch,
+    setFishCatalogMenuSearch,
+    plantCatalogMenuSearch,
+    setPlantCatalogMenuSearch,
+    expandedFishCatalogId,
+    setExpandedFishCatalogId,
+    expandedPlantCatalogId,
+    setExpandedPlantCatalogId,
+    fishQuantity,
+    setFishQuantity,
+    fishQuantityDrafts,
+    setFishQuantityDrafts,
+    plantQuantityDrafts,
+    setPlantQuantityDrafts,
+    selectedCatalogFishId,
+    setSelectedCatalogFishId,
+    selectedCatalogPlantIds,
+    setSelectedCatalogPlantIds,
+    stockBusy,
+    setStockBusy,
+    stockLoading,
+    setStockLoading,
+    stockItems,
+    setStockItems,
+    isEditingFish,
+    setIsEditingFish,
+    isEditingPlant,
+    setIsEditingPlant,
+    isPlantFertilizationExpanded,
+    setIsPlantFertilizationExpanded,
+    isPlantStockExpanded,
+    setIsPlantStockExpanded,
+    isPlantFertilizationAddFormVisible,
+    setIsPlantFertilizationAddFormVisible,
+    editingFishItemId,
+    setEditingFishItemId,
+    editingPlantItemId,
+    setEditingPlantItemId,
+    plantFertilizerName,
+    setPlantFertilizerName,
+    plantFertilizerQuantityInput,
+    setPlantFertilizerQuantityInput,
+    plantFertilizerNote,
+    setPlantFertilizerNote,
+    rootTabsDurationDaysInput,
+    setRootTabsDurationDaysInput,
+    editingPlantFertilizationEntryId,
+    setEditingPlantFertilizationEntryId,
+    editingPlantFertilizerName,
+    setEditingPlantFertilizerName,
+    editingPlantFertilizerQuantityInput,
+    setEditingPlantFertilizerQuantityInput,
+    editingRootTabsDurationDaysInput,
+    setEditingRootTabsDurationDaysInput,
+    editingPlantFertilizerNote,
+    setEditingPlantFertilizerNote,
+    plantFertilizationBusy,
+    setPlantFertilizationBusy,
+    isEquipmentCatalogModalVisible,
+    setIsEquipmentCatalogModalVisible,
+    equipmentCatalogType,
+    setEquipmentCatalogType,
+    equipmentCatalogSearch,
+    setEquipmentCatalogSearch,
+    isCustomEquipmentFormVisible,
+    setIsCustomEquipmentFormVisible,
+    customEquipmentBrand,
+    setCustomEquipmentBrand,
+    customEquipmentModel,
+    setCustomEquipmentModel,
+    customFilterType,
+    setCustomFilterType,
+    customEquipmentPrimaryValue,
+    setCustomEquipmentPrimaryValue,
+    customEquipmentTankMinLiters,
+    setCustomEquipmentTankMinLiters,
+    customEquipmentTankMaxLiters,
+    setCustomEquipmentTankMaxLiters,
+    equipmentLightHoursDraft,
+    setEquipmentLightHoursDraft,
+    equipmentSavingBusy,
+    setEquipmentSavingBusy,
+    selectedHistoryChartParameter,
+    setSelectedHistoryChartParameter,
+    historySectionTab,
+    setHistorySectionTab,
+    historyChartWidth,
+    setHistoryChartWidth,
+    selectedMeasurementTileDetails,
+    setSelectedMeasurementTileDetails,
+    isCurrentParametersExpanded,
+    setIsCurrentParametersExpanded,
+    isTankDiseasesExpanded,
+    setIsTankDiseasesExpanded,
+    isTankPlantDiseasesExpanded,
+    setIsTankPlantDiseasesExpanded,
+    isTankAlgaeExpanded,
+    setIsTankAlgaeExpanded,
+    expandedDiseaseCaseId,
+    setExpandedDiseaseCaseId,
+    expandedPlantDiseaseCaseId,
+    setExpandedPlantDiseaseCaseId,
+    expandedAlgaeCaseId,
+    setExpandedAlgaeCaseId,
+    isWaterTestingExpanded,
+    setIsWaterTestingExpanded,
+    expandedStockingSectionKey,
+    setExpandedStockingSectionKey,
+    maintenanceActionBusyId,
+    setMaintenanceActionBusyId,
+    onboardingTaskBusy,
+    setOnboardingTaskBusy,
+    onboardingToggleBusy,
+    setOnboardingToggleBusy,
+    expandedHistoryIssueId,
+    setExpandedHistoryIssueId,
+    historyIssueDeleteBusyId,
+    setHistoryIssueDeleteBusyId,
+  } = useAquariumSectionState({
+    rootTabsDefaultDurationDays: ROOT_TABS_DEFAULT_DURATION_DAYS,
+  });
   const [tankName, setTankName] = useState('');
   const [tankLiters, setTankLiters] = useState('');
   const [tankLengthCm, setTankLengthCm] = useState('');
@@ -10480,20 +9747,6 @@ export default function HomeScreen() {
   const [addTankBusy, setAddTankBusy] = useState(false);
   const [isAddingTankModalVisible, setIsAddingTankModalVisible] = useState(false);
   const [editingTankId, setEditingTankId] = useState(null);
-  const [isEquipmentCatalogModalVisible, setIsEquipmentCatalogModalVisible] =
-    useState(false);
-  const [equipmentCatalogType, setEquipmentCatalogType] = useState('');
-  const [equipmentCatalogSearch, setEquipmentCatalogSearch] = useState('');
-  const [isCustomEquipmentFormVisible, setIsCustomEquipmentFormVisible] =
-    useState(false);
-  const [customEquipmentBrand, setCustomEquipmentBrand] = useState('');
-  const [customEquipmentModel, setCustomEquipmentModel] = useState('');
-  const [customFilterType, setCustomFilterType] = useState('internal');
-  const [customEquipmentPrimaryValue, setCustomEquipmentPrimaryValue] = useState('');
-  const [customEquipmentTankMinLiters, setCustomEquipmentTankMinLiters] = useState('');
-  const [customEquipmentTankMaxLiters, setCustomEquipmentTankMaxLiters] = useState('');
-  const [equipmentLightHoursDraft, setEquipmentLightHoursDraft] = useState('');
-  const [equipmentSavingBusy, setEquipmentSavingBusy] = useState(false);
   const [, setTanksLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [saveBusy, setSaveBusy] = useState(false);
@@ -10504,10 +9757,6 @@ export default function HomeScreen() {
   const [homeActiveIssueCases, setHomeActiveIssueCases] = useState([]);
   const [homeLoading, setHomeLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
-  const [selectedHistoryChartParameter, setSelectedHistoryChartParameter] =
-    useState('no3');
-  const [historySectionTab, setHistorySectionTab] = useState('parameters');
-  const [historyChartWidth, setHistoryChartWidth] = useState(0);
   const [isAddMeasurementModalVisible, setIsAddMeasurementModalVisible] =
     useState(false);
   const [selectedHomeScoreSummary, setSelectedHomeScoreSummary] = useState(null);
@@ -10517,32 +9766,6 @@ export default function HomeScreen() {
     week: false,
     month: false,
   });
-  const [selectedMeasurementTileDetails, setSelectedMeasurementTileDetails] =
-    useState(null);
-  const [isCurrentParametersExpanded, setIsCurrentParametersExpanded] =
-    useState(true);
-  const [isTankDiseasesExpanded, setIsTankDiseasesExpanded] =
-    useState(true);
-  const [isTankPlantDiseasesExpanded, setIsTankPlantDiseasesExpanded] =
-    useState(true);
-  const [isTankAlgaeExpanded, setIsTankAlgaeExpanded] =
-    useState(true);
-  const [expandedDiseaseCaseId, setExpandedDiseaseCaseId] =
-    useState(null);
-  const [expandedPlantDiseaseCaseId, setExpandedPlantDiseaseCaseId] =
-    useState(null);
-  const [expandedAlgaeCaseId, setExpandedAlgaeCaseId] =
-    useState(null);
-  const [isWaterTestingExpanded, setIsWaterTestingExpanded] =
-    useState(false);
-  const [expandedStockingSectionKey, setExpandedStockingSectionKey] = useState('');
-  const [maintenanceActionBusyId, setMaintenanceActionBusyId] = useState('');
-  const [onboardingTaskBusy, setOnboardingTaskBusy] = useState(false);
-  const [onboardingToggleBusy, setOnboardingToggleBusy] = useState(false);
-  const [isCompletedOnboardingVisible, setIsCompletedOnboardingVisible] =
-    useState(false);
-  const [expandedHistoryIssueId, setExpandedHistoryIssueId] = useState(null);
-  const [historyIssueDeleteBusyId, setHistoryIssueDeleteBusyId] = useState(null);
   const [isSettingsTestsExpanded, setIsSettingsTestsExpanded] = useState(false);
   const [isSubscriptionExpanded, setIsSubscriptionExpanded] = useState(false);
   const [deleteAccountBusy, setDeleteAccountBusy] = useState(false);
@@ -10754,7 +9977,6 @@ export default function HomeScreen() {
         setMaintenanceActionBusyId('');
         setOnboardingTaskBusy(false);
         setOnboardingToggleBusy(false);
-        setIsCompletedOnboardingVisible(false);
         setIsAddingTankModalVisible(false);
         setEditingTankId(null);
         setIsEquipmentCatalogModalVisible(false);
@@ -11303,12 +10525,19 @@ export default function HomeScreen() {
       if (missingSeedFish.length > 0) {
         const createdDocs = await Promise.all(
           missingSeedFish.map((fish) =>
-            addDoc(catalogCollection, {
-              ...fish,
-              commonNameNormalized: normalizeText(fish.commonName),
-              latinNameNormalized: normalizeText(fish.latinName),
-              createdAt: new Date(),
-            })
+            addDocWithTelemetry(
+              'fishCatalog',
+              catalogCollection,
+              {
+                ...fish,
+                commonNameNormalized: normalizeText(fish.commonName),
+                latinNameNormalized: normalizeText(fish.latinName),
+                createdAt: new Date(),
+              },
+              {
+                source: 'sync_fish_catalog_seed',
+              }
+            )
           )
         );
 
@@ -11321,7 +10550,14 @@ export default function HomeScreen() {
       if (catalogUpdates.length > 0) {
         await Promise.all(
           catalogUpdates.map((item) =>
-            updateDoc(doc(db, 'fishCatalog', item.id), item.patch)
+            updateDocWithTelemetry(
+              'fishCatalog',
+              doc(db, 'fishCatalog', item.id),
+              item.patch,
+              {
+                source: 'sync_fish_catalog_patch',
+              }
+            )
           )
         );
 
@@ -11668,11 +10904,18 @@ export default function HomeScreen() {
       if (missingSeedPlants.length > 0) {
         const createdDocs = await Promise.all(
           missingSeedPlants.map((plant) =>
-            addDoc(catalogCollection, {
-              ...plant,
-              ...getPlantCatalogNormalizationPayload(plant),
-              createdAt: new Date(),
-            })
+            addDocWithTelemetry(
+              'plantCatalog',
+              catalogCollection,
+              {
+                ...plant,
+                ...getPlantCatalogNormalizationPayload(plant),
+                createdAt: new Date(),
+              },
+              {
+                source: 'sync_plant_catalog_seed',
+              }
+            )
           )
         );
 
@@ -11685,7 +10928,14 @@ export default function HomeScreen() {
       if (existingSeedUpdates.length > 0) {
         await Promise.all(
           existingSeedUpdates.map((item) =>
-            updateDoc(doc(db, 'plantCatalog', item.id), item.patch)
+            updateDocWithTelemetry(
+              'plantCatalog',
+              doc(db, 'plantCatalog', item.id),
+              item.patch,
+              {
+                source: 'sync_plant_catalog_patch',
+              }
+            )
           )
         );
 
@@ -12190,7 +11440,6 @@ export default function HomeScreen() {
     setIsWaterTestingExpanded(false);
     setMaintenanceActionBusyId('');
     setOnboardingTaskBusy(false);
-    setIsCompletedOnboardingVisible(false);
     setIsEquipmentCatalogModalVisible(false);
     setEquipmentCatalogType('');
     setEquipmentCatalogSearch('');
@@ -14656,15 +13905,22 @@ export default function HomeScreen() {
           tankLiters
         );
 
-        await updateDoc(doc(db, 'tanks', selectedTank.id), {
-          ...buildTankRuleSanitizationPatch(selectedTank),
-          lightModelId,
-          lightModelName: selectedLamp.name,
-          lightLumens,
-          lightIntensity:
-            lightIntensity || normalizeLightIntensity(selectedTank?.lightIntensity) || 'low',
-          updatedAt: new Date(),
-        });
+        await updateDocWithTelemetry(
+          'tanks',
+          doc(db, 'tanks', selectedTank.id),
+          buildTankUpdatePayload(selectedTank, {
+            lightModelId,
+            lightModelName: selectedLamp.name,
+            lightLumens,
+            lightIntensity:
+              lightIntensity || normalizeLightIntensity(selectedTank?.lightIntensity) || 'low',
+          }),
+          {
+            userId: user.uid,
+            tankId: selectedTank.id,
+            source: 'assign_equipment_light_catalog',
+          }
+        );
 
         await fetchTanks(user.uid, selectedTank.id);
         resetCustomEquipmentForm();
@@ -14689,15 +13945,20 @@ export default function HomeScreen() {
       const nextList = [...currentList, nextEquipment];
       const nextLegacyValue = nextList[0] ?? deleteField();
       const payload = {
-        ...buildTankRuleSanitizationPatch(selectedTank),
         [listField]: nextList,
         [legacyField]: nextLegacyValue,
       };
 
-      await updateDoc(doc(db, 'tanks', selectedTank.id), {
-        ...payload,
-        updatedAt: new Date(),
-      });
+      await updateDocWithTelemetry(
+        'tanks',
+        doc(db, 'tanks', selectedTank.id),
+        buildTankUpdatePayload(selectedTank, payload),
+        {
+          userId: user.uid,
+          tankId: selectedTank.id,
+          source: 'assign_equipment_catalog',
+        }
+      );
 
       await fetchTanks(user.uid, selectedTank.id);
       resetCustomEquipmentForm();
@@ -14753,15 +14014,22 @@ export default function HomeScreen() {
         );
         const customLampName = `${brand} ${model}`.trim();
 
-        await updateDoc(doc(db, 'tanks', selectedTank.id), {
-          ...buildTankRuleSanitizationPatch(selectedTank),
-          lightModelId: customId,
-          lightModelName: customLampName || 'Lampa inna',
-          lightLumens,
-          lightIntensity:
-            lightIntensity || normalizeLightIntensity(selectedTank?.lightIntensity) || 'low',
-          updatedAt: new Date(),
-        });
+        await updateDocWithTelemetry(
+          'tanks',
+          doc(db, 'tanks', selectedTank.id),
+          buildTankUpdatePayload(selectedTank, {
+            lightModelId: customId,
+            lightModelName: customLampName || 'Lampa inna',
+            lightLumens,
+            lightIntensity:
+              lightIntensity || normalizeLightIntensity(selectedTank?.lightIntensity) || 'low',
+          }),
+          {
+            userId: user.uid,
+            tankId: selectedTank.id,
+            source: 'assign_equipment_light_custom',
+          }
+        );
 
         await fetchTanks(user.uid, selectedTank.id);
         resetCustomEquipmentForm();
@@ -14832,12 +14100,19 @@ export default function HomeScreen() {
       const nextList = [...currentList, customEquipmentItem];
       const nextLegacyValue = nextList[0] ?? deleteField();
 
-      await updateDoc(doc(db, 'tanks', selectedTank.id), {
-        ...buildTankRuleSanitizationPatch(selectedTank),
-        [listField]: nextList,
-        [legacyField]: nextLegacyValue,
-        updatedAt: new Date(),
-      });
+      await updateDocWithTelemetry(
+        'tanks',
+        doc(db, 'tanks', selectedTank.id),
+        buildTankUpdatePayload(selectedTank, {
+          [listField]: nextList,
+          [legacyField]: nextLegacyValue,
+        }),
+        {
+          userId: user.uid,
+          tankId: selectedTank.id,
+          source: 'assign_equipment_custom',
+        }
+      );
 
       await fetchTanks(user.uid, selectedTank.id);
       resetCustomEquipmentForm();
@@ -14895,12 +14170,19 @@ export default function HomeScreen() {
 
     setEquipmentSavingBusy(true);
     try {
-      await updateDoc(doc(db, 'tanks', selectedTank.id), {
-        ...buildTankRuleSanitizationPatch(selectedTank),
-        [listField]: nextList,
-        [legacyField]: nextLegacyValue,
-        updatedAt: new Date(),
-      });
+      await updateDocWithTelemetry(
+        'tanks',
+        doc(db, 'tanks', selectedTank.id),
+        buildTankUpdatePayload(selectedTank, {
+          [listField]: nextList,
+          [legacyField]: nextLegacyValue,
+        }),
+        {
+          userId: user.uid,
+          tankId: selectedTank.id,
+          source: 'remove_tank_equipment',
+        }
+      );
       await fetchTanks(user.uid, selectedTank.id);
     } catch (error) {
       alert(
@@ -14924,14 +14206,21 @@ export default function HomeScreen() {
 
     setEquipmentSavingBusy(true);
     try {
-      await updateDoc(doc(db, 'tanks', selectedTank.id), {
-        ...buildTankRuleSanitizationPatch(selectedTank),
-        lightModelId: deleteField(),
-        lightModelName: deleteField(),
-        lightLumens: deleteField(),
-        lightIntensity: 'low',
-        updatedAt: new Date(),
-      });
+      await updateDocWithTelemetry(
+        'tanks',
+        doc(db, 'tanks', selectedTank.id),
+        buildTankUpdatePayload(selectedTank, {
+          lightModelId: deleteField(),
+          lightModelName: deleteField(),
+          lightLumens: deleteField(),
+          lightIntensity: 'low',
+        }),
+        {
+          userId: user.uid,
+          tankId: selectedTank.id,
+          source: 'clear_tank_light_equipment',
+        }
+      );
       await fetchTanks(user.uid, selectedTank.id);
     } catch (error) {
       alert(
@@ -14968,11 +14257,16 @@ export default function HomeScreen() {
 
     setEquipmentSavingBusy(true);
     try {
-      await updateDoc(doc(db, 'tanks', selectedTank.id), {
-        ...buildTankRuleSanitizationPatch(selectedTank),
-        lightHours,
-        updatedAt: new Date(),
-      });
+      await updateDocWithTelemetry(
+        'tanks',
+        doc(db, 'tanks', selectedTank.id),
+        buildTankUpdatePayload(selectedTank, { lightHours }),
+        {
+          userId: user.uid,
+          tankId: selectedTank.id,
+          source: 'save_tank_light_hours',
+        }
+      );
       await fetchTanks(user.uid, selectedTank.id);
       setEquipmentLightHoursDraft(String(lightHours));
     } catch (error) {
@@ -15051,11 +14345,18 @@ export default function HomeScreen() {
 
     setPlantFertilizationBusy(true);
     try {
-      await updateDoc(doc(db, 'tanks', selectedTank.id), {
-        ...buildTankRuleSanitizationPatch(selectedTank),
-        plantFertilizationEntries: nextEntries,
-        updatedAt: new Date(),
-      });
+      await updateDocWithTelemetry(
+        'tanks',
+        doc(db, 'tanks', selectedTank.id),
+        buildTankUpdatePayload(selectedTank, {
+          plantFertilizationEntries: nextEntries,
+        }),
+        {
+          userId: user.uid,
+          tankId: selectedTank.id,
+          source: 'add_plant_fertilization_entry',
+        }
+      );
 
       await Promise.all([
         fetchTanks(user.uid, selectedTank.id),
@@ -15168,11 +14469,18 @@ export default function HomeScreen() {
 
     setPlantFertilizationBusy(true);
     try {
-      await updateDoc(doc(db, 'tanks', selectedTank.id), {
-        ...buildTankRuleSanitizationPatch(selectedTank),
-        plantFertilizationEntries: nextEntries,
-        updatedAt: new Date(),
-      });
+      await updateDocWithTelemetry(
+        'tanks',
+        doc(db, 'tanks', selectedTank.id),
+        buildTankUpdatePayload(selectedTank, {
+          plantFertilizationEntries: nextEntries,
+        }),
+        {
+          userId: user.uid,
+          tankId: selectedTank.id,
+          source: 'edit_plant_fertilization_entry',
+        }
+      );
 
       await Promise.all([
         fetchTanks(user.uid, selectedTank.id),
@@ -15205,11 +14513,18 @@ export default function HomeScreen() {
 
     setPlantFertilizationBusy(true);
     try {
-      await updateDoc(doc(db, 'tanks', selectedTank.id), {
-        ...buildTankRuleSanitizationPatch(selectedTank),
-        plantFertilizationEntries: nextEntries,
-        updatedAt: new Date(),
-      });
+      await updateDocWithTelemetry(
+        'tanks',
+        doc(db, 'tanks', selectedTank.id),
+        buildTankUpdatePayload(selectedTank, {
+          plantFertilizationEntries: nextEntries,
+        }),
+        {
+          userId: user.uid,
+          tankId: selectedTank.id,
+          source: 'delete_plant_fertilization_entry',
+        }
+      );
 
       await Promise.all([
         fetchTanks(user.uid, selectedTank.id),
@@ -15434,16 +14749,52 @@ export default function HomeScreen() {
           updatedAt: now,
         };
 
+        const fullUpdateValidation = validateTankModelRuntime(fullUpdatePayload);
+        if (!fullUpdateValidation.ok) {
+          console.warn(
+            '[tankModel] fullUpdatePayload validation issues:',
+            fullUpdateValidation.issues
+          );
+        }
+        const compatibilityValidation = validateTankModelRuntime(
+          compatibilityUpdatePayload
+        );
+        if (!compatibilityValidation.ok) {
+          console.warn(
+            '[tankModel] compatibilityUpdatePayload validation issues:',
+            compatibilityValidation.issues
+          );
+        }
+
         try {
-          await updateDoc(doc(db, 'tanks', editingTankId), fullUpdatePayload);
+          await updateDocWithTelemetry(
+            'tanks',
+            doc(db, 'tanks', editingTankId),
+            buildTankUpdatePayload(selectedTank, fullUpdatePayload, {
+              includeUpdatedAt: false,
+            }),
+            {
+              userId: user.uid,
+              tankId: editingTankId,
+              source: 'save_tank_full_update',
+            }
+          );
         } catch (error) {
           if (!isFirestorePermissionDeniedError(error)) {
             throw error;
           }
 
-          await updateDoc(
+          await updateDocWithTelemetry(
+            'tanks',
             doc(db, 'tanks', editingTankId),
-            compatibilityUpdatePayload
+            buildTankUpdatePayload(selectedTank, compatibilityUpdatePayload, {
+              includeUpdatedAt: false,
+            }),
+            {
+              userId: user.uid,
+              tankId: editingTankId,
+              source: 'save_tank_compatibility_update',
+            }
           );
           savedInCompatibilityMode = true;
         }
@@ -15484,15 +14835,43 @@ export default function HomeScreen() {
           createdAt: now,
         };
 
+        const normalizedFullCreatePayload = normalizeTankRuntime(fullCreatePayload);
+        const normalizedLegacyCreatePayload = normalizeTankRuntime(legacyCreatePayload);
+        const createPayloadValidation = validateTankModelRuntime(
+          normalizedFullCreatePayload
+        );
+        if (!createPayloadValidation.ok) {
+          console.warn(
+            '[tankModel] fullCreatePayload validation issues:',
+            createPayloadValidation.issues
+          );
+        }
+
         let tankDoc = null;
         try {
-          tankDoc = await addDoc(collection(db, 'tanks'), fullCreatePayload);
+          tankDoc = await addDocWithTelemetry(
+            'tanks',
+            collection(db, 'tanks'),
+            normalizedFullCreatePayload,
+            {
+              userId: user.uid,
+              source: 'create_tank_full',
+            }
+          );
         } catch (error) {
           if (!isFirestorePermissionDeniedError(error)) {
             throw error;
           }
 
-          tankDoc = await addDoc(collection(db, 'tanks'), legacyCreatePayload);
+          tankDoc = await addDocWithTelemetry(
+            'tanks',
+            collection(db, 'tanks'),
+            normalizedLegacyCreatePayload,
+            {
+              userId: user.uid,
+              source: 'create_tank_compatibility',
+            }
+          );
           savedInCompatibilityMode = true;
         }
 
@@ -15853,8 +15232,28 @@ export default function HomeScreen() {
       }
 
       if (payload.type === 'fish' && payload.fishProfile) {
+        const stockPayload = buildStockItemWritePayload(payload, {
+          mode: 'create',
+          includeCreatedAtIfMissing: true,
+          includeUpdatedAt: false,
+        });
+        const stockValidation = validateStockItemModelRuntime(stockPayload);
+        if (!stockValidation.ok) {
+          throw new Error(
+            `Nieprawidlowy payload obsady (fish): ${stockValidation.issues.join(', ')}`
+          );
+        }
         try {
-          await addDoc(collection(db, 'stockItems'), payload);
+          await addDocWithTelemetry(
+            'stockItems',
+            collection(db, 'stockItems'),
+            stockPayload,
+            {
+              userId: user.uid,
+              tankId: selectedTank.id,
+              source: 'add_stock_item_fish',
+            }
+          );
         } catch (error) {
           if (!isFirestorePermissionDeniedError(error)) {
             throw error;
@@ -15863,14 +15262,75 @@ export default function HomeScreen() {
           const legacyPayload = { ...payload };
           delete legacyPayload.fishProfile;
           delete legacyPayload.source;
-          await addDoc(collection(db, 'stockItems'), legacyPayload);
+          const legacyStockPayload = buildStockItemWritePayload(legacyPayload, {
+            mode: 'create',
+            includeCreatedAtIfMissing: true,
+            includeUpdatedAt: false,
+          });
+          const legacyValidation = validateStockItemModelRuntime(legacyStockPayload);
+          if (!legacyValidation.ok) {
+            throw new Error(
+              `Nieprawidlowy payload obsady (fish-legacy): ${legacyValidation.issues.join(', ')}`
+            );
+          }
+          await addDocWithTelemetry(
+            'stockItems',
+            collection(db, 'stockItems'),
+            legacyStockPayload,
+            {
+              userId: user.uid,
+              tankId: selectedTank.id,
+              source: 'add_stock_item_fish_compatibility',
+            }
+          );
         }
       } else if (payload.type === 'plant') {
+        const normalizedPlantPayloads = plantPayloads.map((item) =>
+          buildStockItemWritePayload(item, {
+            mode: 'create',
+            includeCreatedAtIfMissing: true,
+            includeUpdatedAt: false,
+          })
+        );
+        normalizedPlantPayloads.forEach((item, index) => {
+          const validation = validateStockItemModelRuntime(item);
+          if (!validation.ok) {
+            throw new Error(
+              `Nieprawidlowy payload obsady (plant:${index}): ${validation.issues.join(', ')}`
+            );
+          }
+        });
         await Promise.all(
-          plantPayloads.map((item) => addDoc(collection(db, 'stockItems'), item))
+          normalizedPlantPayloads.map((item) =>
+            addDocWithTelemetry('stockItems', collection(db, 'stockItems'), item, {
+              userId: user.uid,
+              tankId: selectedTank.id,
+              source: 'add_stock_item_plant',
+            })
+          )
         );
       } else {
-        await addDoc(collection(db, 'stockItems'), payload);
+        const stockPayload = buildStockItemWritePayload(payload, {
+          mode: 'create',
+          includeCreatedAtIfMissing: true,
+          includeUpdatedAt: false,
+        });
+        const stockValidation = validateStockItemModelRuntime(stockPayload);
+        if (!stockValidation.ok) {
+          throw new Error(
+            `Nieprawidlowy payload obsady: ${stockValidation.issues.join(', ')}`
+          );
+        }
+        await addDocWithTelemetry(
+          'stockItems',
+          collection(db, 'stockItems'),
+          stockPayload,
+          {
+            userId: user.uid,
+            tankId: selectedTank.id,
+            source: 'add_stock_item_generic',
+          }
+        );
       }
 
       setStockFishSearch('');
@@ -15991,7 +15451,19 @@ export default function HomeScreen() {
       if (quantity === 0) {
         await deleteDoc(doc(db, 'stockItems', itemId));
       } else {
-        await updateDoc(doc(db, 'stockItems', itemId), { quantity });
+        await updateDocWithTelemetry(
+          'stockItems',
+          doc(db, 'stockItems', itemId),
+          buildStockItemWritePayload(
+            { quantity },
+            { mode: 'update', includeUpdatedAt: false }
+          ),
+          {
+            userId: user.uid,
+            tankId: selectedTank.id,
+            source: 'update_stock_item_fish_quantity',
+          }
+        );
       }
       await fetchStockItems(user.uid, selectedTank.id);
 
@@ -16233,13 +15705,24 @@ export default function HomeScreen() {
         measurement.co2 = co2Estimated;
       }
 
+      const normalizedMeasurement = normalizeMeasurementRuntime(measurement);
+      const measurementValidation = validateMeasurementModelRuntime(
+        normalizedMeasurement
+      );
+      if (!measurementValidation.ok) {
+        console.warn(
+          '[measurementModel] validation issues:',
+          measurementValidation.issues
+        );
+      }
+
       const baseAnalysis = analyzeMeasurementLogic(
-        measurement,
+        normalizedMeasurement,
         selectedTests,
         selectedTankWaterAnalysisOptions
       );
       const contextInsights = buildContextualEcosystemInsights({
-        measurement,
+        measurement: normalizedMeasurement,
         enabledTests: selectedTests,
         stockItems,
         tank: selectedTank,
@@ -16254,19 +15737,37 @@ export default function HomeScreen() {
       if (editingMeasurementId) {
         const currentMeasurementItem =
           measurements.find((item) => item.id === editingMeasurementId) ?? null;
-        await updateDoc(doc(db, 'measurements', editingMeasurementId), {
-          ...buildMeasurementRuleSanitizationPatch(currentMeasurementItem),
-          ...measurement,
-          updatedAt: new Date(),
-        });
+        await updateDocWithTelemetry(
+          'measurements',
+          doc(db, 'measurements', editingMeasurementId),
+          {
+            ...buildMeasurementRuleSanitizationPatch(currentMeasurementItem),
+            ...normalizedMeasurement,
+            updatedAt: new Date(),
+          },
+          {
+            userId: user.uid,
+            tankId: selectedTank.id,
+            source: 'save_measurement_update',
+          }
+        );
       } else {
-        await addDoc(collection(db, 'measurements'), {
-          userId: user.uid,
-          tankId: selectedTank.id,
-          tankName: selectedTank.name,
-          createdAt: new Date(),
-          ...measurement,
-        });
+        await addDocWithTelemetry(
+          'measurements',
+          collection(db, 'measurements'),
+          {
+            userId: user.uid,
+            tankId: selectedTank.id,
+            tankName: selectedTank.name,
+            createdAt: new Date(),
+            ...normalizedMeasurement,
+          },
+          {
+            userId: user.uid,
+            tankId: selectedTank.id,
+            source: 'save_measurement_create',
+          }
+        );
       }
 
       resetMeasurementDraft();
@@ -16434,11 +15935,18 @@ export default function HomeScreen() {
 
     setOnboardingTaskBusy(true);
     try {
-      await updateDoc(doc(db, 'tanks', selectedTank.id), {
-        ...buildTankRuleSanitizationPatch(selectedTank),
-        onboardingTaskChecks: nextChecks,
-        updatedAt: new Date(),
-      });
+      await updateDocWithTelemetry(
+        'tanks',
+        doc(db, 'tanks', selectedTank.id),
+        buildTankUpdatePayload(selectedTank, {
+          onboardingTaskChecks: nextChecks,
+        }),
+        {
+          userId: user.uid,
+          tankId: selectedTank.id,
+          source: 'toggle_onboarding_task_check',
+        }
+      );
 
       setTanks((prev) =>
         prev.map((tank) =>
@@ -16472,16 +15980,23 @@ export default function HomeScreen() {
     setOnboardingToggleBusy(true);
     try {
       const updatePayload = {
-        ...buildTankRuleSanitizationPatch(selectedTank),
         onboardingEnabled: nextEnabled,
-        updatedAt: new Date(),
       };
       if (nextEnabled && !selectedTank?.onboardingStartAt) {
         updatePayload.onboardingStartAt = new Date();
         updatePayload.onboardingTaskChecks = {};
       }
 
-      await updateDoc(doc(db, 'tanks', selectedTank.id), updatePayload);
+      await updateDocWithTelemetry(
+        'tanks',
+        doc(db, 'tanks', selectedTank.id),
+        buildTankUpdatePayload(selectedTank, updatePayload),
+        {
+          userId: user.uid,
+          tankId: selectedTank.id,
+          source: 'set_tank_onboarding_enabled',
+        }
+      );
 
       setTanks((prev) =>
         prev.map((tank) =>
@@ -16539,51 +16054,32 @@ export default function HomeScreen() {
       setMaintenanceActionBusyId(actionBusyId);
 
       try {
-        const nowDayBucketMs = getDayBucketMs(new Date());
-        const dayMs = 24 * 60 * 60 * 1000;
-        const sourceDueDayBucketMs =
-          Number.isFinite(Number(action?.sourceDueDayBucketMs)) &&
-          Number(action.sourceDueDayBucketMs) > 0
-            ? Number(action.sourceDueDayBucketMs)
-            : nowDayBucketMs;
-        const currentState = normalizeMaintenanceActionState(
-          selectedTank?.maintenanceActionState
+        const latestMeasurementDayBucketMs = getDayBucketMs(
+          getMeasurementRecordedAtMs(measurements?.[0])
         );
-        const currentEntry = currentState[actionStateKey] ?? {};
-        const nextEntry = {
-          ...currentEntry,
-          updatedAtMs: Date.now(),
-        };
-
-        if (mode === 'done') {
-          const latestMeasurementDayBucketMs = getDayBucketMs(
-            getMeasurementRecordedAtMs(measurements?.[0])
-          );
-          nextEntry.lastCompletedAtMs =
-            actionStateKey === 'water_tests'
-              ? Math.max(nowDayBucketMs, latestMeasurementDayBucketMs || 0)
-              : nowDayBucketMs;
-          nextEntry.postponedUntilMs = null;
-        } else if (mode === 'skip') {
-          nextEntry.lastSkippedAtMs = Math.max(nowDayBucketMs, sourceDueDayBucketMs);
-          nextEntry.postponedUntilMs = null;
-        } else if (mode === 'postpone') {
-          const baseDayBucketMs = Math.max(nowDayBucketMs, sourceDueDayBucketMs);
-          nextEntry.postponedUntilMs = baseDayBucketMs + dayMs;
-        } else {
+        const nextStatePayload = buildNextMaintenanceActionState({
+          currentState: selectedTank?.maintenanceActionState,
+          action,
+          mode,
+          latestMeasurementDayBucketMs,
+        });
+        if (!nextStatePayload) {
           return;
         }
+        const nextState = nextStatePayload.nextState;
 
-        const nextState = {
-          ...currentState,
-          [actionStateKey]: nextEntry,
-        };
-
-        await updateDoc(doc(db, 'tanks', selectedTank.id), {
-          ...buildTankRuleSanitizationPatch(selectedTank),
-          maintenanceActionState: nextState,
-          updatedAt: new Date(),
-        });
+        await updateDocWithTelemetry(
+          'tanks',
+          doc(db, 'tanks', selectedTank.id),
+          buildTankUpdatePayload(selectedTank, {
+            maintenanceActionState: nextState,
+          }),
+          {
+            userId: user.uid,
+            tankId: selectedTank.id,
+            source: 'update_maintenance_action_state',
+          }
+        );
 
         setTanks((prev) =>
           prev.map((tank) =>
@@ -16722,8 +16218,28 @@ export default function HomeScreen() {
         notes: String(selectedFish.notes ?? '').slice(0, 1000),
         createdAt: new Date(),
       };
+      const normalizedFishPayload = buildStockItemWritePayload(fishPayload, {
+        mode: 'create',
+        includeCreatedAtIfMissing: true,
+        includeUpdatedAt: false,
+      });
+      const fishPayloadValidation = validateStockItemModelRuntime(normalizedFishPayload);
+      if (!fishPayloadValidation.ok) {
+        throw new Error(
+          `Nieprawidlowy payload obsady (fish): ${fishPayloadValidation.issues.join(', ')}`
+        );
+      }
       try {
-        await addDoc(collection(db, 'stockItems'), fishPayload);
+        await addDocWithTelemetry(
+          'stockItems',
+          collection(db, 'stockItems'),
+          normalizedFishPayload,
+          {
+            userId: user.uid,
+            tankId: tank.id,
+            source: 'assign_catalog_fish_to_tank',
+          }
+        );
       } catch (error) {
         if (!isFirestorePermissionDeniedError(error)) {
           throw error;
@@ -16732,7 +16248,29 @@ export default function HomeScreen() {
         const legacyPayload = { ...fishPayload };
         delete legacyPayload.fishProfile;
         delete legacyPayload.source;
-        await addDoc(collection(db, 'stockItems'), legacyPayload);
+        const normalizedLegacyFishPayload = buildStockItemWritePayload(legacyPayload, {
+          mode: 'create',
+          includeCreatedAtIfMissing: true,
+          includeUpdatedAt: false,
+        });
+        const legacyPayloadValidation = validateStockItemModelRuntime(
+          normalizedLegacyFishPayload
+        );
+        if (!legacyPayloadValidation.ok) {
+          throw new Error(
+            `Nieprawidlowy payload obsady (fish-legacy): ${legacyPayloadValidation.issues.join(', ')}`
+          );
+        }
+        await addDocWithTelemetry(
+          'stockItems',
+          collection(db, 'stockItems'),
+          normalizedLegacyFishPayload,
+          {
+            userId: user.uid,
+            tankId: tank.id,
+            source: 'assign_catalog_fish_to_tank_compatibility',
+          }
+        );
       }
 
       if (selectedTank?.id === tank.id) {
@@ -16835,7 +16373,19 @@ export default function HomeScreen() {
       if (quantity === 0) {
         await deleteDoc(doc(db, 'stockItems', itemId));
       } else {
-        await updateDoc(doc(db, 'stockItems', itemId), { quantity });
+        await updateDocWithTelemetry(
+          'stockItems',
+          doc(db, 'stockItems', itemId),
+          buildStockItemWritePayload(
+            { quantity },
+            { mode: 'update', includeUpdatedAt: false }
+          ),
+          {
+            userId: user.uid,
+            tankId: selectedTank.id,
+            source: 'update_stock_item_plant_quantity',
+          }
+        );
       }
       await fetchStockItems(user.uid, selectedTank.id);
 
@@ -16873,47 +16423,70 @@ export default function HomeScreen() {
       const lightRequirements = getPlantLightRequirements(selectedPlant);
       const requirementsProfile = inferPlantRequirementProfile(selectedPlant);
 
-      await addDoc(collection(db, 'stockItems'), {
-        userId: user.uid,
-        tankId: tank.id,
-        tankName: tank.name,
-        type: 'plant',
-        name: selectedPlant.commonName,
-        commonName: selectedPlant.commonName,
-        latinName: selectedPlant.latinName,
-        catalogPlantId: selectedPlant.id,
-        phMin: Number(selectedPlant.phMin),
-        phMax: Number(selectedPlant.phMax),
-        ghMin: Number(selectedPlant.ghMin),
-        ghMax: Number(selectedPlant.ghMax),
-        tempMin: Number(selectedPlant.tempMin),
-        tempMax: Number(selectedPlant.tempMax),
-        quantity: 1,
-        minLiters,
-        lightLumenMinPerLiter: Number(lightRequirements.minLumensPerLiter),
-        lightLumenMaxPerLiter: Number(lightRequirements.maxLumensPerLiter),
-        lightHoursMin: Number.isFinite(Number(lightRequirements.minHours))
-          ? Number(lightRequirements.minHours)
-          : null,
-        lightHoursMax: Number.isFinite(Number(lightRequirements.maxHours))
-          ? Number(lightRequirements.maxHours)
-          : null,
-        lightDemand: requirementsProfile.lightDemand,
-        co2Demand: requirementsProfile.co2Demand,
-        growthRate: requirementsProfile.growthRate,
-        difficulty: requirementsProfile.difficulty,
-        fertilizationDemand: requirementsProfile.fertilizationDemand,
-        plantType: requirementsProfile.plantType,
-        placementZone: requirementsProfile.placementZone,
-        carboSensitivity: requirementsProfile.carboSensitivity,
-        parameterStabilitySensitivity:
-          requirementsProfile.parameterStabilitySensitivity,
-        minTankHeightCm: requirementsProfile.minTankHeightCm,
-        minTankVolumeL: requirementsProfile.minTankVolumeL,
-        compatibleWithDiggers: requirementsProfile.compatibleWithDiggers,
-        notes: selectedPlant.notes ?? '',
-        createdAt: new Date(),
-      });
+      const plantPayload = buildStockItemWritePayload(
+        {
+          userId: user.uid,
+          tankId: tank.id,
+          tankName: tank.name,
+          type: 'plant',
+          name: selectedPlant.commonName,
+          commonName: selectedPlant.commonName,
+          latinName: selectedPlant.latinName,
+          catalogPlantId: selectedPlant.id,
+          phMin: Number(selectedPlant.phMin),
+          phMax: Number(selectedPlant.phMax),
+          ghMin: Number(selectedPlant.ghMin),
+          ghMax: Number(selectedPlant.ghMax),
+          tempMin: Number(selectedPlant.tempMin),
+          tempMax: Number(selectedPlant.tempMax),
+          quantity: 1,
+          minLiters,
+          lightLumenMinPerLiter: Number(lightRequirements.minLumensPerLiter),
+          lightLumenMaxPerLiter: Number(lightRequirements.maxLumensPerLiter),
+          lightHoursMin: Number.isFinite(Number(lightRequirements.minHours))
+            ? Number(lightRequirements.minHours)
+            : null,
+          lightHoursMax: Number.isFinite(Number(lightRequirements.maxHours))
+            ? Number(lightRequirements.maxHours)
+            : null,
+          lightDemand: requirementsProfile.lightDemand,
+          co2Demand: requirementsProfile.co2Demand,
+          growthRate: requirementsProfile.growthRate,
+          difficulty: requirementsProfile.difficulty,
+          fertilizationDemand: requirementsProfile.fertilizationDemand,
+          plantType: requirementsProfile.plantType,
+          placementZone: requirementsProfile.placementZone,
+          carboSensitivity: requirementsProfile.carboSensitivity,
+          parameterStabilitySensitivity:
+            requirementsProfile.parameterStabilitySensitivity,
+          minTankHeightCm: requirementsProfile.minTankHeightCm,
+          minTankVolumeL: requirementsProfile.minTankVolumeL,
+          compatibleWithDiggers: requirementsProfile.compatibleWithDiggers,
+          notes: selectedPlant.notes ?? '',
+          createdAt: new Date(),
+        },
+        {
+          mode: 'create',
+          includeCreatedAtIfMissing: true,
+          includeUpdatedAt: false,
+        }
+      );
+      const plantPayloadValidation = validateStockItemModelRuntime(plantPayload);
+      if (!plantPayloadValidation.ok) {
+        throw new Error(
+          `Nieprawidlowy payload obsady (plant): ${plantPayloadValidation.issues.join(', ')}`
+        );
+      }
+      await addDocWithTelemetry(
+        'stockItems',
+        collection(db, 'stockItems'),
+        plantPayload,
+        {
+          userId: user.uid,
+          tankId: tank.id,
+          source: 'assign_catalog_plant_to_tank',
+        }
+      );
 
       if (selectedTank?.id === tank.id) {
         await fetchStockItems(user.uid, tank.id);
@@ -17042,26 +16615,51 @@ export default function HomeScreen() {
           return review;
         })();
 
-      await addDoc(collection(db, 'tankDiseaseCases'), {
-        userId: user.uid,
-        tankId: tank.id,
-        tankName: tank.name,
-        caseType: 'disease',
-        issueId: disease.id,
-        issueName: disease.name,
-        diseaseId: disease.id,
-        diseaseName: disease.name,
-        severity: disease.severity,
-        diseaseSummary: `${disease.summary}${confidenceSuffix}`.slice(0, 3000),
-        causes: probableCauses.slice(0, 30),
-        caution: disease.caution,
-        treatmentPlan,
-        schedule,
-        status: 'active',
-        createdAt: new Date(),
-        startedAt: new Date(),
-        nextReviewAt,
-      });
+      const diseaseCasePayload = buildTankDiseaseCaseWritePayload(
+        {
+          userId: user.uid,
+          tankId: tank.id,
+          tankName: tank.name,
+          caseType: 'disease',
+          issueId: disease.id,
+          issueName: disease.name,
+          diseaseId: disease.id,
+          diseaseName: disease.name,
+          severity: disease.severity,
+          diseaseSummary: `${disease.summary}${confidenceSuffix}`.slice(0, 3000),
+          causes: probableCauses.slice(0, 30),
+          caution: disease.caution,
+          treatmentPlan,
+          schedule,
+          status: 'active',
+          createdAt: new Date(),
+          startedAt: new Date(),
+          nextReviewAt,
+        },
+        {
+          mode: 'create',
+          includeCreatedAtIfMissing: true,
+          includeUpdatedAt: false,
+        }
+      );
+      const diseaseCaseValidation = validateTankDiseaseCaseModelRuntime(
+        diseaseCasePayload
+      );
+      if (!diseaseCaseValidation.ok) {
+        throw new Error(
+          `Nieprawidlowy payload przypadku choroby: ${diseaseCaseValidation.issues.join(', ')}`
+        );
+      }
+      await addDocWithTelemetry(
+        'tankDiseaseCases',
+        collection(db, 'tankDiseaseCases'),
+        diseaseCasePayload,
+        {
+          userId: user.uid,
+          tankId: tank.id,
+          source: 'assign_disease_to_tank',
+        }
+      );
 
       if (selectedTank?.id === tank.id) {
         await fetchTankDiseaseCases(user.uid, tank.id);
@@ -17110,26 +16708,51 @@ export default function HomeScreen() {
           return review;
         })();
 
-      await addDoc(collection(db, 'tankDiseaseCases'), {
-        userId: user.uid,
-        tankId: tank.id,
-        tankName: tank.name,
-        caseType: 'plant_disease',
-        issueId: disease.id,
-        issueName: disease.name,
-        diseaseId: disease.id,
-        diseaseName: disease.name,
-        severity: disease.severity,
-        diseaseSummary: `${disease.summary}${confidenceSuffix}`.slice(0, 3000),
-        causes: probableCauses.slice(0, 30),
-        caution: disease.caution,
-        treatmentPlan,
-        schedule,
-        status: 'active',
-        createdAt: new Date(),
-        startedAt: new Date(),
-        nextReviewAt,
-      });
+      const plantDiseaseCasePayload = buildTankDiseaseCaseWritePayload(
+        {
+          userId: user.uid,
+          tankId: tank.id,
+          tankName: tank.name,
+          caseType: 'plant_disease',
+          issueId: disease.id,
+          issueName: disease.name,
+          diseaseId: disease.id,
+          diseaseName: disease.name,
+          severity: disease.severity,
+          diseaseSummary: `${disease.summary}${confidenceSuffix}`.slice(0, 3000),
+          causes: probableCauses.slice(0, 30),
+          caution: disease.caution,
+          treatmentPlan,
+          schedule,
+          status: 'active',
+          createdAt: new Date(),
+          startedAt: new Date(),
+          nextReviewAt,
+        },
+        {
+          mode: 'create',
+          includeCreatedAtIfMissing: true,
+          includeUpdatedAt: false,
+        }
+      );
+      const plantDiseaseCaseValidation = validateTankDiseaseCaseModelRuntime(
+        plantDiseaseCasePayload
+      );
+      if (!plantDiseaseCaseValidation.ok) {
+        throw new Error(
+          `Nieprawidlowy payload przypadku choroby roslin: ${plantDiseaseCaseValidation.issues.join(', ')}`
+        );
+      }
+      await addDocWithTelemetry(
+        'tankDiseaseCases',
+        collection(db, 'tankDiseaseCases'),
+        plantDiseaseCasePayload,
+        {
+          userId: user.uid,
+          tankId: tank.id,
+          source: 'assign_plant_disease_to_tank',
+        }
+      );
 
       if (selectedTank?.id === tank.id) {
         await fetchTankDiseaseCases(user.uid, tank.id);
@@ -17183,26 +16806,49 @@ export default function HomeScreen() {
           return review;
         })();
 
-      await addDoc(collection(db, 'tankDiseaseCases'), {
-        userId: user.uid,
-        tankId: tank.id,
-        tankName: tank.name,
-        caseType: 'algae',
-        issueId: algae.id,
-        issueName: algae.name,
-        diseaseId: algae.id,
-        diseaseName: algae.name,
-        severity: algae.severity,
-        diseaseSummary: `${algae.summary}${confidenceSuffix}`.slice(0, 3000),
-        causes: probableCauses.slice(0, 30),
-        caution: algae.caution,
-        treatmentPlan,
-        schedule,
-        status: 'active',
-        createdAt: new Date(),
-        startedAt: new Date(),
-        nextReviewAt,
-      });
+      const algaeCasePayload = buildTankDiseaseCaseWritePayload(
+        {
+          userId: user.uid,
+          tankId: tank.id,
+          tankName: tank.name,
+          caseType: 'algae',
+          issueId: algae.id,
+          issueName: algae.name,
+          diseaseId: algae.id,
+          diseaseName: algae.name,
+          severity: algae.severity,
+          diseaseSummary: `${algae.summary}${confidenceSuffix}`.slice(0, 3000),
+          causes: probableCauses.slice(0, 30),
+          caution: algae.caution,
+          treatmentPlan,
+          schedule,
+          status: 'active',
+          createdAt: new Date(),
+          startedAt: new Date(),
+          nextReviewAt,
+        },
+        {
+          mode: 'create',
+          includeCreatedAtIfMissing: true,
+          includeUpdatedAt: false,
+        }
+      );
+      const algaeCaseValidation = validateTankDiseaseCaseModelRuntime(algaeCasePayload);
+      if (!algaeCaseValidation.ok) {
+        throw new Error(
+          `Nieprawidlowy payload przypadku glonow: ${algaeCaseValidation.issues.join(', ')}`
+        );
+      }
+      await addDocWithTelemetry(
+        'tankDiseaseCases',
+        collection(db, 'tankDiseaseCases'),
+        algaeCasePayload,
+        {
+          userId: user.uid,
+          tankId: tank.id,
+          source: 'assign_algae_to_tank',
+        }
+      );
 
       if (selectedTank?.id === tank.id) {
         await fetchTankDiseaseCases(user.uid, tank.id);
@@ -17630,11 +17276,27 @@ export default function HomeScreen() {
             setDiseaseCaseBusy(true);
 
             try {
-              await updateDoc(doc(db, 'tankDiseaseCases', caseItem.id), {
-                status: nextStatus,
-                closedAt: new Date(),
-                closedReason: nextStatus,
-              });
+              await updateDocWithTelemetry(
+                'tankDiseaseCases',
+                doc(db, 'tankDiseaseCases', caseItem.id),
+                buildTankDiseaseCaseWritePayload(
+                  {
+                    status: nextStatus,
+                    closedAt: new Date(),
+                    closedReason: nextStatus,
+                  },
+                  {
+                    currentCase: caseItem,
+                    mode: 'update',
+                    includeUpdatedAt: false,
+                  }
+                ),
+                {
+                  userId: user.uid,
+                  tankId: selectedTank.id,
+                  source: 'close_tank_issue_case',
+                }
+              );
               await fetchTankDiseaseCases(user.uid, selectedTank.id);
               await fetchHomeData(user.uid);
               if (isAlgaeCase) {
@@ -17994,209 +17656,24 @@ export default function HomeScreen() {
     () => normalizeOnboardingTaskChecks(selectedTank?.onboardingTaskChecks),
     [selectedTank]
   );
-  const visibleOnboardingRows = useMemo(
-    () =>
-      tankOnboardingPlan.rows.filter(
-        (row) =>
-          row.status !== 'upcoming' &&
-          !Boolean(selectedTankOnboardingTaskChecks[row.id])
-      ),
-    [selectedTankOnboardingTaskChecks, tankOnboardingPlan.rows]
-  );
-  const completedOnboardingRows = useMemo(
-    () =>
-      tankOnboardingPlan.rows.filter((row) =>
-        Boolean(selectedTankOnboardingTaskChecks[row.id])
-      ),
-    [selectedTankOnboardingTaskChecks, tankOnboardingPlan.rows]
-  );
-  const enabledHistoryChartParameters = useMemo(() => {
-    const enabledTestsMap = availableMeasurementTests;
-    return HISTORY_CHART_PARAMETERS.filter((item) => {
-      const hasAccess =
-        item.key === 'co2'
-          ? Boolean(enabledTestsMap.ph && enabledTestsMap.kh)
-          : Boolean(enabledTestsMap[item.key]);
-
-      if (!hasAccess) {
-        return false;
-      }
-
-      const hasData = measurements.some((measurementItem) => {
-        const value = getMeasurementNumericValue(measurementItem, item.key);
-        return Number.isFinite(value);
-      });
-
-      if (!hasData) {
-        return false;
-      }
-
-      if (item.key === 'co2') {
-        return true;
-      }
-      return true;
-    });
-  }, [availableMeasurementTests, measurements]);
-  useEffect(() => {
-    if (enabledHistoryChartParameters.length === 0) {
-      return;
-    }
-
-    const hasSelected = enabledHistoryChartParameters.some(
-      (item) => item.key === selectedHistoryChartParameter
-    );
-
-    if (!hasSelected) {
-      setSelectedHistoryChartParameter(enabledHistoryChartParameters[0].key);
-    }
-  }, [enabledHistoryChartParameters, selectedHistoryChartParameter]);
-  const selectedHistoryChartMeta = useMemo(
-    () =>
-      enabledHistoryChartParameters.find(
-        (item) => item.key === selectedHistoryChartParameter
-      ) ?? enabledHistoryChartParameters[0] ?? HISTORY_CHART_PARAMETERS[0],
-    [enabledHistoryChartParameters, selectedHistoryChartParameter]
-  );
-  const historyChartData = useMemo(() => {
-    const historyChartTopPadding = 8;
-    const historyChartBottomPadding = 24;
-    const historyChartAreaHeight = 136;
-
-    if (!isHistorySection) {
-      return {
-        series: [],
-        latestValue: null,
-        latestColor: getHistoryChartColorByStatus('neutral'),
-        rawMin: 0,
-        rawMax: 0,
-        displayMin: 0,
-        displayMax: 1,
-        points: [],
-        segments: [],
-        hasLine: false,
-        firstDateMs: 0,
-        lastDateMs: 0,
-        topPadding: historyChartTopPadding,
-        bottomPadding: historyChartBottomPadding,
-        areaHeight: historyChartAreaHeight,
-      };
-    }
-
-    const series = measurements
-      .map((item) => {
-        const measuredAtMs = getMeasurementRecordedAtMs(item);
-        const value = getMeasurementNumericValue(item, selectedHistoryChartMeta.key);
-
-        return {
-          id: item.id,
-          measuredAtMs,
-          value,
-        };
-      })
-      .filter((item) => Number.isFinite(item.value) && item.measuredAtMs > 0)
-      .sort((a, b) => a.measuredAtMs - b.measuredAtMs);
-
-    const historyChartValues = series.map((item) => item.value);
-    const latestValue =
-      historyChartValues.length > 0
-        ? historyChartValues[historyChartValues.length - 1]
-        : null;
-    const latestStatus = getHistoryChartValueStatus(
-      selectedHistoryChartMeta.key,
-      latestValue,
-      selectedTankTargetRanges
-    );
-    const isNonNegativeParameter =
-      selectedHistoryChartMeta.key !== 'ph' &&
-      selectedHistoryChartMeta.key !== 'temperature';
-    const rawHistoryChartMin =
-      historyChartValues.length > 0 ? Math.min(...historyChartValues) : 0;
-    const rawHistoryChartMax =
-      historyChartValues.length > 0 ? Math.max(...historyChartValues) : 0;
-    const baseHistoryChartSpan = Math.max(
-      rawHistoryChartMax - rawHistoryChartMin,
-      0
-    );
-    const historyChartPadding =
-      baseHistoryChartSpan > 0
-        ? baseHistoryChartSpan * 0.15
-        : Math.max(Math.abs(rawHistoryChartMax) * 0.1, 1);
-    const displayMin = isNonNegativeParameter
-      ? Math.max(0, rawHistoryChartMin - historyChartPadding)
-      : rawHistoryChartMin - historyChartPadding;
-    const displayMax = rawHistoryChartMax + historyChartPadding;
-    const historyChartRange =
-      displayMax - displayMin > 0 ? displayMax - displayMin : 1;
-    const chartWidthSafe = Math.max(historyChartWidth - 2, 1);
-    const points = series.map((item, index) => {
-      const x =
-        series.length <= 1
-          ? chartWidthSafe / 2
-          : (index / (series.length - 1)) * chartWidthSafe;
-      const normalized = (item.value - displayMin) / historyChartRange;
-      const clamped = Math.min(1, Math.max(0, normalized));
-      const y = historyChartTopPadding + (1 - clamped) * historyChartAreaHeight;
-      const status = getHistoryChartValueStatus(
-        selectedHistoryChartMeta.key,
-        item.value,
-        selectedTankTargetRanges
-      );
-
-      return {
-        ...item,
-        x,
-        y,
-        status,
-        color: getHistoryChartColorByStatus(status),
-      };
-    });
-    const segments = points.slice(1).map((point, index) => {
-      const prev = points[index];
-      const dx = point.x - prev.x;
-      const dy = point.y - prev.y;
-      const width = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
-      const angle = (Math.atan2(dy, dx) * 180) / Math.PI;
-
-      const segmentStatus =
-        getHistoryChartStatusRank(prev.status) >=
-        getHistoryChartStatusRank(point.status)
-          ? prev.status
-          : point.status;
-
-      return {
-        id: `${prev.id}-${point.id}`,
-        width,
-        angle,
-        left: (prev.x + point.x) / 2 - width / 2,
-        top: (prev.y + point.y) / 2,
-        color: getHistoryChartColorByStatus(segmentStatus),
-      };
-    });
-
-    return {
-      series,
-      latestValue,
-      latestColor: getHistoryChartColorByStatus(latestStatus),
-      rawMin: rawHistoryChartMin,
-      rawMax: rawHistoryChartMax,
-      displayMin,
-      displayMax,
-      points,
-      segments,
-      hasLine: points.length >= 2 && historyChartWidth > 10,
-      firstDateMs: series[0]?.measuredAtMs ?? 0,
-      lastDateMs: series[series.length - 1]?.measuredAtMs ?? 0,
-      topPadding: historyChartTopPadding,
-      bottomPadding: historyChartBottomPadding,
-      areaHeight: historyChartAreaHeight,
-    };
-  }, [
+  const {
+    enabledHistoryChartParameters,
+    selectedHistoryChartMeta,
+    historyChartData,
+    historyChartAverageValue,
+    historyChartDeltaValue,
+  } = useHistorySectionChart({
+    availableMeasurementTests,
+    measurements,
+    selectedHistoryChartParameter,
+    setSelectedHistoryChartParameter,
     historyChartWidth,
     isHistorySection,
-    measurements,
-    selectedHistoryChartMeta,
     selectedTankTargetRanges,
-  ]);
+    historyChartParameters: HISTORY_CHART_PARAMETERS,
+    getMeasurementNumericValue,
+    getMeasurementRecordedAtMs,
+  });
   const historyChartSeries = historyChartData.series;
   const historyChartLatestValue = historyChartData.latestValue;
   const historyChartLatestColor = historyChartData.latestColor;
@@ -18212,24 +17689,6 @@ export default function HomeScreen() {
   const historyChartTopPadding = historyChartData.topPadding;
   const historyChartBottomPadding = historyChartData.bottomPadding;
   const historyChartAreaHeight = historyChartData.areaHeight;
-  const historyChartAverageValue = useMemo(() => {
-    if (historyChartSeries.length === 0) {
-      return null;
-    }
-
-    const sum = historyChartSeries.reduce((acc, item) => acc + item.value, 0);
-    return sum / historyChartSeries.length;
-  }, [historyChartSeries]);
-  const historyChartDeltaValue = useMemo(() => {
-    if (historyChartSeries.length < 2) {
-      return null;
-    }
-
-    return (
-      historyChartSeries[historyChartSeries.length - 1].value -
-      historyChartSeries[0].value
-    );
-  }, [historyChartSeries]);
   const selectedDiseaseSymptomIds = useMemo(
     () =>
       DISEASE_SYMPTOMS.filter((item) => selectedDiseaseSymptoms[item.id]).map(
@@ -18680,26 +18139,6 @@ export default function HomeScreen() {
     selectedTankLiters,
     stockItems,
   ]);
-  const fishCompatibilityResults = useMemo(
-    () =>
-      stockItems
-        .filter((item) => item.type === 'fish')
-        .map((item) => {
-          const issues = checkFishCompatibility(
-            item,
-            currentMeasurement,
-            selectedTankLiters,
-            selectedTankEnvironmentProfile
-          );
-
-          return {
-            id: item.id,
-            label: `${item.commonName ?? item.name} (${item.latinName ?? t('noDataCaps')})`,
-            issues,
-          };
-        }),
-    [currentMeasurement, selectedTankEnvironmentProfile, selectedTankLiters, stockItems, t]
-  );
   const fishCatalogById = useMemo(
     () => new Map(fishCatalog.map((item) => [item.id, item])),
     [fishCatalog]
@@ -19253,33 +18692,6 @@ export default function HomeScreen() {
     };
   }, [isEditingFish]);
   useEffect(() => {
-    if (!isEditingFish || !selectedCatalogFishId) {
-      return;
-    }
-
-    const selectedStillVisible = filteredFishCatalog.some(
-      (item) => item.id === selectedCatalogFishId
-    );
-
-    if (!selectedStillVisible) {
-      setSelectedCatalogFishId(null);
-    }
-  }, [filteredFishCatalog, isEditingFish, selectedCatalogFishId]);
-  useEffect(() => {
-    if (!isEditingPlant || selectedCatalogPlantIds.length === 0) {
-      return;
-    }
-
-    const availableIds = new Set(plantCatalog.map((item) => item.id));
-    const nextSelectedIds = selectedCatalogPlantIds.filter((plantId) =>
-      availableIds.has(plantId)
-    );
-
-    if (nextSelectedIds.length !== selectedCatalogPlantIds.length) {
-      setSelectedCatalogPlantIds(nextSelectedIds);
-    }
-  }, [isEditingPlant, plantCatalog, selectedCatalogPlantIds]);
-  useEffect(() => {
     if (!ENABLE_FISH_IMAGES) {
       return;
     }
@@ -19346,402 +18758,50 @@ export default function HomeScreen() {
       Image.prefetch(uri).catch(() => null);
     });
   }, [getPlantPreviewImageUri, isEditingPlant, visibleFilteredPlantCatalog]);
-  const fishSchoolingWarnings = useMemo(
-    () =>
-      stockItems
-        .filter((item) => item.type === 'fish')
-        .map((item) => {
-          const catalogEntry =
-            (item.catalogFishId && fishCatalogById.get(item.catalogFishId)) ||
-            fishCatalogByLatinName.get(normalizeLatinCatalogKey(item.latinName));
-          const schoolingProfile = resolveFishSchoolingProfile({
-            ...(catalogEntry ?? {}),
-            ...item,
-          });
-          const quantity = getFishQuantity(item);
-
-          if (
-            !schoolingProfile.isSchooling ||
-            quantity >= schoolingProfile.minGroupSize
-          ) {
-            return null;
-          }
-
-          return {
-            id: item.id,
-            label: `${item.commonName ?? item.name} (${item.latinName ?? t('noDataCaps')})`,
-            quantity,
-            minGroupSize: schoolingProfile.minGroupSize,
-          };
-        })
-        .filter(Boolean),
-    [fishCatalogById, fishCatalogByLatinName, stockItems, t]
-  );
-  const stockingCompatibility = useMemo(
-    () =>
-      evaluateStockingCompatibility(
-        selectedTank ?? {},
-        stockItems,
-        currentMeasurement
-      ),
-    [currentMeasurement, selectedTank, stockItems]
-  );
-  const fishAggressionConflicts = useMemo(() => {
-    const dynamicConflicts = (stockingCompatibility?.conflicts ?? [])
-      .filter((item) =>
-        ['aggression', 'territoriality', 'predation', 'finNipping'].includes(
-          String(item?.category ?? '')
-        )
-      )
-      .map((item, index) => ({
-        id: String(item?.id ?? `stocking-conflict-${index}`),
-        firstFish: item?.firstFish ?? null,
-        secondFish: item?.secondFish ?? null,
-        score: item?.severity === 'critical' ? 28 : 52,
-        level: item?.severity === 'critical' ? 'incompatible' : 'risky',
-        label: item?.severity === 'critical' ? 'niezgodne' : 'ryzykowne',
-        reasons: [String(item?.message ?? '').trim()].filter(Boolean),
-        category: item?.category ?? 'aggression',
-      }))
-      .filter((entry) => entry?.firstFish && entry?.secondFish);
-
-    if (dynamicConflicts.length > 0) {
-      return dynamicConflicts;
-    }
-
-    const fishItems = stockItems.filter((item) => item.type === 'fish');
-    const fallbackConflicts = [];
-    for (let index = 0; index < fishItems.length; index += 1) {
-      const currentFish = fishItems[index];
-      for (let compareIndex = index + 1; compareIndex < fishItems.length; compareIndex += 1) {
-        const comparedFish = fishItems[compareIndex];
-        const conflict = getFishAggressionConflict(
-          currentFish,
-          comparedFish,
-          selectedTankLiters
-        );
-        if (conflict) {
-          fallbackConflicts.push({
-            id: `${currentFish.id}-${comparedFish.id}`,
-            firstFish: currentFish,
-            secondFish: comparedFish,
-            ...conflict,
-          });
-        }
-      }
-    }
-    return fallbackConflicts;
-  }, [selectedTankLiters, stockItems, stockingCompatibility]);
-  const fishIssueDetails = useMemo(
-    () => [
-      ...(stockingCompatibility?.warnings ?? []).map(
-        (item) => `Ocena obsady: ${item}`
-      ),
-      ...fishCompatibilityResults.flatMap((item) =>
-        item.issues.map((issue) => `${item.label}: ${issue}`)
-      ),
-      ...fishSchoolingWarnings.map(
-        (item) =>
-          `${item.label}: ${t('schoolingFishSummaryWarning', {
-            min: item.minGroupSize,
-            current: item.quantity,
-          })}`
-      ),
-      ...fishAggressionConflicts.map((item) =>
-        [
-          t('fishAggressionPairWarning', {
-            first:
-              item.firstFish.commonName ??
-              item.firstFish.name ??
-              item.firstFish.latinName,
-            second:
-              item.secondFish.commonName ??
-              item.secondFish.name ??
-              item.secondFish.latinName,
-          }),
-          item.label
-            ? `Ocena: ${item.label}.`
-            : null,
-          Array.isArray(item.reasons) && item.reasons.length > 0
-            ? `Powody: ${item.reasons.slice(0, 2).join(' ')}`
-            : null,
-        ]
-          .filter(Boolean)
-          .join(' ')
-      ),
-    ],
-    [
-      fishAggressionConflicts,
-      fishCompatibilityResults,
-      fishSchoolingWarnings,
-      stockingCompatibility,
-      t,
-    ]
-  );
-  const hasFishCompatibilityIssues = fishIssueDetails.length > 0;
-  const fishWarningsByItemId = useMemo(() => {
-    const warningsMap = new Map();
-    const appendWarning = (fishId, text, severity = 'warning') => {
-      if (!fishId || !text) {
-        return;
-      }
-
-      const current = warningsMap.get(fishId) ?? [];
-      current.push({
-        text,
-        severity,
-      });
-      warningsMap.set(fishId, current);
-    };
-
-    fishCompatibilityResults.forEach((item) => {
-      item.issues.forEach((issueText) => appendWarning(item.id, issueText, 'warning'));
-    });
-
-    fishSchoolingWarnings.forEach((item) => {
-      appendWarning(
-        item.id,
-        t('schoolingFishSummaryWarning', {
-          min: item.minGroupSize,
-          current: item.quantity,
-        }),
-        'warning'
-      );
-    });
-
-    fishAggressionConflicts.forEach((item) => {
-      const text = [
-        t('fishAggressionPairWarning', {
-          first:
-            item.firstFish.commonName ??
-            item.firstFish.name ??
-            item.firstFish.latinName,
-          second:
-            item.secondFish.commonName ??
-            item.secondFish.name ??
-            item.secondFish.latinName,
-        }),
-        item.label ? `Ocena: ${item.label}.` : null,
-        Array.isArray(item.reasons) && item.reasons.length > 0
-          ? `Powody: ${item.reasons.slice(0, 2).join(' ')}`
-          : null,
-      ]
-        .filter(Boolean)
-        .join(' ');
-      appendWarning(item.firstFish.id, text, 'critical');
-      appendWarning(item.secondFish.id, text, 'critical');
-    });
-
-    return warningsMap;
-  }, [fishAggressionConflicts, fishCompatibilityResults, fishSchoolingWarnings, t]);
-  const plantCompatibilityResults = useMemo(
-    () => {
-      const selectedTankFishItems = stockItems.filter((entry) => entry.type === 'fish');
-      return stockItems
-        .filter((item) => item.type === 'plant')
-        .map((item) => {
-          const issues = checkPlantCompatibility(
-            item,
-            currentMeasurementDisplay,
-            selectedTankLiters,
-            selectedTankEnvironmentProfile,
-            { fishItems: selectedTankFishItems }
-          );
-
-          return {
-            id: item.id,
-            label: `${item.commonName ?? item.name} (${item.latinName ?? t('noDataCaps')})`,
-            issues,
-          };
-        });
-    },
-    [
-      currentMeasurementDisplay,
-      selectedTankEnvironmentProfile,
-      selectedTankLiters,
-      stockItems,
-      t,
-    ]
-  );
-  const plantCompatibilitySummary = useMemo(
-    () => summarizeCompatibilityResults(plantCompatibilityResults),
-    [plantCompatibilityResults]
-  );
-  const incompatiblePlantCount = plantCompatibilitySummary.speciesWithIssues;
-  const incompatiblePlantMajorCount = plantCompatibilitySummary.speciesWithMajorIssues;
-  const plantWarningsByItemId = useMemo(() => {
-    const warningsMap = new Map();
-
-    plantCompatibilityResults.forEach((item) => {
-      if (!item.id || !Array.isArray(item.issues) || item.issues.length === 0) {
-        return;
-      }
-
-      const visibleIssues = item.issues.filter(
-        (issueText) => !isWaterParameterIssueText(issueText)
-      );
-      if (visibleIssues.length === 0) {
-        return;
-      }
-
-      warningsMap.set(
-        item.id,
-        visibleIssues.map((issueText) => ({
-          text: issueText,
-          severity: 'warning',
-        }))
-      );
-    });
-
-    return warningsMap;
-  }, [plantCompatibilityResults]);
-  const plantLightingStatusByItemId = useMemo(() => {
-    const statusMap = new Map();
-    (stockItems ?? [])
-      .filter((item) => item?.type === 'plant')
-      .forEach((item) => {
-      statusMap.set(
-        item.id,
-        evaluatePlantLightingForTank(item, selectedTankEnvironmentProfile)
-      );
-      });
-
-    return statusMap;
-  }, [stockItems, selectedTankEnvironmentProfile]);
-  const fishStockingSummary = useMemo(
-    () => buildFishStockingSummary(stockItems, selectedTankLiters),
-    [selectedTankLiters, stockItems]
-  );
-  const stockingCompatibilitySections = useMemo(() => {
-    const assessment = stockingCompatibility?.stockingAssessment ?? null;
-    const biologicalLoad = assessment?.biologicalLoad ?? null;
-    const categories = stockingCompatibility?.categories ?? {};
-    const riskToUi = (risk) => {
-      if (risk === 'critical') return 'Niezgodne';
-      if (risk === 'high') return 'Ryzykowne';
-      if (risk === 'medium') return 'Uwaga';
-      return 'OK';
-    };
-    const formatBioloadValue = (value) => {
-      const numeric = Number(value);
-      return Number.isFinite(numeric) ? numeric.toFixed(2) : '0.00';
-    };
-    const formatPercentValue = (value) => {
-      const numeric = Number(value);
-      return Number.isFinite(numeric) ? `${Math.round(numeric)}%` : '0%';
-    };
-    const behaviorCategoryKeys = [
-      'aggression',
-      'territoriality',
-      'predation',
-      'finNipping',
-      'socialNeeds',
-      'zoneCompetition',
-    ];
-    const behaviorCategoryLabels = {
-      aggression: 'Agresja',
-      territoriality: 'Terytorialnosc',
-      predation: 'Drapieznictwo',
-      finNipping: 'Podgryzanie pletw',
-      socialNeeds: 'Potrzeby spoleczne',
-      zoneCompetition: 'Konkurencja stref',
-    };
-    const buildFishLabel = (fish, fallback = 'Ryba') =>
-      String(fish?.commonName ?? fish?.name ?? fish?.latinName ?? fallback).trim();
-    const behaviorConflictDetails = (stockingCompatibility?.conflicts ?? [])
-      .filter((item) => behaviorCategoryKeys.includes(String(item?.category ?? '')))
-      .map((item) => {
-        const categoryKey = String(item?.category ?? '');
-        const categoryLabel =
-          behaviorCategoryLabels[categoryKey] ?? 'Konflikt';
-        const firstFishLabel = buildFishLabel(item?.firstFish, '');
-        const secondFishLabel = buildFishLabel(item?.secondFish, '');
-        const pairLabel =
-          firstFishLabel && secondFishLabel
-            ? `${firstFishLabel} + ${secondFishLabel}`
-            : firstFishLabel || secondFishLabel || 'Obsada';
-        const message = String(item?.message ?? '').trim();
-        return message
-          ? `${categoryLabel}: ${pairLabel} - ${message}`
-          : `${categoryLabel}: ${pairLabel}`;
-      });
-    const behaviorCategoryDetails = behaviorCategoryKeys.flatMap((key) =>
-      (categories?.[key]?.problems ?? []).map((text) => {
-        const label = behaviorCategoryLabels[key] ?? 'Zachowanie';
-        return `${label}: ${text}`;
-      })
-    );
-    const uniqueBehaviorDetails = [
-      ...new Set(
-        [...behaviorConflictDetails, ...behaviorCategoryDetails].filter(Boolean)
-      ),
-    ].slice(0, 8);
-    const spaceDetails = [
-      ...new Set([...(categories?.tankSize?.problems ?? [])].filter(Boolean)),
-    ].slice(0, 5);
-    return [
-      {
-        key: 'biologicalLoad',
-        label: 'Bioload',
-        data: {
-          uiStatus: riskToUi(
-            biologicalLoad?.adjustedRisk ?? biologicalLoad?.rawRisk ?? 'low'
-          ),
-          problems: [
-            biologicalLoad?.message,
-            `Bioload index (obsada): ${formatBioloadValue(
-              biologicalLoad?.bioloadIndexFromStocking
-            )}`,
-            `Bioload index (realny): ${formatBioloadValue(
-              biologicalLoad?.bioloadIndexReal
-            )}`,
-            `Kompensacja filtracji: ${formatPercentValue(
-              biologicalLoad?.filtrationCompensation
-            )} (-${formatBioloadValue(
-              biologicalLoad?.filtrationIndexReduction
-            )})`,
-            `Kompensacja roslin: ${formatPercentValue(
-              biologicalLoad?.plantCompensation
-            )} (-${formatBioloadValue(
-              biologicalLoad?.plantIndexReduction
-            )})`,
-            `Kompensacja laczna: ${formatPercentValue(
-              biologicalLoad?.totalCompensation
-            )} (-${formatBioloadValue(
-              biologicalLoad?.totalIndexReduction
-            )})`,
-          ].filter(Boolean),
-          details: [
-            `Progi: OK < ${BIOLOAD_RISK_THRESHOLDS.medium.toFixed(2)}, Uwaga ${BIOLOAD_RISK_THRESHOLDS.medium.toFixed(2)}-${(BIOLOAD_RISK_THRESHOLDS.high - 0.01).toFixed(2)}, Ryzykowne ${BIOLOAD_RISK_THRESHOLDS.high.toFixed(2)}-${(BIOLOAD_RISK_THRESHOLDS.critical - 0.01).toFixed(2)}, Niezgodne >= ${BIOLOAD_RISK_THRESHOLDS.critical.toFixed(2)}.`,
-            `Masa roslin/100 l: ${formatBioloadValue(
-              biologicalLoad?.plantMassPer100L
-            )}`,
-          ],
-        },
-      },
-      {
-        key: 'spaceLoad',
-        label: 'Przestrzen',
-        data: {
-          uiStatus: riskToUi(assessment?.spaceLoad?.risk),
-          problems: [assessment?.spaceLoad?.message].filter(Boolean),
-          details: spaceDetails,
-        },
-      },
-      {
-        key: 'behaviorLoad',
-        label: 'Zachowanie',
-        data: {
-          uiStatus: riskToUi(assessment?.behaviorLoad?.risk),
-          problems: [assessment?.behaviorLoad?.message].filter(Boolean),
-          details: uniqueBehaviorDetails,
-        },
-      },
-    ].map((item) => ({
-      ...item,
-      data: item.data ?? { uiStatus: 'OK', problems: [], details: [] },
-    }));
-  }, [stockingCompatibility]);
+  const {
+    fishCompatibilityResults,
+    fishSchoolingWarnings,
+    stockingCompatibility,
+    fishAggressionConflicts,
+    hasFishCompatibilityIssues,
+    fishWarningsByItemId,
+    plantCompatibilityResults,
+    incompatiblePlantCount,
+    incompatiblePlantMajorCount,
+    plantWarningsByItemId,
+    plantLightingStatusByItemId,
+    fishStockingSummary,
+    stockingCompatibilitySections,
+  } = useFishPlantSectionInsights({
+    isEditingFish,
+    selectedCatalogFishId,
+    filteredFishCatalog,
+    setSelectedCatalogFishId,
+    isEditingPlant,
+    selectedCatalogPlantIds,
+    plantCatalog,
+    setSelectedCatalogPlantIds,
+    fishCatalogById,
+    fishCatalogByLatinName,
+    stockItems,
+    selectedTank,
+    currentMeasurement,
+    currentMeasurementDisplay,
+    selectedTankLiters,
+    selectedTankEnvironmentProfile,
+    t,
+    normalizeLatinCatalogKey,
+    checkFishCompatibility,
+    resolveFishSchoolingProfile,
+    getFishQuantity,
+    evaluateStockingCompatibility,
+    getFishAggressionConflict,
+    checkPlantCompatibility,
+    summarizeCompatibilityResults,
+    isWaterParameterIssueText,
+    evaluatePlantLightingForTank,
+    buildFishStockingSummary,
+  });
   const todayDayBucketMs = getDayBucketMs(new Date());
   const homeStockItemsByTankId = useMemo(
     () =>
@@ -19865,44 +18925,81 @@ export default function HomeScreen() {
       const tankActiveAlgaeCasesCount = issueCases.filter(
         (item) => String(item.caseType ?? '').toLowerCase() === 'algae'
       ).length;
-      const tankTrendSuggestedEnvironment = buildTrendSuggestedEnvironmentForTank({
-        fishItems: tankFishItems,
-        plantItems: tankPlantItems,
-        activeDiseaseCases: issueCases.filter(
-          (item) => String(item.caseType ?? 'disease').toLowerCase() === 'disease'
-        ),
-        activePlantDiseaseCases: issueCases.filter(
-          (item) => String(item.caseType ?? '').toLowerCase() === 'plant_disease'
-        ),
-        activeAlgaeCases: issueCases.filter(
-          (item) => String(item.caseType ?? '').toLowerCase() === 'algae'
-        ),
-        measurement: latestMeasurement,
-        tankProfile,
-      });
-      const homeAttentionItems = buildAttentionItemsForTank({
-        hasGeneralRecommendationAccess,
-        hasEquipmentSaveAccess,
-        equipmentAssessment: tankEquipmentAssessment,
-        trendSuggestedEnvironment: tankTrendSuggestedEnvironment,
-        fishCompatibilityResults: tankFishCompatibilityResults,
-        plantCompatibilityResults: tankPlantCompatibilityResults,
-        fishAggressionConflictsCount: tankFishAggressionConflictsCount,
-        fishSchoolingWarningsCount: tankFishSchoolingWarningsCount,
-        fishStockingSummary: tankStockingSummary,
-        activeDiseaseCasesCount: tankActiveDiseaseCasesCount,
-        activePlantDiseaseCasesCount: tankActivePlantDiseaseCasesCount,
-        activeAlgaeCasesCount: tankActiveAlgaeCasesCount,
-        selectedTankHealthAssessment: healthAssessment,
-      });
-      const sectionCounts = buildHomeSectionCounts({
-        tank,
-        measurement: latestMeasurement,
-        stockItems: tankStockItems,
-        issueCases,
-        enabledTests: availableMeasurementTests,
-        equipmentCatalog: equipmentCatalogForAnalysis,
-      });
+      const tankTrendSuggestedEnvironment = buildTrendSuggestedEnvironmentForTank(
+        {
+          fishItems: tankFishItems,
+          plantItems: tankPlantItems,
+          activeDiseaseCases: issueCases.filter(
+            (item) => String(item.caseType ?? 'disease').toLowerCase() === 'disease'
+          ),
+          activePlantDiseaseCases: issueCases.filter(
+            (item) => String(item.caseType ?? '').toLowerCase() === 'plant_disease'
+          ),
+          activeAlgaeCases: issueCases.filter(
+            (item) => String(item.caseType ?? '').toLowerCase() === 'algae'
+          ),
+          measurement: latestMeasurement,
+          tankProfile,
+        },
+        {
+          buildRecommendedRange,
+          getPlantLightRequirements,
+          roundToOneDecimal,
+        }
+      );
+      const homeAttentionItems = buildAttentionItemsForTank(
+        {
+          hasGeneralRecommendationAccess,
+          hasEquipmentSaveAccess,
+          equipmentAssessment: tankEquipmentAssessment,
+          trendSuggestedEnvironment: tankTrendSuggestedEnvironment,
+          fishCompatibilityResults: tankFishCompatibilityResults,
+          plantCompatibilityResults: tankPlantCompatibilityResults,
+          fishAggressionConflictsCount: tankFishAggressionConflictsCount,
+          fishSchoolingWarningsCount: tankFishSchoolingWarningsCount,
+          fishStockingSummary: tankStockingSummary,
+          activeDiseaseCasesCount: tankActiveDiseaseCasesCount,
+          activePlantDiseaseCasesCount: tankActivePlantDiseaseCasesCount,
+          activeAlgaeCasesCount: tankActiveAlgaeCasesCount,
+          selectedTankHealthAssessment: healthAssessment,
+        },
+        {
+          summarizeCompatibilityResults,
+          buildCompatibilityMismatchDetails,
+          formatCompactNameList,
+          buildAggressionConflictDetails,
+          buildSchoolingWarningDetails,
+          getIssueCaseDisplayName,
+        }
+      );
+      const sectionCounts = buildHomeSectionCounts(
+        {
+          tank,
+          measurement: latestMeasurement,
+          stockItems: tankStockItems,
+          issueCases,
+          enabledTests: availableMeasurementTests,
+          equipmentCatalog: equipmentCatalogForAnalysis,
+        },
+        {
+          buildTankEnvironmentProfile,
+          buildTankEquipmentAssessment,
+          checkFishCompatibility,
+          summarizeCompatibilityResults,
+          resolveFishSchoolingProfile,
+          getFishQuantity,
+          evaluateStockingCompatibility,
+          checkPlantCompatibility,
+          buildFishStockingSummary,
+          buildContextualEcosystemInsights,
+          getWaterAnalysisOptionsForTank,
+          analyzeMeasurementLogic,
+          mergeWaterAnalysisWithContext,
+          buildRecommendedRange,
+          getPlantLightRequirements,
+          roundToOneDecimal,
+        }
+      );
       const tankOnboardingPlan = buildTankOnboardingPlan(
         tank,
         visibleTankMeasurements,
@@ -20287,6 +19384,21 @@ export default function HomeScreen() {
     subscriptionEntitlements?.taskAccess === 'checklists_and_plan';
   const hasTaskChecklistAccess =
     subscriptionEntitlements?.taskAccess === 'checklists_and_plan';
+  const onboardingPanelModel = useMemo(
+    () =>
+      buildOnboardingPanelModel({
+        selectedTank,
+        tankOnboardingPlan,
+        selectedTankOnboardingTaskChecks,
+        hasTaskChecklistAccess,
+      }),
+    [
+      hasTaskChecklistAccess,
+      selectedTank,
+      selectedTankOnboardingTaskChecks,
+      tankOnboardingPlan,
+    ]
+  );
   const historyDaysLimit = planLimits?.historyDays ?? getSubscriptionLimit('historyDays');
   const currentHistoryEntryCount = measurements.length;
   const visibleHistoryMeasurements = useMemo(
@@ -20484,212 +19596,16 @@ export default function HomeScreen() {
     () => normalizeMaintenanceActionState(selectedTank?.maintenanceActionState),
     [selectedTank?.maintenanceActionState]
   );
-  const waterActionCalendar = useMemo(() => {
-    const windowDays = 14;
-    const dayMs = 24 * 60 * 60 * 1000;
-    const todayDayBucketMs = getDayBucketMs(new Date());
-    const endDayBucketMs = todayDayBucketMs + (windowDays - 1) * dayMs;
-    const waterChangeIntervalDays = 7;
-    const gravelVacuumIntervalDays = 21;
-    const filterServiceIntervalDays = 21;
-    const parameterPlans = Array.isArray(waterTestingSchedule?.parameters)
-      ? waterTestingSchedule.parameters
-      : [];
-    const latestMeasurementMs = getMeasurementRecordedAtMs(measurements?.[0]);
-    const latestMeasurementDayBucketMs = getDayBucketMs(latestMeasurementMs);
-
-    const actionDays = new Map();
-    const addAction = (dayBucketMs, action) => {
-      if (!Number.isFinite(dayBucketMs) || dayBucketMs < todayDayBucketMs || dayBucketMs > endDayBucketMs) {
-        return;
-      }
-      const existing = actionDays.get(dayBucketMs);
-      const dayEntry = existing ?? {
-        dayBucketMs,
-        date: formatDateOnly(dayBucketMs),
-        actions: [],
-      };
-      dayEntry.actions.push(action);
-      actionDays.set(dayBucketMs, dayEntry);
-    };
-
-    const scheduleRecurringAction = ({
-      stateKey,
-      title,
-      details,
-      intervalDays,
-      fallbackDayBucketMs = todayDayBucketMs,
-    }) => {
-      const stateEntry = maintenanceActionState[stateKey] ?? {};
-      const completedAtMs = Number(stateEntry?.lastCompletedAtMs) || 0;
-      const skippedAtMs = Number(stateEntry?.lastSkippedAtMs) || 0;
-      const postponedUntilMs = Number(stateEntry?.postponedUntilMs) || 0;
-      const referenceDayBucketMs = Math.max(completedAtMs, skippedAtMs, fallbackDayBucketMs);
-      let firstDueDayBucketMs =
-        referenceDayBucketMs > 0
-          ? referenceDayBucketMs + intervalDays * dayMs
-          : todayDayBucketMs;
-      if (postponedUntilMs > firstDueDayBucketMs) {
-        firstDueDayBucketMs = postponedUntilMs;
-      }
-
-      const isOverdue = firstDueDayBucketMs < todayDayBucketMs;
-      const displayDayBucketMs = isOverdue ? todayDayBucketMs : firstDueDayBucketMs;
-      if (displayDayBucketMs <= endDayBucketMs) {
-        addAction(displayDayBucketMs, {
-          id: `${stateKey}-${displayDayBucketMs}`,
-          stateKey,
-          kind: stateKey,
-          level: isOverdue ? 'problem' : 'ok',
-          isOverdue: Boolean(isOverdue),
-          dayBucketMs: displayDayBucketMs,
-          sourceDueDayBucketMs: firstDueDayBucketMs,
-          intervalDays,
-          title,
-          details,
-        });
-      }
-    };
-
-    scheduleRecurringAction({
-      stateKey: 'water_change',
-      title: 'Podmiana wody (20-30%)',
-      details: 'Regularna podmiana wspiera stabilnosc biologiczna i kontroluje NO3.',
-      intervalDays: waterChangeIntervalDays,
-    });
-    scheduleRecurringAction({
-      stateKey: 'gravel_vacuum',
-      title: 'Odmulanie dna',
-      details: 'Najlepiej sekcjami i razem z podmiana, bez naruszania calego dna naraz.',
-      intervalDays: gravelVacuumIntervalDays,
-    });
-    scheduleRecurringAction({
-      stateKey: 'filter_service',
-      title: 'Serwis filtra',
-      details:
-        'Kontrola przeplywu, prefiltra i wirnika. Media biologiczne plucz delikatnie, nie wszystkie naraz.',
-      intervalDays: filterServiceIntervalDays,
-    });
-
-    const testsByDay = new Map();
-    const testStateEntry = maintenanceActionState.water_tests ?? {};
-    const testCompletedAtMs = Number(testStateEntry?.lastCompletedAtMs) || 0;
-    const testSkippedAtMs = Number(testStateEntry?.lastSkippedAtMs) || 0;
-    const testPostponedUntilMs = Number(testStateEntry?.postponedUntilMs) || 0;
-    const testReferenceDayBucketMs = Math.max(
-      testCompletedAtMs,
-      testSkippedAtMs,
-      latestMeasurementDayBucketMs
-    );
-
-    parameterPlans.forEach((plan) => {
-      const cadenceDays = Math.max(1, Math.round(Number(plan?.cadenceDays) || 1));
-      let nextDayBucketMs =
-        Number.isFinite(Number(plan?.dayBucketMs)) && Number(plan.dayBucketMs) > 0
-          ? Number(plan.dayBucketMs)
-          : todayDayBucketMs;
-      if (testReferenceDayBucketMs > 0) {
-        nextDayBucketMs = Math.max(
-          nextDayBucketMs,
-          testReferenceDayBucketMs + cadenceDays * dayMs
-        );
-      }
-      if (testPostponedUntilMs > nextDayBucketMs) {
-        nextDayBucketMs = testPostponedUntilMs;
-      }
-
-      const isOverdue = nextDayBucketMs < todayDayBucketMs;
-      const displayDayBucketMs = isOverdue ? todayDayBucketMs : nextDayBucketMs;
-      if (displayDayBucketMs <= endDayBucketMs) {
-        const current = testsByDay.get(displayDayBucketMs) ?? [];
-        current.push({
-          ...plan,
-          cadenceDays,
-          isOverdue,
-          displayDayBucketMs,
-          sourceDueDayBucketMs: nextDayBucketMs,
-        });
-        testsByDay.set(displayDayBucketMs, current);
-      }
-    });
-    const nearestTestsDayBucketMs = [...testsByDay.keys()].sort((a, b) => a - b)[0];
-    if (Number.isFinite(nearestTestsDayBucketMs)) {
-      const dayPlans = testsByDay.get(nearestTestsDayBucketMs) ?? [];
-      const labels = [...new Set(dayPlans.map((plan) => String(plan?.label ?? plan?.key ?? '').trim()).filter(Boolean))];
-      const reasons = [...new Set(dayPlans.map((plan) => String(plan?.reason ?? '').trim()).filter(Boolean))];
-      const highestLevel = dayPlans.reduce((level, plan) => {
-        const normalized = String(plan?.level ?? '').toLowerCase();
-        if (normalized === 'problem') {
-          return 'problem';
-        }
-        if (normalized === 'warning' && level !== 'problem') {
-          return 'warning';
-        }
-        return level;
-      }, 'ok');
-      const hasOverduePlan = dayPlans.some((plan) => Boolean(plan?.isOverdue));
-      addAction(nearestTestsDayBucketMs, {
-        id: `water-tests-${nearestTestsDayBucketMs}`,
-        stateKey: 'water_tests',
-        kind: 'water_tests',
-        level: hasOverduePlan ? 'problem' : highestLevel,
-        isOverdue: hasOverduePlan,
-        dayBucketMs: nearestTestsDayBucketMs,
-        sourceDueDayBucketMs: dayPlans[0]?.sourceDueDayBucketMs ?? nearestTestsDayBucketMs,
-        intervalDays: Math.max(
-          1,
-          ...dayPlans.map((plan) => Number(plan?.cadenceDays) || 1)
-        ),
-        title: `Testy parametrow: ${labels.join(', ')}`,
-        details:
-          reasons.length > 0
-            ? reasons.slice(0, 2).join(' ')
-            : 'Zakres testow dobrany do historii pomiarow i wymaganej czestotliwosci badan.',
-      });
-    }
-
-    const levelRank = (value) =>
-      value === 'problem' ? 3 : value === 'warning' ? 2 : 1;
-    const kindRank = (value) =>
-      value === 'water_change'
-        ? 1
-        : value === 'water_tests'
-          ? 2
-          : value === 'gravel_vacuum'
-            ? 3
-            : 4;
-    const days = [...actionDays.values()]
-      .sort((a, b) => a.dayBucketMs - b.dayBucketMs)
-      .map((day) => ({
-        ...day,
-        actions: [...day.actions].sort((a, b) => {
-          const byLevel = levelRank(b.level) - levelRank(a.level);
-          if (byLevel !== 0) {
-            return byLevel;
-          }
-          return kindRank(a.kind) - kindRank(b.kind);
-        }),
-      }));
-    const overdueCount = days.reduce(
-      (sum, day) =>
-        sum + day.actions.filter((action) => Boolean(action?.isOverdue)).length,
-      0
-    );
-
-    return {
-      windowDays,
-      totalActions: days.reduce((sum, day) => sum + day.actions.length, 0),
-      days,
-      overdueCount,
-      waterChangeIntervalDays,
-      gravelVacuumIntervalDays,
-      filterServiceIntervalDays,
-    };
-  }, [
-    maintenanceActionState,
-    measurements,
-    waterTestingSchedule,
-  ]);
+  const waterActionCalendar = useMemo(
+    () =>
+      buildWaterActionCalendar({
+        maintenanceActionState,
+        waterTestingSchedule,
+        latestMeasurement: measurements?.[0],
+        formatDateOnly,
+      }),
+    [maintenanceActionState, measurements, waterTestingSchedule]
+  );
   const filteredEquipmentCatalog = useMemo(() => {
     const normalizedType = normalizeEquipmentCatalogType(equipmentCatalogType);
     const heaterCatalogAnalysis = tankEquipmentAssessment?.heater?.analysis || null;
@@ -21125,407 +20041,68 @@ export default function HomeScreen() {
         }
       : null,
   ].filter(Boolean);
-  const activeDiseaseCases = useMemo(
-    () =>
-      tankDiseaseCases.filter((item) => {
-        const caseType = String(item.caseType ?? 'disease').toLowerCase();
-        return caseType === 'disease' || !item.caseType;
-      }),
-    [tankDiseaseCases]
-  );
-  const activePlantDiseaseCases = useMemo(
-    () =>
-      tankDiseaseCases.filter(
-        (item) => String(item.caseType ?? '').toLowerCase() === 'plant_disease'
-      ),
-    [tankDiseaseCases]
-  );
-  const activeAlgaeCases = useMemo(
-    () =>
-      tankDiseaseCases.filter(
-        (item) => String(item.caseType ?? '').toLowerCase() === 'algae'
-      ),
-    [tankDiseaseCases]
-  );
-  const historyIssueTimeline = useMemo(
-    () =>
-      tankDiseaseHistoryCases
-        .map((item) => {
-          const caseType = String(item.caseType ?? 'disease').toLowerCase();
-          const issueTypeLabel =
-            caseType === 'plant_disease'
-              ? t('typePlantDisease')
-              : caseType === 'algae'
-                ? t('typeAlgae')
-                : t('typeDisease');
-          const status = String(item.status ?? 'active').toLowerCase();
-          const issueName = String(
-            item.issueName ?? item.diseaseName ?? item.name ?? t('noData')
-          ).trim();
-          const createdAtMs = getCreatedAtMs(item.createdAt);
-          const addedAt = formatDateOnly(item.createdAt);
-          const endedAtRaw = item.closedAt ?? item.updatedAt ?? null;
-          const endedAt = status === 'active' ? null : formatDateOnly(endedAtRaw);
-          return {
-            id: item.id,
-            issueName,
-            issueTypeLabel,
-            status,
-            createdAtMs,
-            addedAt,
-            endedAt,
-          };
-        })
-        .sort((a, b) => (b?.createdAtMs ?? 0) - (a?.createdAtMs ?? 0)),
-    [tankDiseaseHistoryCases, t]
-  );
-  const trendSuggestedEnvironment = useMemo(() => {
-    const fishTempRange = buildRecommendedRange(
-      fishInTank.map((item) => item.tempMin),
-      fishInTank.map((item) => item.tempMax)
-    );
-    const plantTempRange = buildRecommendedRange(
-      plantsInTank.map((item) => item.tempMin),
-      plantsInTank.map((item) => item.tempMax)
-    );
-
-    const baseTempRanges = [fishTempRange, plantTempRange].filter(Boolean);
-    const baseTempRange =
-      baseTempRanges.length === 0
-        ? null
-        : buildRecommendedRange(
-            baseTempRanges.map((range) => range.min),
-            baseTempRanges.map((range) => range.max)
-          );
-
-    const plantLightRanges = plantsInTank
-      .map((item) => getPlantLightRequirements(item))
-      .filter(Boolean)
-      .map((range) => ({
-        min: Number(range.minHours),
-        max: Number(range.maxHours),
-      }))
-      .filter(
-        (range) =>
-          Number.isFinite(range.min) &&
-          Number.isFinite(range.max) &&
-          range.min <= range.max
-      );
-    const baseLightRange =
-      plantLightRanges.length === 0
-        ? null
-        : buildRecommendedRange(
-            plantLightRanges.map((range) => range.min),
-            plantLightRanges.map((range) => range.max)
-          );
-
-    let recommendedTempRange = baseTempRange;
-    let recommendedLightRange = baseLightRange;
-    const treatmentReasons = [];
-
-    const activeFishDiseaseIds = new Set(
-      activeDiseaseCases.map((item) =>
-        String(item.issueId ?? item.diseaseId ?? '').toLowerCase()
-      )
-    );
-    const activePlantDiseaseIds = new Set(
-      activePlantDiseaseCases.map((item) =>
-        String(item.issueId ?? item.diseaseId ?? '').toLowerCase()
-      )
-    );
-    const activeAlgaeIds = new Set(
-      activeAlgaeCases.map((item) =>
-        String(item.issueId ?? item.diseaseId ?? '').toLowerCase()
-      )
-    );
-
-    if (activeFishDiseaseIds.has('ich')) {
-      recommendedTempRange = { min: 28, max: 30, conflict: false };
-      recommendedLightRange = { min: 6, max: 8, conflict: false };
-      treatmentReasons.push('ospa rybia');
-    }
-
-    if (activeFishDiseaseIds.has('velvet')) {
-      recommendedTempRange = { min: 27, max: 28, conflict: false };
-      recommendedLightRange = { min: 4, max: 6, conflict: false };
-      treatmentReasons.push('oodinioza (velvet)');
-    }
-
-    if (activePlantDiseaseIds.size > 0 && treatmentReasons.length === 0) {
-      recommendedLightRange = { min: 6, max: 8, conflict: false };
-      treatmentReasons.push('aktywny problem roslin');
-    }
-
-    if (activeAlgaeIds.has('black-beard-algae')) {
-      recommendedLightRange = { min: 6, max: 7, conflict: false };
-      treatmentReasons.push('krasnorosty (BBA)');
-    } else if (activeAlgaeIds.has('cyanobacteria')) {
-      recommendedLightRange = { min: 5, max: 6, conflict: false };
-      treatmentReasons.push('sinice');
-    } else if (activeAlgaeIds.has('green-hair-algae')) {
-      recommendedLightRange = { min: 6, max: 7, conflict: false };
-      treatmentReasons.push('zielenice nitkowate');
-    }
-
-    const isTreatmentMode = treatmentReasons.length > 0;
-    const latestTemperature = Number(currentMeasurement?.temperature);
-    const currentTempValue = Number.isFinite(latestTemperature)
-      ? roundToOneDecimal(latestTemperature)
-      : null;
-    const currentLightHours = Number(selectedTankEnvironmentProfile.lightHours);
-    const currentLightValue = Number.isFinite(currentLightHours)
-      ? roundToOneDecimal(currentLightHours)
-      : null;
-
-    const isTempWithinSuggested =
-      recommendedTempRange && currentTempValue !== null
-        ? currentTempValue >= recommendedTempRange.min &&
-          currentTempValue <= recommendedTempRange.max
-        : null;
-    const isLightWithinSuggested =
-      recommendedLightRange && currentLightValue !== null
-        ? currentLightValue >= recommendedLightRange.min &&
-          currentLightValue <= recommendedLightRange.max
-        : null;
-
-    return {
-      isTreatmentMode,
-      treatmentReasons,
-      fishTempRange,
-      plantTempRange,
-      recommendedTempRange,
-      recommendedLightRange,
-      currentTempValue,
-      currentLightValue,
-      isTempWithinSuggested,
-      isLightWithinSuggested,
-    };
-  }, [
-    activeAlgaeCases,
+  const {
     activeDiseaseCases,
     activePlantDiseaseCases,
-    currentMeasurement?.temperature,
+    activeAlgaeCases,
+    historyIssueTimeline,
+    parameterSuggestionItems,
+    fishSuggestionItems,
+    plantSuggestionItems,
+    equipmentSuggestionItems,
+    hasPlantMeasurements,
+    plantCareTips,
+    currentParametersSectionSeverity,
+    fishTabSeverity,
+    plantTabSeverity,
+    issuesTabSeverity,
+  } = useReviewSectionInsights({
+    tankDiseaseCases,
+    tankDiseaseHistoryCases,
+    t,
+    getCreatedAtMs,
+    formatDateOnly,
     fishInTank,
     plantsInTank,
-    selectedTankEnvironmentProfile.lightHours,
-  ]);
-  const selectedTankHealthAssessment = useMemo(() => {
-    if (!selectedTank) {
-      return null;
-    }
-
-    const activeIssueCases = [
-      ...activeDiseaseCases,
-      ...activePlantDiseaseCases,
-      ...activeAlgaeCases,
-    ];
-
-    return buildAquariumHealthAssessment({
-      tank: selectedTank,
-      measurement: currentMeasurement,
-      stockItems,
-      activeIssueCases,
-      equipmentCatalog: equipmentCatalogForAnalysis,
-    });
-  }, [
-    activeAlgaeCases,
-    activeDiseaseCases,
-    activePlantDiseaseCases,
     currentMeasurement,
-    equipmentCatalogForAnalysis,
+    selectedTankEnvironmentProfile,
     selectedTank,
     stockItems,
-  ]);
-  const suggestionChangeItems = useMemo(() => {
-    if (!selectedTank) {
-      return [];
-    }
-
-    return buildAttentionItemsForTank({
-      hasGeneralRecommendationAccess,
-      hasEquipmentSaveAccess,
-      equipmentAssessment: tankEquipmentAssessment,
-      trendSuggestedEnvironment,
-      fishCompatibilityResults,
-      plantCompatibilityResults,
-      fishAggressionConflictsCount: fishAggressionConflicts.length,
-      fishAggressionConflicts,
-      fishSchoolingWarningsCount: fishSchoolingWarnings.length,
-      fishSchoolingWarnings,
-      fishStockingSummary,
-      activeDiseaseCasesCount: activeDiseaseCases.length,
-      activeDiseaseCases,
-      activePlantDiseaseCasesCount: activePlantDiseaseCases.length,
-      activePlantDiseaseCases,
-      activeAlgaeCasesCount: activeAlgaeCases.length,
-      activeAlgaeCases,
-      selectedTankHealthAssessment,
-    });
-  }, [
-    activeAlgaeCases,
-    activeDiseaseCases,
-    activePlantDiseaseCases,
-    fishAggressionConflicts,
-    fishCompatibilityResults,
-    fishSchoolingWarnings,
-    fishStockingSummary,
-    plantCompatibilityResults,
+    equipmentCatalogForAnalysis,
     hasGeneralRecommendationAccess,
     hasEquipmentSaveAccess,
-    selectedTankHealthAssessment,
-    selectedTank,
     tankEquipmentAssessment,
-    trendSuggestedEnvironment,
-  ]);
-  const parameterSuggestionItems = useMemo(
-    () =>
-      suggestionChangeItems.filter(
-        (item) => String(item?.area ?? '').toLowerCase() === 'parametry'
-      ),
-    [suggestionChangeItems]
-  );
-  const fishSuggestionItems = useMemo(
-    () =>
-      suggestionChangeItems.filter(
-        (item) => String(item?.area ?? '').toLowerCase() === 'ryby'
-      ),
-    [suggestionChangeItems]
-  );
-  const plantSuggestionItems = useMemo(
-    () =>
-      suggestionChangeItems.filter(
-        (item) =>
-          String(item?.area ?? '').toLowerCase() === 'rosliny' &&
-          !isWaterParameterIssueText(item?.text)
-      ),
-    [suggestionChangeItems]
-  );
-  const hasPlantMeasurements = useMemo(
-    () => Array.isArray(measurements) && measurements.length > 0,
-    [measurements]
-  );
-  const plantCareTips = useMemo(() => {
-    if (!selectedTank || plantsInTank.length === 0 || !hasPlantMeasurements) {
-      return [];
-    }
-
-    const tips = [];
-    const measurementForPlants = currentMeasurementDisplay ?? currentMeasurement ?? null;
-    const getMeasuredValue = (key) => {
-      if (!currentMeasurementValueSourceMsByKey.has(key)) {
-        return null;
-      }
-      const value = Number(getMeasurementNumericValue(measurementForPlants, key));
-      return Number.isFinite(value) ? value : null;
-    };
-    const getMinTarget = (key, fallbackValue) => {
-      const fromTank = Number(selectedTankTargetRanges?.[key]?.min);
-      return Number.isFinite(fromTank) ? fromTank : fallbackValue;
-    };
-
-    const lowNutrients = [];
-    [
-      { key: 'no3', label: 'NO3', min: getMinTarget('no3', 5), unit: 'mg/l' },
-      { key: 'po4', label: 'PO4', min: getMinTarget('po4', 0.1), unit: 'mg/l' },
-      { key: 'fe', label: 'Fe', min: getMinTarget('fe', 0.02), unit: 'mg/l' },
-      { key: 'k', label: 'K', min: getMinTarget('k', 5), unit: 'mg/l' },
-      { key: 'mg', label: 'Mg', min: getMinTarget('mg', 5), unit: 'mg/l' },
-    ].forEach((item) => {
-      const value = getMeasuredValue(item.key);
-      if (value !== null && value < Number(item.min)) {
-        lowNutrients.push(
-          `${item.label}: ${Math.round(value * 100) / 100} ${item.unit} (cel min ${item.min} ${item.unit})`
-        );
-      }
-    });
-
-    if (lowNutrients.length > 0) {
-      tips.push(
-        'Mozliwy niedobor skladnikow odzywczych. Jak to zrobic: startuj od ok. 1/3 dawki producenta 2-3 razy w tygodniu, po 7 dniach ocen rosliny i glony, potem zwiekszaj dawke o 10-20% tygodniowo az do stabilnego wzrostu.'
-      );
-    }
-
-    const co2 = getMeasuredValue('co2');
-    const co2Min = getMinTarget('co2', 10);
-    if (co2 !== null && co2 < co2Min) {
-      tips.push(
-        'CO2 jest za niskie dla stabilnego wzrostu roslin. Jak to zrobic: podnos podawanie bardzo stopniowo (ok. 10-15% co 2-3 dni), uruchamiaj CO2 1-2 h przed swiatlem i obserwuj ryby; przy oznakach dusznosci natychmiast zmniejsz dawke i zwieksz ruch tafli.'
-      );
-    }
-
-    return tips;
-  }, [
-    currentMeasurement,
+    fishCompatibilityResults,
+    plantCompatibilityResults,
+    fishAggressionConflicts,
+    fishSchoolingWarnings,
+    fishStockingSummary,
+    hasFishCompatibilityIssues,
+    stockingCompatibility,
+    incompatiblePlantCount,
+    incompatiblePlantMajorCount,
     currentMeasurementDisplay,
     currentMeasurementValueSourceMsByKey,
-    hasPlantMeasurements,
-    plantsInTank,
-    selectedTank,
     selectedTankTargetRanges,
-  ]);
-  const equipmentSuggestionItems = useMemo(
-    () =>
-      suggestionChangeItems.filter(
-        (item) => String(item?.area ?? '').toLowerCase() === 'sprzet'
-      ),
-    [suggestionChangeItems]
-  );
-  const currentParametersSectionSeverity = useMemo(() => {
-    if (!selectedTank || historyLoading) {
-      return 'none';
-    }
-
-    if (!currentMeasurement || currentMeasurementDetailRows.length === 0) {
-      return 'none';
-    }
-
-    const severities = currentMeasurementDetailRows
-      .map((item) =>
-        currentMeasurementIssueSeverityByKey.get(String(item.key ?? ''))
-      )
-      .filter(Boolean);
-
-    if (severities.includes('critical')) {
-      return 'critical';
-    }
-
-    if (severities.includes('warning')) {
-      return 'warning';
-    }
-
-    return 'none';
-  }, [
-    currentMeasurement,
+    measurements,
+    isWaterParameterIssueText,
+    getMeasurementNumericValue,
+    buildAquariumHealthAssessment,
     currentMeasurementDetailRows,
     currentMeasurementIssueSeverityByKey,
     historyLoading,
-    selectedTank,
-  ]);
-  const onboardingSectionSeverity = useMemo(() => {
-    if (
-      !selectedTank ||
-      !tankOnboardingPlan.isActive ||
-      !hasTaskChecklistAccess
-    ) {
-      return 'none';
-    }
-
-    if (tankOnboardingPlan.rows.some((row) => row.level === 'warning')) {
-      return 'warning';
-    }
-
-    if (tankOnboardingPlan.todayItems.length > 0) {
-      return 'warning';
-    }
-
-    return 'none';
-  }, [
-    hasTaskChecklistAccess,
-    selectedTank,
-    tankOnboardingPlan.isActive,
-    tankOnboardingPlan.rows,
-    tankOnboardingPlan.todayItems,
-  ]);
+    buildRecommendedRange,
+    getPlantLightRequirements,
+    roundToOneDecimal,
+    summarizeCompatibilityResults,
+    buildCompatibilityMismatchDetails,
+    formatCompactNameList,
+    buildAggressionConflictDetails,
+    buildSchoolingWarningDetails,
+    getIssueCaseDisplayName,
+    diseaseSeverityPriority: DISEASE_SEVERITY_PRIORITY,
+  });
+  const onboardingSectionSeverity = onboardingPanelModel.sectionSeverity;
   const reviewTabSeverity = 'none';
   const equipmentTabSeverity = useMemo(() => {
     if (!selectedTank || !hasEquipmentSaveAccess) {
@@ -21556,87 +20133,6 @@ export default function HomeScreen() {
     tankEquipmentAssessment.filter,
     tankEquipmentAssessment.heater,
   ]);
-  const fishTabSeverity = useMemo(() => {
-    const fishItems = stockItems.filter((item) => item.type === 'fish');
-
-    if (fishItems.length === 0) {
-      return 'none';
-    }
-
-    if (
-      fishAggressionConflicts.length > 0 ||
-      ['high_risk', 'incompatible'].includes(
-        String(stockingCompatibility?.overallStatus ?? '')
-      ) ||
-      (fishStockingSummary.hasFish &&
-        fishStockingSummary.hasTankLiters &&
-        fishStockingSummary.ratio > 1.2)
-    ) {
-      return 'critical';
-    }
-
-    if (
-      hasFishCompatibilityIssues ||
-      String(stockingCompatibility?.overallStatus ?? '') === 'caution' ||
-      fishSchoolingWarnings.length > 0 ||
-      fishStockingSummary.isOverstocked
-    ) {
-      return 'warning';
-    }
-
-    return 'none';
-  }, [
-    fishAggressionConflicts.length,
-    fishSchoolingWarnings.length,
-    fishStockingSummary.hasFish,
-    fishStockingSummary.hasTankLiters,
-    fishStockingSummary.isOverstocked,
-    fishStockingSummary.ratio,
-    hasFishCompatibilityIssues,
-    stockItems,
-    stockingCompatibility?.overallStatus,
-  ]);
-  const plantTabSeverity = useMemo(() => {
-    const plantItems = stockItems.filter((item) => item.type === 'plant');
-
-    if (plantItems.length === 0) {
-      return 'none';
-    }
-
-    if (incompatiblePlantMajorCount >= 2) {
-      return 'critical';
-    }
-
-    if (incompatiblePlantCount > 0) {
-      return 'warning';
-    }
-
-    return 'none';
-  }, [incompatiblePlantCount, incompatiblePlantMajorCount, stockItems]);
-  const issuesTabSeverity = useMemo(() => {
-    const allIssueCases = [
-      ...activeDiseaseCases,
-      ...activePlantDiseaseCases,
-      ...activeAlgaeCases,
-    ];
-
-    if (allIssueCases.length === 0) {
-      return 'none';
-    }
-
-    const highestPriority = allIssueCases.reduce(
-      (maxSeverity, caseItem) =>
-        Math.max(
-          maxSeverity,
-          DISEASE_SEVERITY_PRIORITY[String(caseItem.severity ?? 'low').toLowerCase()] ?? 0
-        ),
-      0
-    );
-
-    return highestPriority >= DISEASE_SEVERITY_PRIORITY.high
-      ? 'critical'
-      : 'warning';
-  }, [activeAlgaeCases, activeDiseaseCases, activePlantDiseaseCases]);
   const renderReviewSectionTitle = (title, severity = 'none') => (
     <View
       style={{
@@ -21651,7 +20147,7 @@ export default function HomeScreen() {
             fontSize: 16,
             fontWeight: '700',
           }}>
-          ⚠
+          âš 
         </Text>
       ) : severity === 'critical' ? (
         <View
@@ -21698,7 +20194,7 @@ export default function HomeScreen() {
             fontSize: 13,
             fontWeight: '700',
           }}>
-          {'⚠'}
+          {'âš '}
         </Text>
       ) : severity === 'critical' ? (
         <View
@@ -22841,7 +21337,6 @@ export default function HomeScreen() {
               ) : null}
             </>
           )}
-
           {isTankSection && (
             <View
               style={{
@@ -22872,7 +21367,9 @@ export default function HomeScreen() {
             </View>
           )}
 
-          {(isTankInfoSection || isEquipmentSection) && (
+          <TankInfoSection isVisible={isTankInfoSection || isEquipmentSection}>
+            <EquipmentSection isVisible={isTankInfoSection || isEquipmentSection}>
+              {(isTankInfoSection || isEquipmentSection) && (
             <>
               {isTankInfoSection && (!selectedTank ? (
                 <View
@@ -23416,11 +21913,11 @@ export default function HomeScreen() {
                                   : Number.isFinite(Number(equipmentItem?.flowLh))
                                   ? `${Math.round(Number(equipmentItem.flowLh))} l/h nominalnie${
                                       resolvedFilterType
-                                        ? ` • ${getFilterTypeLabel(
+                                        ? ` â€˘ ${getFilterTypeLabel(
                                             resolvedFilterType
                                           )} (${Math.round(
                                             resolvedFilterFactor * 100
-                                          )}%) • ${Math.round(
+                                          )}%) â€˘ ${Math.round(
                                             Number(equipmentItem.flowLh) *
                                               resolvedFilterFactor
                                           )} l/h realnie`
@@ -23780,19 +22277,21 @@ export default function HomeScreen() {
                     }}>
                     {t('noActiveTank')}
                   </Text>
-                  <Text
-                    style={{
-                      color: themeTextSecondary,
-                      marginTop: 8,
-                      fontSize: 14,
-                      lineHeight: 21,
-                    }}>
-                    Wybierz aktywne akwarium, aby zobaczyc przypisany sprzet.
-                  </Text>
-                </View>
+                <Text
+                  style={{
+                    color: themeTextSecondary,
+                    marginTop: 8,
+                    fontSize: 14,
+                    lineHeight: 21,
+                  }}>
+                  Wybierz aktywne akwarium, aby zobaczyc przypisany sprzet.
+                </Text>
+              </View>
               ))}
             </>
           )}
+            </EquipmentSection>
+          </TankInfoSection>
           
 
           {isFishCatalogMenuMode && (
@@ -24112,6 +22611,7 @@ export default function HomeScreen() {
             </View>
           )}
 
+          <FishSection isVisible={isFishSection || isPlantSection}>
           {((isFishSection && !isFishCatalogMenuMode) ||
             (isPlantSection && !isPlantCatalogMenuMode)) && (
             <View
@@ -25563,6 +24063,7 @@ export default function HomeScreen() {
                   </>
                 )}
 
+                <PlantSection isVisible={isFishSection || isPlantSection}>
                 {((isFishSection && isEditingFish) ||
                   (isPlantSection && isEditingPlant)) && (
                   <>
@@ -26206,11 +24707,13 @@ export default function HomeScreen() {
                     )}
                   </>
                 )}
+                </PlantSection>
 
               </>
             )}
             </View>
           )}
+          </FishSection>
 
           {isHealthSection && (
             <>
@@ -29661,8 +28164,7 @@ export default function HomeScreen() {
               )}
             </View>
           )}
-
-          {isReviewSection && !selectedTank && (
+          <ReviewSection isVisible={isReviewSection && !selectedTank}>
             <View
               style={{
                 borderWidth: 1,
@@ -29677,7 +28179,7 @@ export default function HomeScreen() {
               </Text>
               {renderAddTankWizard('inline-add')}
             </View>
-          )}
+          </ReviewSection>
 
           {isAddingTankModalVisible && (
             <Modal
@@ -29835,7 +28337,7 @@ export default function HomeScreen() {
                         Wybierz model sprzetu
                       </Text>
                       <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
-                        Karty pokazują najważniejsze parametry i szybkie dopasowanie do
+                        Karty pokazujÄ… najwaĹĽniejsze parametry i szybkie dopasowanie do
                         Twojego zbiornika.
                       </Text>
                     </View>
@@ -31591,421 +30093,35 @@ export default function HomeScreen() {
             </BottomSheetModal>
           )}
 
-          {isReviewSection &&
-            selectedTank &&
-            selectedTank.onboardingEnabled !== false &&
-            tankOnboardingPlan.isActive && (
-              <View
-                style={{
-                  borderWidth: 1,
-                  borderColor: themeBorder,
-                  borderRadius: 10,
-                  padding: 12,
-                  marginBottom: 18,
-                  backgroundColor: themeCardBg,
-                }}>
-                {renderReviewSectionTitle(
-                  'Onboarding akwarium',
-                  onboardingSectionSeverity
-                )}
-                {selectedTank.onboardingEnabled === false ? (
-                  <>
-                    <Text style={{ color: themeTextSecondary, marginTop: 6 }}>
-                      Onboarding jest recznie wylaczony dla tego akwarium.
-                    </Text>
-                    <Pressable
-                      onPress={() => handleSetTankOnboardingEnabled(true)}
-                      disabled={onboardingToggleBusy}
-                      style={{
-                        marginTop: 10,
-                        borderWidth: 1,
-                        borderColor: themeBorderStrong,
-                        borderRadius: 8,
-                        paddingVertical: 8,
-                        paddingHorizontal: 10,
-                        backgroundColor: themeCardBgAlt,
-                        opacity: onboardingToggleBusy ? 0.7 : 1,
-                      }}>
-                      <Text
-                        style={{
-                          color: themeTextPrimary,
-                          fontSize: 12,
-                          fontWeight: '700',
-                          textAlign: 'center',
-                        }}>
-                        {onboardingToggleBusy ? 'Zapisywanie...' : 'Wlacz onboarding'}
-                      </Text>
-                    </Pressable>
-                  </>
-                ) : null}
-                {selectedTank.onboardingEnabled === false ? null : (
-                  <>
-                    <Text style={{ color: themeTextSecondary, marginTop: 6 }}>
-                      {tankOnboardingPlan.statusText}
-                    </Text>
-                    <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
-                      Tryb: {tankOnboardingPlan.modeLabel || tankOnboardingPlan.mode}
-                    </Text>
-                    <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
-                      Aktualny dzien od startu: {tankOnboardingPlan.dayNumber}
-                    </Text>
-                    {tankOnboardingPlan.activeStep ? (
-                      <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
-                        Aktywny krok: {tankOnboardingPlan.activeStep.title} (
-                        {tankOnboardingPlan.activeStep.status})
-                      </Text>
-                    ) : null}
-                    {tankOnboardingPlan.nextStep ? (
-                      <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
-                        Nastepny krok: {tankOnboardingPlan.nextStep.title} (dzien{' '}
-                        {tankOnboardingPlan.nextStep.recommendedDay})
-                      </Text>
-                    ) : null}
-                    {tankOnboardingPlan.delayReason ? (
-                      <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
-                        Powod opoznienia: {tankOnboardingPlan.delayReason}
-                      </Text>
-                    ) : null}
-                    {Array.isArray(tankOnboardingPlan.requiredTestsNow) &&
-                    tankOnboardingPlan.requiredTestsNow.length > 0 ? (
-                      <View style={{ marginTop: 8 }}>
-                        <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
-                          Wymagane testy teraz
-                        </Text>
-                        {tankOnboardingPlan.requiredTestsNow.map((item, index) => (
-                          <Text
-                            key={`onboarding-required-test-${index}`}
-                            style={{ color: themeTextSecondary, marginTop: 3, fontSize: 12 }}>
-                            - {item}
-                          </Text>
-                        ))}
-                      </View>
-                    ) : null}
-                    {Array.isArray(tankOnboardingPlan.actionsToday) &&
-                    tankOnboardingPlan.actionsToday.length > 0 ? (
-                      <View style={{ marginTop: 8 }}>
-                        <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
-                          Akcje na dzis
-                        </Text>
-                        {tankOnboardingPlan.actionsToday.map((item, index) => (
-                          <Text
-                            key={`onboarding-action-today-${index}`}
-                            style={{ color: themeTextSecondary, marginTop: 3, fontSize: 12 }}>
-                            - {item}
-                          </Text>
-                        ))}
-                      </View>
-                    ) : null}
-                    <Pressable
-                      onPress={() =>
-                        Alert.alert(
-                          'Wylaczyc onboarding?',
-                          'Ta opcja jest nieodwracalna. Po potwierdzeniu sekcja onboardingu zniknie dla tego akwarium.',
-                          [
-                            { text: 'Anuluj', style: 'cancel' },
-                            {
-                              text: 'Wylacz',
-                              style: 'destructive',
-                              onPress: () => {
-                                handleSetTankOnboardingEnabled(false);
-                              },
-                            },
-                          ]
-                        )
-                      }
-                      disabled={onboardingToggleBusy}
-                      style={{
-                        marginTop: 10,
-                        borderWidth: 1,
-                        borderColor: themeBorderStrong,
-                        borderRadius: 8,
-                        paddingVertical: 8,
-                        paddingHorizontal: 10,
-                        backgroundColor: themeCardBgAlt,
-                        opacity: onboardingToggleBusy ? 0.7 : 1,
-                      }}>
-                      <Text
-                        style={{
-                          color: themeTextPrimary,
-                          fontSize: 12,
-                          fontWeight: '700',
-                          textAlign: 'center',
-                        }}>
-                        {onboardingToggleBusy ? 'Zapisywanie...' : 'Wylacz onboarding'}
-                      </Text>
-                    </Pressable>
-                    {Array.isArray(tankOnboardingPlan.checklistStart) &&
-                    tankOnboardingPlan.checklistStart.length > 0 ? (
-                      <View style={{ marginTop: 8 }}>
-                        <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
-                          Checklista startowa
-                        </Text>
-                        {tankOnboardingPlan.checklistStart.slice(0, 4).map((item, index) => (
-                          <Text
-                            key={`onboarding-checklist-${index}`}
-                            style={{ color: themeTextSecondary, marginTop: 3, fontSize: 12 }}>
-                            - {item}
-                          </Text>
-                        ))}
-                      </View>
-                    ) : null}
-                    {Array.isArray(tankOnboardingPlan.firstMeasurements) &&
-                    tankOnboardingPlan.firstMeasurements.length > 0 ? (
-                      <View style={{ marginTop: 8 }}>
-                        <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
-                          Pierwsze pomiary
-                        </Text>
-                        {tankOnboardingPlan.firstMeasurements.slice(0, 4).map((item, index) => (
-                          <Text
-                            key={`onboarding-first-measure-${index}`}
-                            style={{ color: themeTextSecondary, marginTop: 3, fontSize: 12 }}>
-                            - {item}
-                          </Text>
-                        ))}
-                      </View>
-                    ) : null}
-                    {!hasTaskChecklistAccess ? (
-                      <Text style={{ color: themeTextSecondary, marginTop: 8, fontSize: 12 }}>
-                        {t('subscriptionTasksPlanLocked')}
-                      </Text>
-                    ) : (
-                      <>
-                        <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
-                          Dzien {tankOnboardingPlan.dayNumber} / cel: dzien{' '}
-                          {tankOnboardingPlan.targetEndDay}
-                        </Text>
-                        <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
-                          Zadanie oznacza sie jako zrobione dopiero po zaznaczeniu checkboxa.
-                        </Text>
+          <ReviewSection isVisible={isReviewSection}>
+            <OnboardingPanel
+              isVisible={onboardingPanelModel.shouldRenderPanel}
+              onboardingPlan={tankOnboardingPlan}
+              sectionSeverity={onboardingSectionSeverity}
+              visibleOnboardingRows={onboardingPanelModel.visibleOnboardingRows}
+              completedOnboardingRows={onboardingPanelModel.completedOnboardingRows}
+              selectedTaskChecks={selectedTankOnboardingTaskChecks}
+              onboardingToggleBusy={onboardingToggleBusy}
+              onboardingTaskBusy={onboardingTaskBusy}
+              hasTaskChecklistAccess={hasTaskChecklistAccess}
+              subscriptionTasksPlanLockedText={t('subscriptionTasksPlanLocked')}
+              isLightTheme={isLightTheme}
+              theme={{
+                border: themeBorder,
+                cardBg: themeCardBg,
+                cardBgAlt: themeCardBgAlt,
+                borderStrong: themeBorderStrong,
+                textPrimary: themeTextPrimary,
+                textSecondary: themeTextSecondary,
+              }}
+              formatDateOnly={formatDateOnly}
+              onDisableOnboarding={() => handleSetTankOnboardingEnabled(false)}
+              onToggleTaskCheck={handleToggleOnboardingTaskCheck}
+              renderSectionTitle={renderReviewSectionTitle}
+            />
+          </ReviewSection>
 
-                        <View style={{ marginTop: 10 }}>
-                          {visibleOnboardingRows.length === 0 ? (
-                            <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
-                              Na dzisiaj nie ma zadan. Wroc jutro po kolejne kroki.
-                            </Text>
-                          ) : (
-                            visibleOnboardingRows.map((row) => {
-                            const isChecked = Boolean(selectedTankOnboardingTaskChecks[row.id]);
-                            const isOverdue = row.status === 'overdue' && !isChecked;
-                            const rowTimeLabel =
-                              row.status === 'current'
-                                ? 'teraz'
-                                : row.status === 'overdue'
-                                  ? 'po terminie'
-                                  : 'nastepne';
-
-                            return (
-                              <View
-                                key={`onboarding-row-top-${row.id}`}
-                                style={{
-                                  borderWidth: 1,
-                                  borderColor: isChecked
-                                    ? isLightTheme
-                                      ? '#86cf9d'
-                                      : '#2f9e44'
-                                    : isOverdue
-                                      ? isLightTheme
-                                        ? '#e57373'
-                                        : '#b02a37'
-                                    : row.level === 'warning'
-                                      ? isLightTheme
-                                        ? '#e8cb85'
-                                        : '#8a6a16'
-                                      : row.status === 'current'
-                                        ? isLightTheme
-                                          ? '#c9d9ef'
-                                          : '#335'
-                                        : themeBorder,
-                                  backgroundColor: isChecked
-                                    ? isLightTheme
-                                      ? '#eefaf0'
-                                      : '#102515'
-                                    : isOverdue
-                                      ? isLightTheme
-                                        ? '#fff1f1'
-                                        : '#3a1518'
-                                    : row.level === 'warning'
-                                      ? isLightTheme
-                                        ? '#fff9ec'
-                                        : '#2b2615'
-                                      : row.status === 'current'
-                                        ? isLightTheme
-                                          ? '#eef5ff'
-                                          : '#0f1e31'
-                                        : themeCardBgAlt,
-                                  borderRadius: 8,
-                                  padding: 8,
-                                  marginTop: 8,
-                                }}>
-                                <View
-                                  style={{
-                                    flexDirection: 'row',
-                                    alignItems: 'flex-start',
-                                    gap: 8,
-                                  }}>
-                                  <Pressable
-                                    onPress={(event) => {
-                                      event?.stopPropagation?.();
-                                      handleToggleOnboardingTaskCheck(row.id, !isChecked);
-                                    }}
-                                    disabled={onboardingTaskBusy}
-                                    style={{
-                                      width: 22,
-                                      height: 22,
-                                      borderRadius: 6,
-                                      borderWidth: 1,
-                                      borderColor: isChecked
-                                        ? isLightTheme
-                                          ? '#1f7a3a'
-                                          : '#9be7a3'
-                                        : themeBorderStrong,
-                                      backgroundColor: isChecked
-                                        ? isLightTheme
-                                          ? '#e1f5e8'
-                                          : '#1a3521'
-                                        : themeCardBg,
-                                      alignItems: 'center',
-                                      justifyContent: 'center',
-                                      marginTop: 1,
-                                      opacity: onboardingTaskBusy ? 0.7 : 1,
-                                    }}>
-                                    <Text
-                                      style={{
-                                        color: isChecked
-                                          ? isLightTheme
-                                            ? '#1f7a3a'
-                                            : '#9be7a3'
-                                          : 'transparent',
-                                        fontWeight: '700',
-                                        fontSize: 13,
-                                      }}>
-                                      {isChecked ? 'X' : ''}
-                                    </Text>
-                                  </Pressable>
-
-                                  <View style={{ flex: 1 }}>
-                                    <Text
-                                      style={{
-                                        color: themeTextPrimary,
-                                        fontWeight: '700',
-                                        fontSize: 12,
-                                      }}>
-                                      Dzien {row.dayStart}
-                                      {row.dayEnd > row.dayStart ? `-${row.dayEnd}` : ''} |{' '}
-                                      {formatDateOnly(row.dueAtMs)} |{' '}
-                                      {isChecked ? 'zrobione' : rowTimeLabel}
-                                    </Text>
-                                    <Text style={{ color: themeTextSecondary, marginTop: 3 }}>
-                                      {row.text}
-                                    </Text>
-                                  </View>
-                                </View>
-                              </View>
-                            );
-                          })
-                          )}
-                        </View>
-
-                        {completedOnboardingRows.length > 0 && (
-                          <View style={{ marginTop: 10 }}>
-                            <Pressable
-                              onPress={() =>
-                                setIsCompletedOnboardingVisible((prev) => !prev)
-                              }
-                              style={{
-                                borderWidth: 1,
-                                borderColor: themeBorder,
-                                borderRadius: 8,
-                                paddingVertical: 8,
-                                paddingHorizontal: 10,
-                                backgroundColor: themeCardBgAlt,
-                              }}>
-                              <Text
-                                style={{
-                                  color: themeTextPrimary,
-                                  fontSize: 12,
-                                  fontWeight: '700',
-                                }}>
-                                {isCompletedOnboardingVisible
-                                  ? `Ukryj zrobione (${completedOnboardingRows.length})`
-                                  : `Pokaz zrobione (${completedOnboardingRows.length})`}
-                              </Text>
-                            </Pressable>
-
-                            {isCompletedOnboardingVisible &&
-                              completedOnboardingRows.map((row) => (
-                                <View
-                                  key={`onboarding-row-completed-${row.id}`}
-                                  style={{
-                                    borderWidth: 1,
-                                    borderColor: isLightTheme ? '#86cf9d' : '#2f9e44',
-                                    backgroundColor: isLightTheme ? '#eefaf0' : '#102515',
-                                    borderRadius: 8,
-                                    padding: 8,
-                                    marginTop: 8,
-                                  }}>
-                                  <View
-                                    style={{
-                                      flexDirection: 'row',
-                                      alignItems: 'flex-start',
-                                      gap: 8,
-                                    }}>
-                                    <Pressable
-                                      onPress={(event) => {
-                                        event?.stopPropagation?.();
-                                        handleToggleOnboardingTaskCheck(row.id, false);
-                                      }}
-                                      disabled={onboardingTaskBusy}
-                                      style={{
-                                        width: 22,
-                                        height: 22,
-                                        borderRadius: 6,
-                                        borderWidth: 1,
-                                        borderColor: isLightTheme ? '#1f7a3a' : '#9be7a3',
-                                        backgroundColor: isLightTheme ? '#e1f5e8' : '#1a3521',
-                                        alignItems: 'center',
-                                        justifyContent: 'center',
-                                        marginTop: 1,
-                                        opacity: onboardingTaskBusy ? 0.7 : 1,
-                                      }}>
-                                      <Text
-                                        style={{
-                                          color: isLightTheme ? '#1f7a3a' : '#9be7a3',
-                                          fontWeight: '700',
-                                          fontSize: 13,
-                                        }}>
-                                      X
-                                      </Text>
-                                    </Pressable>
-
-                                    <View style={{ flex: 1 }}>
-                                      <Text
-                                        style={{
-                                          color: themeTextPrimary,
-                                          fontWeight: '700',
-                                          fontSize: 12,
-                                        }}>
-                                        Dzien {row.dayStart}
-                                        {row.dayEnd > row.dayStart ? `-${row.dayEnd}` : ''} |{' '}
-                                        {formatDateOnly(row.dueAtMs)} | zrobione
-                                      </Text>
-                                      <Text style={{ color: themeTextSecondary, marginTop: 3 }}>
-                                        {row.text}
-                                      </Text>
-                                    </View>
-                                  </View>
-                                </View>
-                              ))}
-                          </View>
-                        )}
-                      </>
-                    )}
-                  </>
-                )}
-              </View>
-            )}
-
-          {isReviewSection && (
+          <ReviewSection isVisible={isReviewSection}>
             <View
               style={{
                 borderWidth: 1,
@@ -32283,271 +30399,41 @@ export default function HomeScreen() {
                 ) : null}
                   </View>
                 )}
-              </>
-            )}
+                </>
+                )}
             </View>
-          )}
+          </ReviewSection>
 
 
-          {isReviewSection && selectedTank && (
-            <View
-              style={{
-                borderWidth: 1,
-                borderColor: waterActionCalendar.overdueCount > 0
-                  ? isLightTheme
-                    ? '#e8a08c'
-                    : '#d9480f'
-                  : themeBorder,
-                borderRadius: 10,
-                padding: 12,
-                marginBottom: 18,
-                backgroundColor: waterActionCalendar.overdueCount > 0
-                  ? isLightTheme
-                    ? '#fff4f0'
-                    : '#2b1410'
-                  : themeCardBg,
-              }}>
-              <Pressable
-                onPress={() => setIsWaterTestingExpanded((prev) => !prev)}
-                disabled={!hasTaskReminderAccess}
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  opacity: hasTaskReminderAccess ? 1 : 0.75,
-                }}>
-                <Text
-                  style={{
-                    color: themeTextPrimary,
-                    fontWeight: '700',
-                    fontSize: 16,
-                  }}>
-                  Kalendarz akcji (14 dni)
-                </Text>
-                <Text style={{ color: themeActionText, fontWeight: '700' }}>
-                  {hasTaskReminderAccess
-                    ? isWaterTestingExpanded
-                      ? t('hide')
-                      : t('show')
-                    : t('settingsSubscriptionTierPremium')}
-                </Text>
-              </Pressable>
-
-              {!hasTaskReminderAccess ? (
-                <Text style={{ color: themeTextSecondary, marginTop: 8, fontSize: 12 }}>
-                  {t('subscriptionTasksLocked')}
-                </Text>
-              ) : !isWaterTestingExpanded ? null : (
-                <View style={{ marginTop: 8 }}>
-                  <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
-                    Plan obejmuje najblizsze {waterActionCalendar.windowDays} dni i laczy podmiany,
-                    testy, odmulanie oraz serwis filtra.
-                  </Text>
-                  <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
-                    {waterTestingSchedule.reason}
-                  </Text>
-
-                  <View
-                    style={{
-                      marginTop: 10,
-                      flexDirection: 'row',
-                      flexWrap: 'wrap',
-                      gap: 8,
-                    }}>
-                    <View
-                      style={{
-                        borderWidth: 1,
-                        borderColor: themeBorder,
-                        borderRadius: 999,
-                        paddingVertical: 5,
-                        paddingHorizontal: 10,
-                        backgroundColor: themeCardBg,
-                      }}>
-                      <Text style={{ color: themeTextSecondary, fontSize: 11 }}>
-                        Podmiana: co {waterActionCalendar.waterChangeIntervalDays} dni
-                      </Text>
-                    </View>
-                    <View
-                      style={{
-                        borderWidth: 1,
-                        borderColor: themeBorder,
-                        borderRadius: 999,
-                        paddingVertical: 5,
-                        paddingHorizontal: 10,
-                        backgroundColor: themeCardBg,
-                      }}>
-                      <Text style={{ color: themeTextSecondary, fontSize: 11 }}>
-                        Odmulanie: co {waterActionCalendar.gravelVacuumIntervalDays} dni
-                      </Text>
-                    </View>
-                    <View
-                      style={{
-                        borderWidth: 1,
-                        borderColor: themeBorder,
-                        borderRadius: 999,
-                        paddingVertical: 5,
-                        paddingHorizontal: 10,
-                        backgroundColor: themeCardBg,
-                      }}>
-                      <Text style={{ color: themeTextSecondary, fontSize: 11 }}>
-                        Filtr: co {waterActionCalendar.filterServiceIntervalDays} dni
-                      </Text>
-                    </View>
-                  </View>
-
-                  {waterTestingSchedule.requiresPostWaterChangeTest ? (
-                    <Text
-                      style={{
-                        color: isLightTheme ? '#9a3412' : '#ffdd99',
-                        marginTop: 10,
-                        fontSize: 12,
-                      }}>
-                      Po podmianie wykonaj dodatkowy test kontrolny.
-                    </Text>
-                  ) : null}
-
-                  {waterActionCalendar.days.length === 0 ? (
-                    <Text style={{ color: themeTextSecondary, marginTop: 10, fontSize: 12 }}>
-                      Brak zaplanowanych akcji na najblizsze 14 dni.
-                    </Text>
-                  ) : (
-                    <View style={{ marginTop: 10 }}>
-                      {waterActionCalendar.days.map((day, dayIndex) => (
-                        <View
-                          key={`water-action-day-${day.dayBucketMs}`}
-                          style={{
-                            borderWidth: 1,
-                            borderColor: themeBorder,
-                            borderRadius: 10,
-                            padding: 10,
-                            marginTop: dayIndex === 0 ? 0 : 8,
-                            backgroundColor: themeCardBg,
-                          }}>
-                          <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 13 }}>
-                            {day.date}
-                          </Text>
-                          {day.actions.map((action, actionIndex) => {
-                            const isOverdue = Boolean(action?.isOverdue);
-                            const actionBusyKeyBase = `${action?.stateKey ?? ''}`;
-                            const isBusy =
-                              maintenanceActionBusyId === `${actionBusyKeyBase}-done` ||
-                              maintenanceActionBusyId === `${actionBusyKeyBase}-skip` ||
-                              maintenanceActionBusyId === `${actionBusyKeyBase}-postpone`;
-
-                            return (
-                              <View
-                                key={`water-action-item-${day.dayBucketMs}-${action.id}-${actionIndex}`}
-                                style={{
-                                  borderWidth: 1,
-                                  borderColor: isOverdue
-                                    ? isLightTheme
-                                      ? '#e8a08c'
-                                      : '#7a1e1e'
-                                    : themeBorder,
-                                  backgroundColor: isOverdue
-                                    ? isLightTheme
-                                      ? '#fff4f0'
-                                      : '#2a1212'
-                                    : themeCardBgAlt,
-                                  borderRadius: 8,
-                                  padding: 8,
-                                  marginTop: 6,
-                                }}>
-                                <Text
-                                  style={{
-                                    color: isOverdue
-                                      ? isLightTheme
-                                        ? '#b45309'
-                                        : '#ffb3b3'
-                                      : themeTextPrimary,
-                                    fontWeight: '700',
-                                    fontSize: 12,
-                                  }}>
-                                  {action.title}
-                                </Text>
-                                {isOverdue ? (
-                                  <Text
-                                    style={{
-                                      color: isLightTheme ? '#9a3412' : '#ffdd99',
-                                      marginTop: 2,
-                                      fontSize: 11,
-                                      fontWeight: '700',
-                                    }}>
-                                    Przeterminowane
-                                  </Text>
-                                ) : null}
-                                {action.details ? (
-                                  <Text style={{ color: themeTextSecondary, marginTop: 3, fontSize: 12 }}>
-                                    {action.details}
-                                  </Text>
-                                ) : null}
-                                <View
-                                  style={{
-                                    marginTop: 8,
-                                    flexDirection: 'row',
-                                    flexWrap: 'wrap',
-                                    gap: 8,
-                                  }}>
-                                  <Pressable
-                                    onPress={() => handleUpdateMaintenanceActionState(action, 'done')}
-                                    disabled={isBusy}
-                                    style={{
-                                      borderWidth: 1,
-                                      borderColor: themeBorderStrong,
-                                      borderRadius: 999,
-                                      paddingVertical: 5,
-                                      paddingHorizontal: 10,
-                                      backgroundColor: themeCardBg,
-                                      opacity: isBusy ? 0.6 : 1,
-                                    }}>
-                                    <Text style={{ color: themeTextPrimary, fontSize: 11, fontWeight: '700' }}>
-                                      ☐ Zrobione
-                                    </Text>
-                                  </Pressable>
-                                  <Pressable
-                                    onPress={() => handleUpdateMaintenanceActionState(action, 'skip')}
-                                    disabled={isBusy}
-                                    style={{
-                                      borderWidth: 1,
-                                      borderColor: themeBorder,
-                                      borderRadius: 999,
-                                      paddingVertical: 5,
-                                      paddingHorizontal: 10,
-                                      backgroundColor: themeCardBg,
-                                      opacity: isBusy ? 0.6 : 1,
-                                    }}>
-                                    <Text style={{ color: themeTextSecondary, fontSize: 11, fontWeight: '700' }}>
-                                      Pomin
-                                    </Text>
-                                  </Pressable>
-                                  <Pressable
-                                    onPress={() => handleUpdateMaintenanceActionState(action, 'postpone')}
-                                    disabled={isBusy}
-                                    style={{
-                                      borderWidth: 1,
-                                      borderColor: themeBorder,
-                                      borderRadius: 999,
-                                      paddingVertical: 5,
-                                      paddingHorizontal: 10,
-                                      backgroundColor: themeCardBg,
-                                      opacity: isBusy ? 0.6 : 1,
-                                    }}>
-                                    <Text style={{ color: themeTextSecondary, fontSize: 11, fontWeight: '700' }}>
-                                      Przesun +1 dzien
-                                    </Text>
-                                  </Pressable>
-                                </View>
-                              </View>
-                            );
-                          })}
-                        </View>
-                      ))}
-                    </View>
-                  )}
-                </View>
-              )}
-            </View>
-          )}
+          <ReviewSection isVisible={isReviewSection && Boolean(selectedTank)}>
+            <ActionCalendarPanel
+              isVisible
+              isExpanded={isWaterTestingExpanded}
+              hasTaskReminderAccess={hasTaskReminderAccess}
+              waterActionCalendar={waterActionCalendar}
+              waterTestingReason={waterTestingSchedule.reason}
+              requiresPostWaterChangeTest={waterTestingSchedule.requiresPostWaterChangeTest}
+              maintenanceActionBusyId={maintenanceActionBusyId}
+              isLightTheme={isLightTheme}
+              theme={{
+                border: themeBorder,
+                cardBg: themeCardBg,
+                cardBgAlt: themeCardBgAlt,
+                borderStrong: themeBorderStrong,
+                textPrimary: themeTextPrimary,
+                textSecondary: themeTextSecondary,
+                actionText: themeActionText,
+              }}
+              labels={{
+                show: t('show'),
+                hide: t('hide'),
+                premium: t('settingsSubscriptionTierPremium'),
+                tasksLocked: t('subscriptionTasksLocked'),
+              }}
+              onToggleExpanded={() => setIsWaterTestingExpanded((prev) => !prev)}
+              onAction={handleUpdateMaintenanceActionState}
+            />
+          </ReviewSection>
 
           {isTankSection && (
             <>
@@ -32747,7 +30633,7 @@ export default function HomeScreen() {
             </>
           )}
 
-          {isHistorySection && (
+          <HistorySection isVisible={isHistorySection}>
             <View
                 style={{
                   marginTop: 18,
@@ -33683,7 +31569,7 @@ export default function HomeScreen() {
                 </>
               )}
             </View>
-          )}
+          </HistorySection>
           </View>
         </ScrollView>
         {isDeleteAccountReauthModalVisible ? (
@@ -33967,5 +31853,9 @@ export default function HomeScreen() {
     </SafeAreaView>
   );
 }
+
+
+
+
 
 
