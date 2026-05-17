@@ -59,21 +59,21 @@ function resolveAiBackendBaseUrl(): string {
 
 function mapDiagnosticCodeToUserMessage(code: string): string {
   if (code === AI_DIAGNOSTIC_CODES.UNAUTHORIZED) {
-    return 'Sesja wygasla. Zaloguj sie ponownie i sprobuj jeszcze raz.';
+    return 'Sesja wygasla. Zaloguj się ponownie i spróbuj jeszcze raz.';
   }
   if (code === AI_DIAGNOSTIC_CODES.TIMEOUT) {
-    return 'Analiza obrazu trwa zbyt dlugo. Sprobuj ponownie za chwile.';
+    return 'Analiza obrazu trwa zbyt dlugo. Spróbuj ponownie za chwile.';
   }
   if (code === AI_DIAGNOSTIC_CODES.VALIDATION) {
-    return 'Nie udalo sie odczytac zdjecia. Wybierz wyrazniejsze ujecie.';
+    return 'Nie udalo sie odczytac zdjęcia. Wybierz wyrazniejsze ujecie.';
   }
   if (code === AI_DIAGNOSTIC_CODES.PROVIDER_ERROR) {
-    return 'Analiza obrazu jest chwilowo niedostepna. Sprobuj ponownie za moment.';
+    return 'Analiza obrazu jest chwilowo niedostepna. Spróbuj ponownie za moment.';
   }
   if (code === AI_DIAGNOSTIC_CODES.UNAVAILABLE) {
     return 'Asystent AI nie jest jeszcze skonfigurowany dla tego builda.';
   }
-  return 'Wystapil blad analizy obrazu. Sprobuj ponownie.';
+  return 'Wystapil błąd analizy obrazu. Spróbuj ponownie.';
 }
 
 function isAbortError(error: unknown): boolean {
@@ -130,7 +130,7 @@ async function loadImagePickerModule() {
     return await import('expo-image-picker');
   } catch {
     throw new AiChatRequestError(
-      'Modul wyboru zdjec nie jest dostepny w tym buildzie.',
+      'Modul wyboru zdjęć nie jest dostepny w tym buildzie.',
       AI_DIAGNOSTIC_CODES.UNAVAILABLE,
       false
     );
@@ -163,8 +163,8 @@ export async function pickVisionImage(
   if (!permissionResult?.granted) {
     throw new AiChatRequestError(
       isCamera
-        ? 'Brak zgody na aparat. Zezwol na dostep w ustawieniach.'
-        : 'Brak zgody na galerie. Zezwol na dostep do zdjec w ustawieniach.',
+        ? 'Brak zgody na aparat. Zezwol na dostep w ustawieńiach.'
+        : 'Brak zgody na galerie. Zezwol na dostep do zdjęć w ustawieńiach.',
       AI_DIAGNOSTIC_CODES.VALIDATION,
       false
     );
@@ -302,7 +302,7 @@ export async function requestAiVisionAnalyze({
         Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({
-        question: safeQuestion || 'Co widzisz na tym zdjeciu akwarium?',
+        question: safeQuestion || 'Co widzisz na tym zdjęćiu akwarium?',
         additionalInfo: safeAdditionalInfo,
         tankId: safeTankId || undefined,
         imageUrl: safeImageUrl,

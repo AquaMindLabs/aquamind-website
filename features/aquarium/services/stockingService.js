@@ -1,3 +1,5 @@
+import { normalizeArray } from '@/shared/utils/runtimeGuards';
+
 export function getFishQuantityService(item) {
   const parsed = Number(item.quantity);
 
@@ -39,7 +41,9 @@ export function estimateBioloadLitersPerFishService(minLiters) {
 }
 
 export function buildFishStockingSummaryService(stockItems, tankLiters) {
-  const fishItems = stockItems.filter((item) => item.type === 'fish');
+  const fishItems = normalizeArray(stockItems).filter(
+    (item) => item?.type === 'fish'
+  );
   const tank = Number(tankLiters);
 
   if (!Number.isFinite(tank) || tank <= 0 || fishItems.length === 0) {

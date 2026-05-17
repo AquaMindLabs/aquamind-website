@@ -11,6 +11,7 @@ export type MaintenanceActionMode = 'done' | 'skip' | 'postpone';
 
 export type CalendarActionLike = {
   stateKey?: string;
+  stateKeys?: string[];
   sourceDueDayBucketMs?: number;
 };
 
@@ -72,16 +73,31 @@ export function normalizeMaintenanceActionState(value: unknown): MaintenanceActi
   );
 }
 
-export function buildNextMaintenanceActionState(params: {
+export function buildNextMaintenanceActionState(params?: {
   currentState: unknown;
   action: CalendarActionLike | null | undefined;
   mode: MaintenanceActionMode;
   latestMeasurementDayBucketMs?: number;
   now?: Date;
 }): { nextState: MaintenanceActionState; actionStateKey: string } | null {
-  const { action, mode, latestMeasurementDayBucketMs = 0, now = new Date() } = params;
+  const safeParams =
+    params && typeof params === 'object'
+      ? params
+      : ({ currentState: {}, action: null, mode: 'done' } as const);
+  const {
+    action,
+    mode,
+    latestMeasurementDayBucketMs = 0,
+    now = new Date(),
+  } = safeParams;
   const actionStateKey = String(action?.stateKey ?? '').trim().toLowerCase();
-  if (!actionStateKey) {
+  const actionStateKeys = Array.isArray(action?.stateKeys)
+    ? action.stateKeys
+        .map((item) => String(item ?? '').trim().toLowerCase())
+        .filter(Boolean)
+    : [];
+  const uniqueStateKeys = [...new Set([actionStateKey, ...actionStateKeys].filter(Boolean))];
+  if (uniqueStateKeys.length === 0) {
     return null;
   }
 
@@ -93,38 +109,48 @@ export function buildNextMaintenanceActionState(params: {
       ? Number(action?.sourceDueDayBucketMs)
       : nowDayBucketMs;
 
-  const normalized = normalizeMaintenanceActionState(params.currentState);
-  const currentEntry = normalized[actionStateKey] ?? {
-    lastCompletedAtMs: null,
-    lastSkippedAtMs: null,
-    postponedUntilMs: null,
-    updatedAtMs: null,
-  };
-  const nextEntry: MaintenanceActionStateEntry = {
-    ...currentEntry,
-    updatedAtMs: Date.now(),
-  };
-
-  if (mode === 'done') {
-    nextEntry.lastCompletedAtMs =
-      actionStateKey === 'water_tests'
-        ? Math.max(nowDayBucketMs, Number(latestMeasurementDayBucketMs) || 0)
-        : nowDayBucketMs;
-    nextEntry.postponedUntilMs = null;
-  } else if (mode === 'skip') {
-    nextEntry.lastSkippedAtMs = Math.max(nowDayBucketMs, sourceDueDayBucketMs);
-    nextEntry.postponedUntilMs = null;
-  } else if (mode === 'postpone') {
-    const baseDayBucketMs = Math.max(nowDayBucketMs, sourceDueDayBucketMs);
-    nextEntry.postponedUntilMs = baseDayBucketMs + dayMs;
-  } else {
-    return null;
-  }
-
+  const normalized = normalizeMaintenanceActionState(safeParams.currentState);
   const nextState: MaintenanceActionState = {
     ...normalized,
-    [actionStateKey]: nextEntry,
+  };
+  const updateStateEntry = (stateKey: string) => {
+    const currentEntry = normalized[stateKey] ?? {
+      lastCompletedAtMs: null,
+      lastSkippedAtMs: null,
+      postponedUntilMs: null,
+      updatedAtMs: null,
+    };
+    const nextEntry: MaintenanceActionStateEntry = {
+      ...currentEntry,
+      updatedAtMs: Date.now(),
+    };
+    const isWaterTestsState = stateKey === 'water_tests' || stateKey.startsWith('water_tests_');
+
+    if (mode === 'done') {
+      nextEntry.lastCompletedAtMs = isWaterTestsState
+        ? Math.max(nowDayBucketMs, Number(latestMeasurementDayBucketMs) || 0)
+        : nowDayBucketMs;
+      nextEntry.postponedUntilMs = null;
+    } else if (mode === 'skip') {
+      nextEntry.lastSkippedAtMs = Math.max(nowDayBucketMs, sourceDueDayBucketMs);
+      nextEntry.postponedUntilMs = null;
+    } else if (mode === 'postpone') {
+      const baseDayBucketMs = Math.max(nowDayBucketMs, sourceDueDayBucketMs);
+      nextEntry.postponedUntilMs = baseDayBucketMs + dayMs;
+    } else {
+      return false;
+    }
+
+    nextState[stateKey] = nextEntry;
+    return true;
   };
 
-  return { nextState, actionStateKey };
+  for (const stateKey of uniqueStateKeys) {
+    const ok = updateStateEntry(stateKey);
+    if (!ok) {
+      return null;
+    }
+  }
+
+  return { nextState, actionStateKey: uniqueStateKeys[0] ?? '' };
 }

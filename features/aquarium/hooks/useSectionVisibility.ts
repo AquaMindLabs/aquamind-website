@@ -15,6 +15,7 @@ export function useSectionVisibility({
   const isEquipmentSection = activeSection === 'equipment';
   const isFishSection = activeSection === 'fish';
   const isPlantSection = activeSection === 'plant';
+  const isAiSection = activeSection === 'ai';
   const isIssuesSection = activeSection === 'issues';
   const isDiseaseSection = activeSection === 'disease';
   const isPlantDiseaseSection = activeSection === 'plantDisease';
@@ -26,7 +27,8 @@ export function useSectionVisibility({
     isTankInfoSection ||
     isEquipmentSection ||
     isFishSection ||
-    isPlantSection;
+    isPlantSection ||
+    isAiSection;
   const isHealthSection =
     isIssuesSection || isDiseaseSection || isPlantDiseaseSection || isAlgaeSection;
   const isFishCatalogMenuMode = isFishSection && sectionEntrySource === 'menu';
@@ -43,6 +45,7 @@ export function useSectionVisibility({
     isEquipmentSection,
     isFishSection,
     isPlantSection,
+    isAiSection,
     isIssuesSection,
     isDiseaseSection,
     isPlantDiseaseSection,

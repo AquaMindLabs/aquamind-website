@@ -383,10 +383,16 @@ function createFirestoreSubscriptionSyncStore(db, options = {}) {
 }
 
 function sanitizeEventLogContext(event) {
+  const userIdHash = crypto
+    .createHash('sha1')
+    .update(String(event.userId ?? ''))
+    .digest('hex')
+    .slice(0, 12);
+
   return {
     eventId: event.eventId,
     type: event.type,
-    userId: event.userId,
+    userIdHash,
     productId: event.productId,
     eventTimestampMs: event.eventTimestampMs,
     store: event.store,
@@ -441,6 +447,14 @@ async function processRevenueCatWebhookEvent({
           processedAt: new Date(observedAtMs).toISOString(),
           outcome: 'stale_ignored',
         });
+
+        if (typeof logger?.info === 'function') {
+          logger.info('BILLING_WEBHOOK_IGNORED_STALE_EVENT', {
+            ...safeEventContext,
+            previousEventAtMs,
+            staleEventAtMs: eventAtMs,
+          });
+        }
 
         return {
           ok: true,

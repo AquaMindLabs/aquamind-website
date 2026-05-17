@@ -185,10 +185,10 @@ export function generateAdaptiveTaskSchedule(tank, context = {}) {
     key: 'water-change',
     title: 'Podmiana wody',
     details: highToxins
-      ? 'Parametry toksyn sa niebezpieczne - wykonaj podmiane natychmiast.'
+      ? 'Parametry toksyn sa niebezpieczne - wykonaj podmianę natychmiast.'
       : no2nh3Risk || no3Trend.direction === 'up'
         ? 'Podmiany czestsze do stabilizacji trendow NO2/NO3.'
-        : 'Rutynowa podmiana dla utrzymania stabilnosci biologicznej.',
+        : 'Rutynowa podmiana dla utrzymania stabilności biologicznej.',
     baseIntervalDays: tankAgeDays <= 21 ? 2 : tankAgeDays <= 45 ? 4 : 7,
     intervalModifierDays: no2nh3Risk ? -2 : no3Trend.direction === 'up' ? -1 : 0,
     riskBoost: 10,
@@ -210,7 +210,7 @@ export function generateAdaptiveTaskSchedule(tank, context = {}) {
     key: 'filter-maintenance',
     title: 'Kontrola i czyszczenie filtra',
     details:
-      'Sprawdz przeplyw, droznosc i stan mediow. Nie plucz wszystkich mediow biologicznych naraz.',
+      'Sprawdz przepływ, droznosc i stan mediow. Nie płucz wszystkich mediow biologicznych naraz.',
     baseIntervalDays: 14,
     intervalModifierDays:
       String(equipmentAssessment?.filter?.status ?? '').toLowerCase() === 'warning'
@@ -226,7 +226,7 @@ export function generateAdaptiveTaskSchedule(tank, context = {}) {
     key: 'prefilter-rinse',
     title: 'Plukanie prefiltra',
     details:
-      'Przeplyw i natlenienie zaleza od droznosci prefiltra. Plucz czesciej przy duzej obsadzie.',
+      'Przepływ i natlenienie zaleza od droznosci prefiltra. P?ucz czesciej przy duzej obsadzie.',
     baseIntervalDays: fishCount >= 20 ? 4 : fishCount >= 10 ? 7 : 10,
     intervalModifierDays: riskLevel === 'critical' ? -2 : 0,
     riskBoost: 4,
@@ -237,7 +237,7 @@ export function generateAdaptiveTaskSchedule(tank, context = {}) {
     key: 'fertilization',
     title: 'Nawozenie roslin',
     details:
-      'Dostosuj dawki nawozenia do kondycji roslin, swiatla i trendow parametrów. Zmieniaj stopniowo.',
+      'Dostosuj dawki nawozenia do kondycji roslin, światła i trendow parametrów. Zmieniaj stopniowo.',
     baseIntervalDays: plantCount > 0 ? 2 : 14,
     intervalModifierDays: plantCount > 0 && no3Trend.direction === 'up' ? -1 : 0,
     riskBoost: plantCount > 0 ? 3 : -8,
@@ -248,7 +248,7 @@ export function generateAdaptiveTaskSchedule(tank, context = {}) {
     key: 'pruning',
     title: 'Przycinka roslin',
     details:
-      'Usuwaj nadmierny przyrost i slabe liscie, zeby poprawic cyrkulacje i ograniczyc ryzyko glonow.',
+      'Usuwaj nadmierny przyrost i słabe liście, zeby poprawic cyrkulacje i ograniczy? ryzyko glonow.',
     baseIntervalDays: plantCount >= 12 ? 7 : plantCount >= 5 ? 10 : 21,
     intervalModifierDays: plantCount > 0 && no3Trend.direction === 'up' ? -2 : 0,
     riskBoost: plantCount > 0 ? 2 : -10,
@@ -265,8 +265,8 @@ export function generateAdaptiveTaskSchedule(tank, context = {}) {
     key: 'temperature-check',
     title: 'Kontrola temperatury',
     details: tempOutOfRange
-      ? 'Temperatura poza zakresem docelowym - kontroluj codziennie do stabilizacji.'
-      : 'Sprawdzaj stabilnosc temperatury i dzialanie grzalki.',
+      ? 'Temperatura poza zakresem docelowym - kontroluj codzieńnie do stabilizacji.'
+      : 'Sprawdzaj stabilność temperatury i działanie grzalki.',
     baseIntervalDays: tempOutOfRange || tankAgeDays <= 30 ? 1 : 3,
     intervalModifierDays:
       temperatureTrend.direction !== 'stable' && temperatureTrend.direction !== 'unknown'
@@ -280,7 +280,7 @@ export function generateAdaptiveTaskSchedule(tank, context = {}) {
     key: 'equipment-service',
     title: 'Serwis sprzetu',
     details:
-      'Sprawdz stan wirnika, przewodow, uszczelek i oswietlenia. Zapobiegaj awariom przez regularny serwis.',
+      'Sprawdz stan wirnika, przewodow, uszczelek i oświetlenia. Zapobiegaj awariom przez regularny serwis.',
     baseIntervalDays: 30,
     intervalModifierDays:
       String(equipmentAssessment?.filter?.status ?? '').toLowerCase() === 'critical' ? -20 : 0,
@@ -450,7 +450,7 @@ export function buildTodayActionPlanService(tank, context = {}) {
       'critical',
       'critical-toxins',
       'Natychmiastowy alert wody',
-      'NO2 lub NH3/NH4 jest na poziomie niebezpiecznym. Zrob szybka podmiane wody i ogranicz karmienie.',
+      'NO2 lub NH3/NH4 jest na poziomie niebezpiecznym. Zrób szybka podmianę wody i ogranicz karmienie.',
       'water',
       100
     );
@@ -472,7 +472,7 @@ export function buildTodayActionPlanService(tank, context = {}) {
     addCandidate(
       'critical',
       'critical-analysis',
-      topCriticalRecommendation?.action || 'Krytyczne odchylenie parametrow',
+      topCriticalRecommendation?.action || 'Krytyczne odchylenie parametrów',
       topCriticalRecommendation?.parameter
         ? `Parametr: ${topCriticalRecommendation.parameter}`
         : 'Wymagana szybka korekta i kontrolny pomiar.',
@@ -511,7 +511,7 @@ export function buildTodayActionPlanService(tank, context = {}) {
     addCandidate(
       criticalCount > 0 ? 'critical' : 'important',
       'today-recommendations',
-      `Wykonaj ${todayRecommendations.length} korekty parametrow`,
+      `Wykonaj ${todayRecommendations.length} korekty parametrów`,
       todayRecommendations
         .slice(0, 2)
         .map((item) => `${item.parameter}: ${item.action}`)
@@ -601,7 +601,7 @@ export function buildTodayActionPlanService(tank, context = {}) {
       String(
         equipmentAssessment?.filter?.actions?.[0] ??
           equipmentAssessment?.filter?.details ??
-          'Sprawdz dzialanie i wydajnosc filtra.'
+          'Sprawdz działanie i wydajnosc filtra.'
       ),
       'equipment',
       92
@@ -628,7 +628,7 @@ export function buildTodayActionPlanService(tank, context = {}) {
       String(
         equipmentAssessment?.heater?.actions?.[0] ??
           equipmentAssessment?.heater?.details ??
-          'Sprawdz stabilnosc temperatury.'
+          'Sprawdz stabilność temperatury.'
       ),
       'equipment',
       66
@@ -641,7 +641,7 @@ export function buildTodayActionPlanService(tank, context = {}) {
       'critical',
       'critical-stocking',
       'Obsada jest niekompatybilna',
-      'Wysokie ryzyko konfliktow lub niezgodnosci warunkow.',
+      'Wysokie ryzyko konfliktów lub niezgodnosci warunkow.',
       'stocking',
       90
     );
@@ -709,7 +709,7 @@ export function buildTodayActionPlanService(tank, context = {}) {
       'routine',
       'routine-young-tank-observation',
       `Mlody zbiornik (${tankAgeDays} dni)`,
-      'Obserwuj stabilnosc i unikaj gwaltownych zmian.',
+      'Obserwuj stabilność i unikaj gwałtownych zmian.',
       'age',
       44
     );
@@ -720,8 +720,8 @@ export function buildTodayActionPlanService(tank, context = {}) {
     addCandidate(
       'important',
       'important-no-measurements',
-      'Brak aktualnych pomiarow',
-      'Dodaj podstawowy pomiar wody, aby odswiezyc analize.',
+      'Brak aktualnych pomiarów',
+      'Dodaj podstawowy pomiar wody, aby odświeżyc analizę.',
       'water',
       78
     );
@@ -744,7 +744,7 @@ export function buildTodayActionPlanService(tank, context = {}) {
       'critical',
       'critical-health-score',
       `Niski wynik stanu: ${Math.round(Number(healthAssessment.score))}/100`,
-      'Skup sie na trzech najwiekszych karach i wykonaj korekty dzis.',
+      'Skup sie na trzech największych karach i wykonaj korekty dzis.',
       'health',
       88
     );
@@ -799,15 +799,15 @@ export function buildTodayActionPlanService(tank, context = {}) {
 
 const ONBOARDING_DELAY_MESSAGES = {
   no2Detected:
-    'Ten krok zostal przesuniety, poniewaz NO2 jest nadal wykrywalne. Nie zwiekszaj obsady i wykonaj kolejny pomiar za 24-48 godzin.',
+    'Ten krok został przesunięty, poniewaz NO2 jest nadal wykrywalne. Nie zwiększaj obsady i wykonaj kolejny pomiar za 24-48 godzin.',
   missingFreshNo2:
-    'Brakuje aktualnego pomiaru NO2. Przed przejsciem do kolejnego kroku wykonaj test. Bez tego aplikacja nie moze bezpiecznie ocenic gotowosci zbiornika.',
+    'Brakuje aktualnego pomiaru NO2. Przed przejsciem do kolejnego kroku wykonaj test. Bez tego aplikacja nie może bezpiecznie ocenic gotowosci zbiornika.',
   unstableTemperature:
     'Temperatura nie jest jeszcze stabilna. Przed dodaniem obsady upewnij sie, ze akwarium utrzymuje docelowa temperature przez minimum 24-48 godzin.',
   phSwing:
-    'pH zmienilo sie zauwazalnie wzgledem poprzedniego pomiaru. Przed kolejnym krokiem warto potwierdzic stabilnosc parametrow.',
+    'pH zmienilo sie zauważalnie wzgledem poprzedniego pomiaru. Przed kolejnym krokiem warto potwierdzic stabilność parametrów.',
   highNo3:
-    'NO3 jest podwyzszone. Rozwaz podmiane wody i ponowny pomiar. Samo NO3 nie zawsze blokuje kolejny krok, ale przy wysokich wartosciach zwieksza ryzyko problemow.',
+    'NO3 jest podwyzszone. Rozwaz podmianę wody i ponowny pomiar. Samo NO3 nie zawsze blokuje kolejny krok, ale przy wysokich wartosciach zwiększa ryzyko problemów.',
 };
 
 const NO2_FRESH_HOURS_BY_START_TYPE = {
@@ -822,7 +822,7 @@ const ONBOARDING_STEP_LIBRARY = {
       id: 'nfs-day0-start',
       title: 'Uruchomienie akwarium',
       description:
-        'Akwarium zostalo zalozone. Najwazniejsze jest uruchomienie filtracji i stabilnych warunkow.',
+        'Akwarium zostało zalozone. Najważniejsze jest uruchomienie filtracji i stabilnych warunkow.',
       startType: 'new_from_scratch',
       earliestDay: 1,
       recommendedDay: 1,
@@ -840,7 +840,7 @@ const ONBOARDING_STEP_LIBRARY = {
       id: 'nfs-day1-equipment-stability',
       title: 'Stabilizacja sprzetu',
       description:
-        'Zbiornik stabilizuje temperature i prace sprzetu. Delikatne metnienie moze byc normalne.',
+        'Zbiornik stabilizuje temperature i prace sprzetu. Delikatne metnienie może byc normalne.',
       startType: 'new_from_scratch',
       earliestDay: 2,
       recommendedDay: 2,
@@ -857,7 +857,7 @@ const ONBOARDING_STEP_LIBRARY = {
       id: 'nfs-day3-first-no2',
       title: 'Pierwsza kontrola NO2',
       description:
-        'W akwarium moze zaczynac pojawiac sie NO2. To normalny etap dojrzewania biologicznego.',
+        'W akwarium może zaczynac pojawiac sie NO2. To normalny etap dojrzewania biologicznego.',
       startType: 'new_from_scratch',
       earliestDay: 3,
       recommendedDay: 3,
@@ -881,7 +881,7 @@ const ONBOARDING_STEP_LIBRARY = {
       actions: [
         'Kontynuuj pomiary NO2.',
         'Nie dodawaj obsady.',
-        'Nie plucz mediow filtracyjnych pod kranem.',
+        'Nie płucz mediow filtracyjnych pod kranem.',
       ],
       tests: ['NO2', 'NO3', 'pH/KH'],
       requiredMeasurements: ['no2', 'no3'],
@@ -896,7 +896,7 @@ const ONBOARDING_STEP_LIBRARY = {
       recommendedDay: 14,
       delayDays: 3,
       actions: [
-        'Ocen, czy zbiornik moze przejsc dalej.',
+        'Ocen, czy zbiornik może przejsc dalej.',
         'Jesli NO2 jest wykrywalne, przeloz kolejny krok o minimum 3 dni.',
       ],
       tests: ['NO2', 'NO3'],
@@ -933,13 +933,13 @@ const ONBOARDING_STEP_LIBRARY = {
       id: 'nfs-day28-post-stocking',
       title: 'Kontrola po pierwszej obsadzie',
       description:
-        'Po dodaniu ryb filtr biologiczny dopasowuje sie do wiekszego obciazenia.',
+        'Po dodaniu ryb filtr biologiczny dopasowuje sie do większego obciążenia.',
       startType: 'new_from_scratch',
       earliestDay: 28,
       recommendedDay: 28,
       delayDays: 3,
       actions: [
-        'Nie zwiekszaj obsady, jesli NO2 wzroslo.',
+        'Nie zwiększaj obsady, jesli NO2 wzroslo.',
         'Kontynuuj ostrozne karmienie.',
       ],
       tests: ['NO2', 'NO3'],
@@ -951,16 +951,16 @@ const ONBOARDING_STEP_LIBRARY = {
     },
     {
       id: 'nfs-day35-gradual-stocking',
-      title: 'Stopniowe zwiekszenie obsady',
+      title: 'Stopniowe zwiększenie obsady',
       description:
-        'Jesli parametry pozostaly stabilne, mozna ostroznie dodac kolejna czesc obsady.',
+        'Jesli parametry pozostały stabilne, mozna ostroznie dodac kolejna czesc obsady.',
       startType: 'new_from_scratch',
       earliestDay: 35,
       recommendedDay: 35,
       delayDays: 3,
       actions: [
         'Dodaj kolejna mala czesc obsady.',
-        'Unikaj duzego zwiekszenia obsady naraz.',
+        'Unikaj duzego zwiększenia obsady naraz.',
       ],
       tests: ['NO2', 'NO3'],
       requiredMeasurements: ['no2', 'no3'],
@@ -973,14 +973,14 @@ const ONBOARDING_STEP_LIBRARY = {
       id: 'nfs-day42-finish',
       title: 'Zakonczenie startu',
       description:
-        'Akwarium wyglada na ustabilizowane i moze przejsc do standardowej rutyny.',
+        'Akwarium wyglada na ustabilizowane i może przejsc do standardowej rutyny.',
       startType: 'new_from_scratch',
       earliestDay: 42,
       recommendedDay: 42,
       delayDays: 3,
       actions: [
         'Zakoncz onboarding.',
-        'Przejdz do standardowego harmonogramu podmian i testow.',
+        'Przejd? do standardowego harmonogramu podmian i testow.',
       ],
       tests: ['NO2', 'NO3', 'temperatura'],
       requiredMeasurements: ['no2', 'no3', 'temperature'],
@@ -997,14 +997,14 @@ const ONBOARDING_STEP_LIBRARY = {
       id: 'restart-day0',
       title: 'Restart akwarium',
       description:
-        'Po restarcie zbiornik moze reagowac niestabilnie, nawet gdy czesc biologii zostala zachowana.',
+        'Po restarcie zbiornik może reagowac niestabilnie, nawet gdy czesc biologii została zachowana.',
       startType: 'restart',
       earliestDay: 1,
       recommendedDay: 1,
       delayDays: 1,
       actions: [
         'Uruchom filtr jak najszybciej.',
-        'Nie plucz mediow biologicznych pod kranem.',
+        'Nie płucz mediow biologicznych pod kranem.',
         'Ustaw temperature i ogranicz karmienie przez 1-3 dni.',
       ],
       tests: ['NO2', 'NO3', 'temperatura', 'pH/KH'],
@@ -1014,7 +1014,7 @@ const ONBOARDING_STEP_LIBRARY = {
       id: 'restart-day1',
       title: 'Kontrola po restarcie',
       description:
-        'Po restarcie NO2 moze wzrosnac z opoznieniem. Zachowaj ostroznosc przy obecnej obsadzie.',
+        'Po restarcie NO2 może wzrosnac z opoznieniem. Zachowaj ostroznosc przy obecnej obsadzie.',
       startType: 'restart',
       earliestDay: 2,
       recommendedDay: 2,
@@ -1029,7 +1029,7 @@ const ONBOARDING_STEP_LIBRARY = {
     },
     {
       id: 'restart-day3',
-      title: 'Okres najwiekszego ryzyka',
+      title: 'Okres największego ryzyka',
       description:
         'To moment, gdy po restarcie najczesciej ujawniaja sie problemy z biologia.',
       startType: 'restart',
@@ -1046,7 +1046,7 @@ const ONBOARDING_STEP_LIBRARY = {
     },
     {
       id: 'restart-day7',
-      title: 'Ocena stabilnosci po restarcie',
+      title: 'Ocena stabilności po restarcie',
       description:
         'Jesli NO2 utrzymuje sie na 0 i temperatura jest stabilna, restart przebiega poprawnie.',
       startType: 'restart',
@@ -1066,7 +1066,7 @@ const ONBOARDING_STEP_LIBRARY = {
     },
     {
       id: 'restart-day14',
-      title: 'Powrot do normalnej rutyny',
+      title: 'Powrót do normalnej rutyny',
       description:
         'Przy stabilnych parametrach mozna wracac do standardowej opieki.',
       startType: 'restart',
@@ -1074,7 +1074,7 @@ const ONBOARDING_STEP_LIBRARY = {
       recommendedDay: 14,
       delayDays: 3,
       actions: [
-        'Wroc do standardowego harmonogramu podmian.',
+        'Wróć do standardowego harmonogramu podmian.',
         'Kontynuuj regularne testy.',
       ],
       tests: ['NO2', 'NO3'],
@@ -1090,12 +1090,12 @@ const ONBOARDING_STEP_LIBRARY = {
       id: 'restart-day21',
       title: 'Zakonczenie kontroli po restarcie',
       description:
-        'Akwarium wyglada na stabilne po restarcie i onboarding moze zostac zakonczony.',
+        'Akwarium wyglada na stabilne po restarcie i onboarding może zostac zakonczony.',
       startType: 'restart',
       earliestDay: 21,
       recommendedDay: 21,
       delayDays: 3,
-      actions: ['Zakoncz onboarding i przejdz na normalny tryb opieki.'],
+      actions: ['Zakoncz onboarding i przejd? na normalny tryb opieki.'],
       tests: ['NO2', 'NO3', 'temperatura'],
       requiredMeasurements: ['no2', 'no3', 'temperature'],
       requiresNo2Zero: true,
@@ -1111,7 +1111,7 @@ const ONBOARDING_STEP_LIBRARY = {
       id: 'mature-day0',
       title: 'Start z dojrzalym medium',
       description:
-        'Dojrzale medium moze przyspieszyc start, ale nie gwarantuje od razu pelnej stabilnosci.',
+        'Dojrzale medium może przyspieszyc start, ale nie gwarantuje od razu pełnej stabilności.',
       startType: 'mature_media_start',
       earliestDay: 1,
       recommendedDay: 1,
@@ -1119,14 +1119,14 @@ const ONBOARDING_STEP_LIBRARY = {
       actions: [
         'Uruchom filtr jak najszybciej i nie dopusc do wyschniecia mediow.',
         'Ustaw temperature.',
-        'Nie dodawaj od razu pelnej obsady.',
+        'Nie dodawaj od razu pełnej obsady.',
       ],
       tests: ['NO2', 'NO3', 'temperatura', 'pH/KH'],
       requiredMeasurements: ['no2', 'temperature'],
     },
     {
       id: 'mature-day1',
-      title: 'Pierwsza kontrola stabilnosci',
+      title: 'Pierwsza kontrola stabilności',
       description:
         'Aplikacja musi potwierdzic, czy zbiornik utrzymuje bezpieczne parametry.',
       startType: 'mature_media_start',
@@ -1141,14 +1141,14 @@ const ONBOARDING_STEP_LIBRARY = {
       id: 'mature-day3',
       title: 'Szybka ocena biologii',
       description:
-        'Jesli NO2 pozostaje 0, medium dziala poprawnie. Przy wykrywalnym NO2 potrzeba wiecej czasu.',
+        'Jesli NO2 pozostaje 0, medium dziala poprawnie. Przy wykrywalnym NO2 potrzeba więcej czasu.',
       startType: 'mature_media_start',
       earliestDay: 3,
       recommendedDay: 3,
       delayDays: 2,
       actions: [
         'Kontynuuj obserwacje.',
-        'Nie zwiekszaj obsady przy wykrywalnym NO2.',
+        'Nie zwiększaj obsady przy wykrywalnym NO2.',
       ],
       tests: ['NO2', 'NO3'],
       requiredMeasurements: ['no2'],
@@ -1158,17 +1158,17 @@ const ONBOARDING_STEP_LIBRARY = {
     },
     {
       id: 'mature-day7',
-      title: 'Ostrozne zwiekszenie obciazenia',
+      title: 'Ostrozne zwiększenie obciążenia',
       description:
-        'Przy stabilnych parametrach mozna delikatnie zwiekszyc obsade lub karmienie.',
+        'Przy stabilnych parametrach mozna delikatnie zwiększyc obsade lub karmienie.',
       startType: 'mature_media_start',
       earliestDay: 7,
       recommendedDay: 7,
       delayDays: 3,
       actions: [
         'Dodaj maksymalnie 20-30% planowanej obsady.',
-        'Nie dodawaj pelnej obsady naraz.',
-        'Sprawdz NO2 po zwiekszeniu obciazenia.',
+        'Nie dodawaj pełnej obsady naraz.',
+        'Sprawdz NO2 po zwiększeniu obciążenia.',
       ],
       tests: ['NO2', 'NO3'],
       requiredMeasurements: ['no2', 'temperature'],
@@ -1184,14 +1184,14 @@ const ONBOARDING_STEP_LIBRARY = {
       id: 'mature-day14',
       title: 'Potwierdzenie stabilizacji',
       description:
-        'Zbiornik prawdopodobnie przyjal biologie. Nadal zwiekszaj obsade stopniowo.',
+        'Zbiornik prawdopodobnie przyjal biologie. Nadal zwiększaj obsade stopniowo.',
       startType: 'mature_media_start',
       earliestDay: 14,
       recommendedDay: 14,
       delayDays: 3,
       actions: [
         'Kontynuuj normalizacje rutyny.',
-        'Nie wykonuj gwaltownych zmian w filtrze.',
+        'Nie wykonuj gwałtownych zmian w filtrze.',
       ],
       tests: ['NO2', 'NO3', 'pH/KH'],
       requiredMeasurements: ['no2', 'no3'],
@@ -1204,12 +1204,12 @@ const ONBOARDING_STEP_LIBRARY = {
       id: 'mature-day21',
       title: 'Zakonczenie startu',
       description:
-        'Akwarium wyglada na ustabilizowane i onboarding moze zostac zakonczony.',
+        'Akwarium wyglada na ustabilizowane i onboarding może zostac zakonczony.',
       startType: 'mature_media_start',
       earliestDay: 21,
       recommendedDay: 21,
       delayDays: 3,
-      actions: ['Zakoncz onboarding i przejdz na standardowy harmonogram.'],
+      actions: ['Zakoncz onboarding i przejd? na standardowy harmonogram.'],
       tests: ['NO2', 'NO3', 'temperatura'],
       requiredMeasurements: ['no2', 'no3', 'temperature'],
       requiresNo2Zero: true,
@@ -1229,12 +1229,12 @@ const ONBOARDING_GUIDE_BY_START_TYPE = {
       'Uruchom filtr i grzalke od razu po zalaniu.',
       'Nie wpuszczaj ryb przed stabilnym NO2=0.',
       'Zapisuj regularnie pomiary i porownuj trendy.',
-      'Wprowadzaj obsade malymi krokami, nigdy skokowo.',
+      'Wprowadźaj obsade malymi krokami, nigdy skokowo.',
     ],
     firstMeasurements: [
-      'Dzien 1: temperatura, pH, KH, GH.',
-      'Dzien 3: NO2 (opcjonalnie NO3).',
-      'Dzien 7: NO2, NO3, pH/KH.',
+      'Dzień 1: temperatura, pH, KH, GH.',
+      'Dzień 3: NO2 (opcjonalnie NO3).',
+      'Dzień 7: NO2, NO3, pH/KH.',
     ],
   },
   restart: {
@@ -1243,26 +1243,26 @@ const ONBOARDING_GUIDE_BY_START_TYPE = {
       'Utrzymaj media biologiczne stale mokre.',
       'W pierwszych dniach karm oszczednie.',
       'Nie dodawaj nowych ryb do czasu stabilnego NO2.',
-      'Kontroluj NO2 czesciej niz w stabilnym zbiorniku.',
+      'Kontroluj NO2 czesciej niż w stabilnym zbiorniku.',
     ],
     firstMeasurements: [
-      'Dzien 1: NO2, NO3, temperatura, pH/KH.',
-      'Dzien 3: NO2 i NO3.',
-      'Dzien 7: NO2, NO3, pH/KH.',
+      'Dzień 1: NO2, NO3, temperatura, pH/KH.',
+      'Dzień 3: NO2 i NO3.',
+      'Dzień 7: NO2, NO3, pH/KH.',
     ],
   },
   mature_media_start: {
     modeLabel: 'Start na dojrzalym medium',
     checklistStart: [
       'Nie dopusc do wyschniecia dojrzalych mediow.',
-      'Nie wpuszczaj od razu pelnej obsady.',
-      'Kontroluj NO2 codziennie na poczatku.',
-      'Potwierdz stabilnosc po kazdym zwiekszeniu obciazenia.',
+      'Nie wpuszczaj od razu pełnej obsady.',
+      'Kontroluj NO2 codzieńnie na poczatku.',
+      'Potwierdz stabilność po kazdym zwiększeniu obciążenia.',
     ],
     firstMeasurements: [
-      'Dzien 1: NO2, NO3, temperatura, pH/KH.',
-      'Dzien 3: NO2 + NO3.',
-      'Dzien 7: NO2, NO3, temperatura.',
+      'Dzień 1: NO2, NO3, temperatura, pH/KH.',
+      'Dzień 3: NO2 + NO3.',
+      'Dzień 7: NO2, NO3, temperatura.',
     ],
   },
 };
@@ -1508,12 +1508,12 @@ export function evaluateOnboardingStep(step, aquarium, measurements, context = {
       if (status === 'active') {
         status = 'delayed';
       }
-      reasons.push('Wykryto krytyczne alerty parametrow. Najpierw ustabilizuj warunki.');
+      reasons.push('Wykryto krytyczne alerty parametrów. Najpierw ustabilizuj warunki.');
     }
     if (status === 'active' && missingRequiredTests.length > 0) {
       status = 'waiting_for_parameters';
       reasons.push(
-        `Brakuje aktualnych pomiarow: ${missingRequiredTests.join(', ')}.`
+        `Brakuje aktualnych pomiarów: ${missingRequiredTests.join(', ')}.`
       );
     }
   }
@@ -1631,14 +1631,14 @@ export function buildTankOnboardingPlanService(
     return {
       isActive: false,
       mode: normalizedMode,
-      modeLabel: 'Wylaczony recznie',
+      modeLabel: 'Wyłączony recznie',
       startType,
       rows: [],
       dueItems: [],
       todayItems: [],
       checklistStart: [],
       firstMeasurements: [],
-      statusText: 'Onboarding jest recznie wylaczony dla tego akwarium.',
+      statusText: 'Onboarding jest recznie wyłączony dla tego akwarium.',
       dayNumber: 0,
       targetEndDay: ONBOARDING_STEP_LIBRARY[startType].slice(-1)[0]?.recommendedDay ?? 21,
       isStabilized: false,
@@ -1663,7 +1663,7 @@ export function buildTankOnboardingPlanService(
       checklistStart: guide?.checklistStart ?? [],
       firstMeasurements: guide?.firstMeasurements ?? [],
       statusText:
-        'Brak daty startu onboardingu. Ustaw tryb, cele parametrow i dodaj pierwszy pomiar.',
+        'Brak daty startu onboardingu. Ustaw tryb, cele parametrów i dodaj pierwszy pomiar.',
       dayNumber: 1,
       targetEndDay: ONBOARDING_STEP_LIBRARY[startType].slice(-1)[0]?.recommendedDay ?? 21,
       isStabilized: false,
@@ -1836,8 +1836,8 @@ export function buildTankOnboardingPlanService(
 
   const delayReason = activeStep?.reason ?? '';
   const statusText = activeStep
-    ? `Dzien ${dayNumber}. Aktywny krok: ${activeStep.title}. Status: ${activeStep.status}.`
-    : `Dzien ${dayNumber}. Oczekiwanie na pierwszy krok onboardingu.`;
+    ? `Dzień ${dayNumber}. Aktywny krok: ${activeStep.title}. Status: ${activeStep.status}.`
+    : `Dzień ${dayNumber}. Oczekiwanie na pierwszy krok onboardingu.`;
 
   return {
     isActive,

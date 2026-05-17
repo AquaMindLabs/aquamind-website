@@ -14,6 +14,8 @@ const DEFAULT_TIMEOUT_MS = 15000;
 const MAX_TEXT_LENGTH = 4000;
 const MAX_IMAGE_BASE64_LENGTH = 2_000_000;
 const MAX_ITEMS_PER_COLLECTION = 80;
+const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
+const DEFAULT_OPENAI_MODEL = 'gpt-4.1-mini';
 
 class AiBackendError extends Error {
   constructor(code, message, httpStatus = 500) {
@@ -384,6 +386,230 @@ function createRuleBasedAiProvider() {
     },
     async analyzeVision({ request, contextSummary }) {
       return buildRuleBasedVisionAnswer(request, contextSummary);
+    },
+  };
+}
+
+function extractProviderOutputText(responsePayload) {
+  const directText = toSafeString(responsePayload?.output_text, 16000);
+  if (directText) {
+    return directText;
+  }
+
+  const outputItems = Array.isArray(responsePayload?.output) ? responsePayload.output : [];
+  const chunks = [];
+  outputItems.forEach((item) => {
+    if (!isObjectRecord(item) || item.type !== 'message') {
+      return;
+    }
+    const contentItems = Array.isArray(item.content) ? item.content : [];
+    contentItems.forEach((contentItem) => {
+      if (!isObjectRecord(contentItem) || contentItem.type !== 'output_text') {
+        return;
+      }
+      const textChunk = toSafeString(contentItem.text, 8000);
+      if (textChunk) {
+        chunks.push(textChunk);
+      }
+    });
+  });
+
+  return chunks.join('\n').trim();
+}
+
+function parseJsonObjectFromText(textValue) {
+  const rawText = toSafeString(textValue, 16000);
+  if (!rawText) {
+    return null;
+  }
+
+  const withoutFence = rawText
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/```$/i, '')
+    .trim();
+
+  try {
+    return JSON.parse(withoutFence);
+  } catch {
+    // Try best-effort extraction from mixed text responses.
+  }
+
+  const startIndex = withoutFence.indexOf('{');
+  const endIndex = withoutFence.lastIndexOf('}');
+  if (startIndex < 0 || endIndex <= startIndex) {
+    return null;
+  }
+
+  const candidate = withoutFence.slice(startIndex, endIndex + 1);
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    return null;
+  }
+}
+
+function createOpenAiResponsesProvider({
+  apiKey,
+  model = DEFAULT_OPENAI_MODEL,
+  baseUrl = DEFAULT_OPENAI_BASE_URL,
+  maxOutputTokens = 900,
+} = {}) {
+  const safeApiKey = toSafeString(apiKey, 4096);
+  if (!safeApiKey) {
+    throw new Error('OPENAI_API_KEY is required when AI_PROVIDER_NAME=openai');
+  }
+
+  const safeModel = toSafeString(model, 120) || DEFAULT_OPENAI_MODEL;
+  const normalizedBaseUrl =
+    toSafeString(baseUrl, 512).replace(/\/+$/, '') || DEFAULT_OPENAI_BASE_URL;
+  const safeMaxOutputTokens =
+    Number.isFinite(Number(maxOutputTokens)) && Number(maxOutputTokens) > 100
+      ? Math.round(Number(maxOutputTokens))
+      : 900;
+
+  async function requestJsonOutput(inputItems) {
+    if (typeof fetch !== 'function') {
+      throw createAiBackendError(
+        AI_DIAGNOSTIC_CODES.PROVIDER_ERROR,
+        'Provider AI jest chwilowo niedostepny.',
+        502
+      );
+    }
+
+    const response = await fetch(`${normalizedBaseUrl}/responses`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${safeApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: safeModel,
+        input: inputItems,
+        max_output_tokens: safeMaxOutputTokens,
+        text: {
+          format: {
+            type: 'json_object',
+          },
+        },
+      }),
+    });
+
+    let responsePayload = null;
+    try {
+      responsePayload = await response.json();
+    } catch {
+      responsePayload = null;
+    }
+
+    if (!response.ok) {
+      throw createAiBackendError(
+        AI_DIAGNOSTIC_CODES.PROVIDER_ERROR,
+        'Provider AI jest chwilowo niedostepny.',
+        502
+      );
+    }
+
+    const outputText = extractProviderOutputText(responsePayload);
+    const parsed = parseJsonObjectFromText(outputText);
+    if (!isObjectRecord(parsed)) {
+      throw createAiBackendError(
+        AI_DIAGNOSTIC_CODES.PROVIDER_ERROR,
+        'Provider AI zwrocil nieprawidlowy format odpowiedzi.',
+        502
+      );
+    }
+
+    return parsed;
+  }
+
+  return {
+    async generateChat({ request, contextSummary }) {
+      const contextJson = toSafeString(JSON.stringify(contextSummary ?? {}), 7000);
+      const userPrompt = [
+        'Zwroc TYLKO poprawny JSON z polami: answer, recommendations, warnings.',
+        'answer: string (max 1200 znakow).',
+        'recommendations: string[] (0-6 krotkich punktow).',
+        'warnings: string[] (0-4, zawrzyj ostrzezenie: "To nie jest porada weterynaryjna." gdy to adekwatne).',
+        `Pytanie uzytkownika: ${request.question}`,
+        request.additionalInfo ? `Dodatkowe informacje: ${request.additionalInfo}` : '',
+        `Kontekst akwarium (JSON): ${contextJson}`,
+      ]
+        .filter(Boolean)
+        .join('\n');
+
+      return requestJsonOutput([
+        {
+          role: 'developer',
+          content: [
+            {
+              type: 'input_text',
+              text: 'You are an aquarium assistant. Return strict JSON only. Do not include markdown.',
+            },
+          ],
+        },
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'input_text',
+              text: userPrompt,
+            },
+          ],
+        },
+      ]);
+    },
+
+    async analyzeVision({ request, contextSummary }) {
+      const contextJson = toSafeString(JSON.stringify(contextSummary ?? {}), 7000);
+      const imageInput =
+        request.imageUrl ||
+        (request.imageBase64 ? `data:image/jpeg;base64,${request.imageBase64}` : '');
+
+      const textPrompt = [
+        'Zwroc TYLKO poprawny JSON z polami: summary, hypotheses, verificationSteps, recommendations, actionPlan, warnings.',
+        'summary: string (max 800 znakow).',
+        'hypotheses: [{ key: string, label: string, confidence: number 0..1 }] (max 5).',
+        'verificationSteps: string[] (max 6).',
+        'recommendations: string[] (max 6).',
+        'actionPlan: string[] (max 6).',
+        'warnings: string[] (max 4).',
+        'Jesli obraz jest nieczytelny, nadal zwroc JSON z bezpiecznym fallback summary.',
+        request.question ? `Pytanie uzytkownika: ${request.question}` : '',
+        request.additionalInfo ? `Dodatkowe informacje: ${request.additionalInfo}` : '',
+        `Kontekst akwarium (JSON): ${contextJson}`,
+      ]
+        .filter(Boolean)
+        .join('\n');
+
+      return requestJsonOutput([
+        {
+          role: 'developer',
+          content: [
+            {
+              type: 'input_text',
+              text: 'You are an aquarium vision assistant. Return strict JSON only. Do not include markdown.',
+            },
+          ],
+        },
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'input_text',
+              text: textPrompt,
+            },
+            ...(imageInput
+              ? [
+                  {
+                    type: 'input_image',
+                    image_url: imageInput,
+                    detail: 'auto',
+                  },
+                ]
+              : []),
+          ],
+        },
+      ]);
     },
   };
 }
@@ -839,5 +1065,6 @@ module.exports = {
   buildUserAquariumContext,
   buildUserDataSummary,
   createRuleBasedAiProvider,
+  createOpenAiResponsesProvider,
   createAiRequestHandlers,
 };

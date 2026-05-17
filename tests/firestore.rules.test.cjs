@@ -267,6 +267,36 @@ test('owner can update maintenanceActionState map for action calendar', async ()
   );
 });
 
+test('owner can update acceptedProblemAcks map for dismissed review issues', async () => {
+  const db = asUser('user_a');
+  const tankRef = doc(db, 'tanks', 'tank_problem_acks');
+  const createdAt = new Date('2026-05-12T09:00:00.000Z');
+
+  await assertSucceeds(
+    setDoc(tankRef, {
+      userId: 'user_a',
+      name: 'Akwarium Alerty',
+      liters: 160,
+      createdAt,
+    })
+  );
+
+  await assertSucceeds(
+    updateDoc(tankRef, {
+      acceptedProblemAcks: {
+        'title:water:no2 za wysokie': {
+          title: 'NO2 za wysokie',
+          area: 'Woda',
+          severity: 'critical',
+          source: 'review',
+          acceptedAt: '2026-05-12T10:00:00.000Z',
+        },
+      },
+      updatedAt: new Date('2026-05-12T10:01:00.000Z'),
+    })
+  );
+});
+
 test('cannot read or mutate another user tank', async () => {
   await seedDoc('tanks', 'tank_owned_by_a', {
     userId: 'user_a',

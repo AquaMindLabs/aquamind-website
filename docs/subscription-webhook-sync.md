@@ -60,6 +60,7 @@ Mapowanie korzysta z tych samych ID produktow co model aplikacji:
   3. ochrona przed out-of-order: event starszy niz `lastEventAtMs` -> `stale_ignored`,
   4. zapis nowego stanu + zapis przetworzonego eventu.
 - Retry webhooka nie psuje stanu, bo drugi raz ten sam `eventId` zwraca `duplicate`.
+- Dla out-of-order emitowany jest event diagnostyczny `BILLING_WEBHOOK_IGNORED_STALE_EVENT` (bez surowego `userId`).
 
 ## Uruchomienie lokalne
 

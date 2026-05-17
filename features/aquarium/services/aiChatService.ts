@@ -69,21 +69,21 @@ function resolveAiBackendBaseUrl(): string {
 
 function mapDiagnosticCodeToUserMessage(code: string): string {
   if (code === AI_DIAGNOSTIC_CODES.UNAUTHORIZED) {
-    return 'Sesja wygasla. Zaloguj sie ponownie i sprobuj jeszcze raz.';
+    return 'Sesja wygasla. Zaloguj się ponownie i spróbuj jeszcze raz.';
   }
   if (code === AI_DIAGNOSTIC_CODES.TIMEOUT) {
-    return 'Asystent odpowiada zbyt dlugo. Sprobuj ponownie za chwile.';
+    return 'Asystent odpowiada zbyt dlugo. Spróbuj ponownie za chwile.';
   }
   if (code === AI_DIAGNOSTIC_CODES.VALIDATION) {
-    return 'Sprawdz pytanie i uzupelnij je bardziej szczegolowo.';
+    return 'Sprawdz pytanie i uzupelnij je bardziej szczegółowo.';
   }
   if (code === AI_DIAGNOSTIC_CODES.PROVIDER_ERROR) {
-    return 'Asystent jest chwilowo niedostepny. Sprobuj ponownie za moment.';
+    return 'Asystent jest chwilowo niedostepny. Spróbuj ponownie za moment.';
   }
   if (code === AI_DIAGNOSTIC_CODES.UNAVAILABLE) {
     return 'Asystent AI nie jest jeszcze skonfigurowany dla tego builda.';
   }
-  return 'Wystapil blad Asystenta AI. Sprobuj ponownie.';
+  return 'Wystapil błąd Asystenta AI. Spróbuj ponownie.';
 }
 
 function isAbortError(error: unknown): boolean {

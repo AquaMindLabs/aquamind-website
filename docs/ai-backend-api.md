@@ -7,6 +7,26 @@
 
 Endpointy wymagaja `Authorization: Bearer <firebase_id_token>`.
 
+## Szybka konfiguracja API providera (OpenAI)
+
+1. Ustaw w `.env`:
+
+```env
+AI_PROVIDER_NAME=openai
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4.1-mini
+OPENAI_BASE_URL=https://api.openai.com/v1
+EXPO_PUBLIC_AI_BACKEND_URL=http://<IP_Twojego_komputera_w_LAN>:8790
+```
+
+2. Uruchom backend AI:
+
+```bash
+npm run ai:backend:start
+```
+
+3. W aplikacji mobilnej uruchom ponownie bundler (po zmianie `EXPO_PUBLIC_*`).
+
 ## Bezpieczenstwo obrazow (Storage)
 
 - Zdjecia do analizy zapisujemy pod sciezka `aiVisionInputs/{uid}/...`.

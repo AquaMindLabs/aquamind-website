@@ -29,7 +29,7 @@ type ActionCalendarPanelProps = {
   };
   onToggleExpanded: () => void;
   onAction: (
-    action: { stateKey?: string; sourceDueDayBucketMs?: number },
+    action: { stateKey?: string; stateKeys?: string[]; sourceDueDayBucketMs?: number },
     mode: MaintenanceActionMode
   ) => void;
 };
@@ -105,7 +105,7 @@ export function ActionCalendarPanel({
       ) : !isExpanded ? null : (
         <View style={{ marginTop: 8 }}>
           <Text style={{ color: theme.textSecondary, fontSize: 12 }}>
-            Plan obejmuje najblizsze {waterActionCalendar.windowDays} dni i laczy podmiany,
+            Plan obejmuje najbliższe {waterActionCalendar.windowDays} dni i łączy podmiany,
             testy, odmulanie oraz serwis filtra.
           </Text>
           <Text style={{ color: theme.textSecondary, marginTop: 4, fontSize: 12 }}>
@@ -173,7 +173,7 @@ export function ActionCalendarPanel({
 
           {waterActionCalendar.days.length === 0 ? (
             <Text style={{ color: theme.textSecondary, marginTop: 10, fontSize: 12 }}>
-              Brak zaplanowanych akcji na najblizsze 14 dni.
+              Brak zaplanowanych akcji na najbliższe 14 dni.
             </Text>
           ) : (
             <View style={{ marginTop: 10 }}>
@@ -266,7 +266,7 @@ export function ActionCalendarPanel({
                               opacity: isBusy ? 0.6 : 1,
                             }}>
                             <Text style={{ color: theme.textPrimary, fontSize: 11, fontWeight: '700' }}>
-                              [ ] Zrobione
+                              [ ] Zróbione
                             </Text>
                           </Pressable>
                           <Pressable
@@ -283,7 +283,7 @@ export function ActionCalendarPanel({
                             }}>
                             <Text
                               style={{ color: theme.textSecondary, fontSize: 11, fontWeight: '700' }}>
-                              Pomin
+                              Pomiń
                             </Text>
                           </Pressable>
                           <Pressable
@@ -300,7 +300,7 @@ export function ActionCalendarPanel({
                             }}>
                             <Text
                               style={{ color: theme.textSecondary, fontSize: 11, fontWeight: '700' }}>
-                              Przesun +1 dzien
+                              Przesuń +1 dzień
                             </Text>
                           </Pressable>
                         </View>
@@ -316,4 +316,3 @@ export function ActionCalendarPanel({
     </View>
   );
 }
-

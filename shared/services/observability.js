@@ -350,11 +350,11 @@ export function trackPurchaseFailure(error, payload = {}) {
 }
 
 export function trackBillingPurchaseStarted(payload = {}) {
-  logTelemetryEvent('purchase_started', payload, { level: 'info' });
+  logTelemetryEvent('BILLING_PURCHASE_STARTED', payload, { level: 'info' });
 }
 
 export function trackBillingPurchaseSuccess(payload = {}) {
-  logTelemetryEvent('purchase_success', payload, { level: 'info' });
+  logTelemetryEvent('BILLING_PURCHASE_SUCCESS', payload, { level: 'info' });
 }
 
 export function trackBillingPurchaseFailure(error, payload = {}) {
@@ -362,11 +362,32 @@ export function trackBillingPurchaseFailure(error, payload = {}) {
     source: 'purchase_billing_flow',
     ...normalizeValue(payload),
   });
-  logTelemetryEvent('purchase_failure', payload, { level: 'error' });
+  logTelemetryEvent('BILLING_PURCHASE_FAILED', payload, { level: 'error' });
 }
 
 export function trackBillingRestore(payload = {}) {
-  logTelemetryEvent('restore', payload, { level: 'info' });
+  const phase = String(payload?.phase ?? '').trim().toLowerCase();
+  if (phase === 'success') {
+    logTelemetryEvent('BILLING_RESTORE_SUCCESS', payload, { level: 'info' });
+    return;
+  }
+  if (phase === 'failure') {
+    logTelemetryEvent('BILLING_RESTORE_FAILED', payload, { level: 'error' });
+    return;
+  }
+  logTelemetryEvent('BILLING_RESTORE_STARTED', payload, { level: 'info' });
+}
+
+export function trackBillingEntitlementRefreshed(payload = {}) {
+  logTelemetryEvent('BILLING_ENTITLEMENT_REFRESHED', payload, { level: 'info' });
+}
+
+export function trackBillingWebhookIgnoredStaleEvent(payload = {}) {
+  logTelemetryEvent(
+    'BILLING_WEBHOOK_IGNORED_STALE_EVENT',
+    payload,
+    { level: 'warn' }
+  );
 }
 
 export function trackAiRequestStarted(payload = {}) {

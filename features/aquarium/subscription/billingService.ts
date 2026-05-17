@@ -34,6 +34,31 @@ type CustomerInfoLike = {
   managementURL?: string | null;
 };
 
+type OfferingPackageLike = {
+  identifier?: string;
+  product?: {
+    identifier?: string;
+    productIdentifier?: string;
+  };
+};
+
+type OfferingsLike = {
+  all?: Record<
+    string,
+    {
+      identifier?: string;
+      availablePackages?: OfferingPackageLike[];
+    }
+  >;
+};
+
+export type BillingOfferingEntry = {
+  offeringId: string;
+  packageId: string;
+  productId: string;
+  tier: SubscriptionTier | null;
+};
+
 export type BillingSyncResult = {
   patch: Partial<SubscriptionState>;
   resolvedTier: SubscriptionTier;
@@ -42,6 +67,11 @@ export type BillingSyncResult = {
   productId: string | null;
   managementUrl: string | null;
   isSandbox: boolean;
+};
+
+export type BillingOfferingsSnapshot = {
+  entries: BillingOfferingEntry[];
+  productIds: string[];
 };
 
 const RETRYABLE_PURCHASE_CODES = new Set([
@@ -70,6 +100,7 @@ type PurchasesModuleLike = {
   logIn?: (appUserId: string) => Promise<void> | void;
   logOut?: () => Promise<void> | void;
   getCustomerInfo?: () => Promise<CustomerInfoLike>;
+  getOfferings?: () => Promise<OfferingsLike>;
   purchaseProduct?: (
     productId: string
   ) => Promise<{ customerInfo?: CustomerInfoLike }>;
@@ -234,6 +265,39 @@ function pickEntitlement(customerInfo: CustomerInfoLike): EntitlementInfoLike | 
   return allEntries[0] ?? null;
 }
 
+function extractBillingOfferingEntries(offerings: OfferingsLike): BillingOfferingEntry[] {
+  const allOfferings =
+    offerings?.all && typeof offerings.all === 'object' ? offerings.all : {};
+  const entries: BillingOfferingEntry[] = [];
+
+  Object.entries(allOfferings).forEach(([offeringKey, offeringValue]) => {
+    const offeringId = String(
+      offeringValue?.identifier ?? offeringKey ?? ''
+    ).trim();
+    const availablePackages = Array.isArray(offeringValue?.availablePackages)
+      ? offeringValue.availablePackages
+      : [];
+
+    availablePackages.forEach((pkg) => {
+      const packageId = String(pkg?.identifier ?? '').trim();
+      const productId = String(
+        pkg?.product?.identifier ?? pkg?.product?.productIdentifier ?? ''
+      ).trim();
+      if (!productId) {
+        return;
+      }
+      entries.push({
+        offeringId: offeringId || 'default',
+        packageId: packageId || 'unknown',
+        productId,
+        tier: getSubscriptionTierByStoreProductId(productId),
+      });
+    });
+  });
+
+  return entries;
+}
+
 function resolveTierFromCustomerInfo(
   customerInfo: CustomerInfoLike,
   entitlement: EntitlementInfoLike | null
@@ -301,8 +365,8 @@ export function mapBillingErrorToUserMessage(
 ): string {
   if (isUserCancelledError(error)) {
     return action === 'restore'
-      ? 'Przywracanie zostalo anulowane.'
-      : 'Zakup zostal anulowany.';
+      ? 'Przywracanie zostało anulowane.'
+      : 'Zakup został anulowany.';
   }
 
   const code = getErrorCode(error);
@@ -317,24 +381,24 @@ export function mapBillingErrorToUserMessage(
     return 'Platnosc oczekuje na potwierdzenie. Sprawdz status za chwile.';
   }
   if (code === 'purchase_not_allowed_error' || code === 'insufficient_permissions_error') {
-    return 'Zakupy sa niedostepne dla tego konta. Sprawdz ustawienia sklepu.';
+    return 'Zakupy sa niedostepne dla tego konta. Sprawdz ustawieńia sklepu.';
   }
   if (code === 'product_not_available_for_purchase_error') {
     return 'Ten plan nie jest aktualnie dostepny w sklepie dla tej wersji aplikacji.';
   }
   if (code === 'network_error' || code === 'offline_connection_error') {
-    return 'Brak polaczenia z internetem. Sprobuj ponownie.';
+    return 'Brak połączenia z internetem. Spróbuj ponownie.';
   }
   if (code === 'store_problem_error') {
-    return 'Sklep chwilowo nie odpowiada. Sprobuj ponownie za kilka minut.';
+    return 'Sklep chwilowo nie odpowiada. Spróbuj ponownie za kilka minut.';
   }
   if (action === 'restore') {
-    return 'Nie udalo sie przywrocic zakupow. Sprobuj ponownie za chwile.';
+    return 'Nie udalo sie przywróic zakupow. Spróbuj ponownie za chwile.';
   }
   if (action === 'refresh') {
-    return 'Nie udalo sie odswiezyc statusu subskrypcji.';
+    return 'Nie udalo sie odświeżyc statusu subskrypcji.';
   }
-  return 'Nie udalo sie dokonac zakupu. Sprobuj ponownie za chwile.';
+  return 'Nie udalo sie dokonac zakupu. Spróbuj ponownie za chwile.';
 }
 
 export async function ensureBillingConfigured(
@@ -432,6 +496,39 @@ export function buildSubscriptionPatchFromCustomerInfo(
   };
 }
 
+export async function getBillingOfferingsSnapshot(
+  appUserId: string | null
+): Promise<BillingOfferingsSnapshot> {
+  await ensureBillingConfigured(appUserId);
+  const purchases = getPurchasesModule();
+  const getOfferings = purchases?.getOfferings;
+
+  if (!getOfferings) {
+    return {
+      entries: [],
+      productIds: [],
+    };
+  }
+
+  const offerings = await withRetry(
+    () => getOfferings() as Promise<OfferingsLike>,
+    1
+  );
+  const entries = extractBillingOfferingEntries(offerings);
+  const uniqueProductIds = Array.from(
+    new Set(
+      entries
+        .map((item) => String(item.productId ?? '').trim())
+        .filter(Boolean)
+    )
+  );
+
+  return {
+    entries,
+    productIds: uniqueProductIds,
+  };
+}
+
 export async function refreshBillingCustomerInfo(
   appUserId: string | null
 ): Promise<BillingSyncResult> {
@@ -452,6 +549,11 @@ export async function purchaseSubscriptionByProductId(
   appUserId: string | null,
   productId: string
 ): Promise<BillingSyncResult> {
+  const normalizedProductId = String(productId ?? '').trim();
+  if (!normalizedProductId) {
+    throw new Error('product_not_available_for_purchase_error');
+  }
+
   await ensureBillingConfigured(appUserId);
   const purchases = getPurchasesModule();
   const purchaseProduct = purchases?.purchaseProduct;
@@ -459,8 +561,17 @@ export async function purchaseSubscriptionByProductId(
   if (!purchaseProduct || !getCustomerInfo) {
     throw new Error('billing_sdk_unavailable');
   }
+
+  const offeringsSnapshot = await getBillingOfferingsSnapshot(appUserId);
+  if (
+    offeringsSnapshot.productIds.length > 0 &&
+    !offeringsSnapshot.productIds.includes(normalizedProductId)
+  ) {
+    throw new Error('product_not_available_for_purchase_error');
+  }
+
   const purchaseResult = await withRetry(
-    () => purchaseProduct(productId),
+    () => purchaseProduct(normalizedProductId),
     1
   );
   const customerInfo =

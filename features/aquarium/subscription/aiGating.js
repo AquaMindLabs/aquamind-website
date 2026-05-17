@@ -16,9 +16,9 @@ function resolveAiAssistantGate({
     };
   }
 
-  const shouldShowUpgradePrompt = normalizedPlan === 'free';
+  const shouldShowUpgradePrompt = normalizedPlan === 'free' || normalizedPlan === 'premium';
   const promptMessage = shouldShowUpgradePrompt
-    ? 'Asystent AI jest dostepny w planie Pro. Ulepsz plan, aby odblokowac AI chat i analize zdjec.'
+    ? 'Asystent AI Pro odblokowuje interpretacje parametrów, diagnozę problemów, analizę zdjęć i plan działań krok po kroku.'
     : '';
 
   return {

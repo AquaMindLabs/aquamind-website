@@ -1,7 +1,10 @@
 # Pre-Publish Completeness + AI Action Plan
 
-Data: 2026-05-15  
-Zakres: gotowosc produktu do publikacji + plan wdrozenia AI (tekst + analiza zdjec)
+Data: 2026-05-16  
+Zakres: gotowosc produktu do publikacji (caly projekt) + plan wdrozenia AI (tekst + analiza zdjec)
+
+> Aktualny nadrzedny plan wykonawczy calego projektu:
+> `docs/project-release-master-action-plan.md`
 
 ## 1) Szybka ocena kompletnosci
 
@@ -17,6 +20,22 @@ Zakres: gotowosc produktu do publikacji + plan wdrozenia AI (tekst + analiza zdj
 
 - Ostatni smoke gate: FAIL (wszystkie `SMK-*` zablokowane przez auth blocker)
 - Decyzja release (na dzis): NO-GO do szerokiej publikacji, dopoki nie bedzie potwierdzone naprawione logowanie Google na buildzie release i ponowny smoke PASS
+
+## Status subskrypcji (billing)
+
+- Warstwa aplikacji + mapping `productId -> tier`: zaimplementowane
+- Restore + telemetry billing: zaimplementowane
+- Webhook sync `userSubscriptions/{uid}` + idempotencja + stale-event guard: zaimplementowane
+- Testy webhook/gating: PASS
+- Brakujacy element przed publikacja: pelny manual E2E sandbox (purchase/restore/status transitions) na sklepach
+
+## Gotowosc calosci (na teraz)
+
+- Gotowosc projektu (globalnie): ~78%
+- Gotowosc techniczna (kod + testy): ~88%
+- Gotowosc subskrypcji:
+  - techniczna: ~90%
+  - publikacyjna (E2E sandbox + sklepy): ~70-75%
 
 ## Co jest "done" przed AI
 
@@ -238,3 +257,28 @@ Warunki minimalne:
 5. Limity kosztowe i retry ustawione.
 6. Gating subskrypcji AI zweryfikowany E2E.
 
+## 6) Action plan calego projektu do publikacji (nie tylko AI)
+
+1. Freeze scope + release hygiene
+   - Zamknij dodawanie nowych funkcji.
+   - Odfiltruj noisy/generated pliki i przygotuj czysty release candidate commit.
+   - Oczekiwana gotowosc po etapie: ~85%.
+
+2. Domkniecie core smoke na buildzie release
+   - Wykonaj i udokumentuj: `SMK-ONB-*`, `SMK-CAL-*`, `SMK-MEA-*`, `SMK-STK-*`, `SMK-EQP-*`.
+   - Wypelnij `docs/release-smoke-result.md` i uruchom gate.
+   - Oczekiwana gotowosc po etapie: ~92%.
+
+3. Domkniecie subskrypcji E2E (sandbox)
+   - Zweryfikuj RevenueCat + Google Play + App Store konfiguracje produktow/entitlements/offeringow.
+   - Przejdz flow: buy, upgrade, restore, relaunch, status transitions (`active/grace/cancelled/paused/expired`).
+   - Potwierdz natychmiastowe odswiezenie uprawnien bez restartu app.
+   - Oczekiwana gotowosc po etapie: ~95%.
+
+4. T-30 min przed publikacja: finalny check AI API
+   - Doladuj min. 5 USD, potwierdz `provider=openai`, wykonaj szybki retest AI (`chat + vision + fallback + gating`).
+   - Oczekiwana gotowosc po etapie: ~97%.
+
+5. Build i submission store
+   - Android/iOS production build + submit, finalny GO/NO-GO.
+   - Oczekiwana gotowosc po etapie: ~99% (100% po akceptacji sklepow/rollout).

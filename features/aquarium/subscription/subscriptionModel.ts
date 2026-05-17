@@ -235,22 +235,22 @@ export const SUBSCRIPTION_FEATURE_CATALOG: SubscriptionFeatureDefinition[] = [
   {
     key: 'multiple_tanks',
     label: 'Multiple tanks',
-    description: 'Prowadzenie wiecej niz jednego akwarium.',
+    description: 'Prowadzenie więcej niż jednego akwarium.',
   },
   {
     key: 'full_measurements',
     label: 'Full measurements',
-    description: 'Pelny zestaw parametrow wody.',
+    description: 'Pełny zestaw parametrów wody.',
   },
   {
     key: 'full_history',
     label: 'Full history',
-    description: 'Pelna historia pomiarow bez limitu dni.',
+    description: 'Pełna historia pomiarów bez limitu dni.',
   },
   {
     key: 'advanced_water_analysis',
     label: 'Advanced water analysis',
-    description: 'Rozszerzona analiza parametrow i zaleznosci.',
+    description: 'Rozszerzona analiza parametrów i zależności.',
   },
   {
     key: 'trend_analysis',
@@ -275,12 +275,12 @@ export const SUBSCRIPTION_FEATURE_CATALOG: SubscriptionFeatureDefinition[] = [
   {
     key: 'fish_disease_diagnosis',
     label: 'Fish disease diagnosis',
-    description: 'Diagnoza chorob ryb.',
+    description: 'Diagnoza chorób ryb.',
   },
   {
     key: 'plant_disease_diagnosis',
     label: 'Plant disease diagnosis',
-    description: 'Diagnoza chorob roslin.',
+    description: 'Diagnoza chorób roslin.',
   },
   {
     key: 'automatic_tasks',
@@ -312,7 +312,7 @@ export const SUBSCRIPTION_FEATURE_CATALOG: SubscriptionFeatureDefinition[] = [
 export const SUBSCRIPTION_CAPABILITY_ROWS: SubscriptionCapabilityRow[] = [
   {
     key: 'aquariums',
-    label: 'Liczba akwariow',
+    label: 'Liczba akwariów',
     values: {
       free: '1 aktywne',
       premium: '3 aktywne',
@@ -324,8 +324,8 @@ export const SUBSCRIPTION_CAPABILITY_ROWS: SubscriptionCapabilityRow[] = [
     label: 'Parametry wody',
     values: {
       free: 'podstawowe',
-      premium: 'pelne',
-      pro: 'pelne',
+      premium: 'pełne',
+      pro: 'pełne',
     },
   },
   {
@@ -333,8 +333,8 @@ export const SUBSCRIPTION_CAPABILITY_ROWS: SubscriptionCapabilityRow[] = [
     label: 'Historia',
     values: {
       free: '30 dni',
-      premium: 'pelna',
-      pro: 'pelna',
+      premium: 'pełna',
+      pro: 'pełna',
     },
   },
   {
@@ -351,8 +351,8 @@ export const SUBSCRIPTION_CAPABILITY_ROWS: SubscriptionCapabilityRow[] = [
     label: 'Katalogi',
     values: {
       free: 'podstawowe',
-      premium: 'pelne',
-      pro: 'pelne',
+      premium: 'pełne',
+      pro: 'pełne',
     },
   },
   {
@@ -369,8 +369,8 @@ export const SUBSCRIPTION_CAPABILITY_ROWS: SubscriptionCapabilityRow[] = [
     label: 'Sprzet',
     values: {
       free: 'podstawowa ocena',
-      premium: 'pelna ocena',
-      pro: 'pelna + rekomendacje',
+      premium: 'pełna ocena',
+      pro: 'pełna + rekomendacje',
     },
   },
   {
@@ -411,7 +411,7 @@ export const SUBSCRIPTION_CAPABILITY_ROWS: SubscriptionCapabilityRow[] = [
   },
   {
     key: 'actionPlan',
-    label: 'Plan dzialania',
+    label: 'Plan działania',
     values: {
       free: 'brak',
       premium: 'zaawansowany',
@@ -608,7 +608,7 @@ export const SUBSCRIPTION_PLANS: Record<PlanId, SubscriptionPlanDefinition> = {
     tier: 'premium',
     rank: 1,
     label: 'Premium',
-    description: 'Pelna analiza akwarium, obsady, sprzetu i problemow.',
+    description: 'Pełna analiza akwarium, obsady, sprzetu i problemów.',
     featureKeys: buildFeatureKeysForPlan('premium'),
     limits: {
       maxTanks: PLAN_LIMITS.premium.maxTanks,
@@ -624,7 +624,7 @@ export const SUBSCRIPTION_PLANS: Record<PlanId, SubscriptionPlanDefinition> = {
     tier: 'pro',
     rank: 2,
     label: 'Pro',
-    description: 'Zaawansowany asystent z planem dzialania krok po kroku.',
+    description: 'Zaawansowany asystent z planem działania krok po kroku.',
     featureKeys: buildFeatureKeysForPlan('pro'),
     limits: {
       maxTanks: PLAN_LIMITS.pro.maxTanks,
@@ -875,20 +875,20 @@ export function getFeatureLockMessage(
   const messages: Record<SubscriptionFeatureKey, string> = {
     core_access: '',
     critical_alerts: '',
-    full_measurements: 'Pelny zestaw parametrow jest dostepny w Premium.',
+    full_measurements: 'Pełny zestaw parametrów jest dostepny w Premium.',
     stocking_compatibility:
       'Zaawansowana analiza obsady jest dostepna w Premium.',
-    smart_action_plan: 'Plan dzialania krok po kroku jest dostepny w Pro.',
+    smart_action_plan: 'Plan działania krok po kroku jest dostepny w Pro.',
     full_history:
-      'W planie Free widoczna jest historia z ostatnich 30 dni. Pelna historia jest dostepna w Premium.',
-    multiple_tanks: 'Osiagnieto limit akwariow w obecnym planie.',
-    advanced_water_analysis: 'Pelna analiza parametrow jest dostepna w Premium.',
+      'W planie Free widoczna jest historia z ostatnich 30 dni. Pełna historia jest dostepna w Premium.',
+    multiple_tanks: 'Osiagnieto limit akwariów w obecnym planie.',
+    advanced_water_analysis: 'Pełna analiza parametrów jest dostepna w Premium.',
     trend_analysis: 'Analiza trendow jest dostepna od planu Premium.',
-    equipment_analysis: 'Pelna analiza sprzetu jest dostepna od planu Premium.',
+    equipment_analysis: 'Pełna analiza sprzetu jest dostepna od planu Premium.',
     algae_diagnosis: 'Diagnoza glonow jest dostepna od planu Premium.',
-    fish_disease_diagnosis: 'Diagnoza chorob ryb jest dostepna od planu Premium.',
+    fish_disease_diagnosis: 'Diagnoza chorób ryb jest dostepna od planu Premium.',
     plant_disease_diagnosis:
-      'Diagnoza chorob roslin jest dostepna od planu Premium.',
+      'Diagnoza chorób roslin jest dostepna od planu Premium.',
     automatic_tasks: 'Automatyczne zadania sa dostepne od planu Premium.',
     ai_assistant: 'Asystent AI jest dostepny w planie Pro.',
     export_data: 'Eksport danych jest dostepny od planu Premium.',
@@ -993,35 +993,42 @@ export function getSubscriptionPlanDefinition(
 export function getSubscriptionEntitlements(
   state: SubscriptionState
 ): SubscriptionEntitlements {
-  return getSubscriptionPlanDefinition(state.tier).entitlements;
+  const normalizedState = normalizeSubscriptionState(state);
+  return getSubscriptionPlanDefinition(normalizedState.tier).entitlements;
 }
 
 export function isSubscriptionActive(state: SubscriptionState): boolean {
-  return state.status === 'active' || state.status === 'grace_period';
+  const normalizedState = normalizeSubscriptionState(state);
+  return (
+    normalizedState.status === 'active' ||
+    normalizedState.status === 'grace_period'
+  );
 }
 
 export function hasSubscriptionFeature(
   state: SubscriptionState,
   featureKey: SubscriptionFeatureKey
 ): boolean {
-  if (state.featureOverrides.includes(featureKey)) {
+  const normalizedState = normalizeSubscriptionState(state);
+  if (normalizedState.featureOverrides.includes(featureKey)) {
     return true;
   }
 
-  return canUseFeature(state.tier, featureKey);
+  return canUseFeature(normalizedState.tier, featureKey);
 }
 
 export function getSubscriptionLimitValue(
   state: SubscriptionState,
   limitKey: SubscriptionLimitKey
 ): number | null {
-  const overrideValue = state.limitOverrides?.[limitKey];
+  const normalizedState = normalizeSubscriptionState(state);
+  const overrideValue = normalizedState.limitOverrides?.[limitKey];
 
   if (overrideValue !== undefined) {
     return overrideValue ?? null;
   }
 
-  const plan = getSubscriptionPlanDefinition(state.tier);
+  const plan = getSubscriptionPlanDefinition(normalizedState.tier);
   if (limitKey === 'maxSavedMeasurementsPerTank') {
     return plan.limits.historyDays ?? plan.limits.maxSavedMeasurementsPerTank ?? null;
   }
@@ -1033,7 +1040,7 @@ export function canAccessMeasurementKey(
   state: SubscriptionState,
   key: SubscriptionMeasurementParameterKey
 ): boolean {
-  return getAllowedMeasurementKeys(state).includes(key);
+  return getAllowedMeasurementKeys(normalizeSubscriptionState(state)).includes(key);
 }
 
 export function getSubscriptionStoreProductId(

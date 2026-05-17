@@ -7,6 +7,7 @@ const BIOLOAD_RISK_THRESHOLDS = {
 export function buildStockingCompatibilitySections(stockingCompatibility: any) {
   const assessment = stockingCompatibility?.stockingAssessment ?? null;
   const biologicalLoad = assessment?.biologicalLoad ?? null;
+  const metrics = stockingCompatibility?.metrics ?? {};
   const categories = stockingCompatibility?.categories ?? {};
   const riskToUi = (risk: string) => {
     if (risk === 'critical') return 'Niezgodne';
@@ -40,6 +41,9 @@ export function buildStockingCompatibilitySections(stockingCompatibility: any) {
   };
   const buildFishLabel = (fish: any, fallback = 'Ryba') =>
     String(fish?.commonName ?? fish?.name ?? fish?.latinName ?? fallback).trim();
+  const aggressionDependencies = Array.isArray(stockingCompatibility?.aggressionDependencies)
+    ? stockingCompatibility.aggressionDependencies
+    : [];
   const behaviorConflictDetails = (stockingCompatibility?.conflicts ?? [])
     .filter((item: any) =>
       behaviorCategoryKeys.includes(String(item?.category ?? ''))
@@ -53,11 +57,87 @@ export function buildStockingCompatibilitySections(stockingCompatibility: any) {
         firstFishLabel && secondFishLabel
           ? `${firstFishLabel} + ${secondFishLabel}`
           : firstFishLabel || secondFishLabel || 'Obsada';
+      const aggressionDirectionLabel =
+        firstFishLabel && secondFishLabel
+          ? `${firstFishLabel} -> ${secondFishLabel}`
+          : pairLabel;
       const message = String(item?.message ?? '').trim();
-      return message
-        ? `${categoryLabel}: ${pairLabel} - ${message}`
-        : `${categoryLabel}: ${pairLabel}`;
+      if (message) {
+        return `${categoryLabel}: ${aggressionDirectionLabel} - ${message}`;
+      }
+      return `${categoryLabel}: ${aggressionDirectionLabel}`;
     });
+  const aggressionConflictProblems = aggressionDependencies
+    .map((item: any) => {
+      const categoryKey = String(item?.type ?? '');
+      const source = String(item?.source ?? '').trim();
+      const target = String(item?.target ?? '').trim();
+      const severityRank =
+        String(item?.severity ?? '').toLowerCase() === 'critical'
+          ? 2
+          : String(item?.severity ?? '').toLowerCase() === 'warning'
+            ? 1
+            : 0;
+      if (!source || !target) {
+        return null;
+      }
+      const text =
+        categoryKey === 'predation'
+          ? `${source} moze polowac na ${target}.`
+          : categoryKey === 'finNipping'
+            ? `${source} moze podgryzac pletwy ${target}.`
+            : categoryKey === 'territoriality'
+              ? `${source} moze konfliktowac terytorialnie z ${target}.`
+              : `${source} moze byc agresywny wobec ${target}.`;
+      return { severityRank, text };
+    })
+    .filter(Boolean)
+    .filter((item: any) => Boolean(String(item?.text ?? '').trim()))
+    .sort((a: any, b: any) => b.severityRank - a.severityRank)
+    .map((item: any) => item.text);
+  const aggressionPairDetails = (stockingCompatibility?.conflicts ?? [])
+    .filter((item: any) =>
+      ['aggression', 'territoriality', 'predation', 'finNipping'].includes(
+        String(item?.category ?? '')
+      )
+    )
+    .map((item: any) => {
+      const categoryKey = String(item?.category ?? '');
+      const firstFishLabel = buildFishLabel(item?.firstFish, '');
+      const secondFishLabel = buildFishLabel(item?.secondFish, '');
+      const severityRank =
+        String(item?.severity ?? '').toLowerCase() === 'critical'
+          ? 2
+          : String(item?.severity ?? '').toLowerCase() === 'warning'
+            ? 1
+            : 0;
+      if (firstFishLabel && secondFishLabel) {
+        if (categoryKey === 'predation') {
+          return { severityRank, text: `${firstFishLabel} moze polowac na ${secondFishLabel}.` };
+        }
+        if (categoryKey === 'finNipping') {
+          return {
+            severityRank,
+            text: `${firstFishLabel} moze podgryzac pletwy ${secondFishLabel}.`,
+          };
+        }
+        if (categoryKey === 'territoriality') {
+          return {
+            severityRank,
+            text: `${firstFishLabel} moze konfliktowac terytorialnie z ${secondFishLabel}.`,
+          };
+        }
+        return {
+          severityRank,
+          text: `${firstFishLabel} moze byc agresywny wobec ${secondFishLabel}.`,
+        };
+      }
+      const fallbackMessage = String(item?.message ?? '').trim();
+      return { severityRank, text: fallbackMessage };
+    })
+    .filter((item: any) => Boolean(String(item?.text ?? '').trim()))
+    .sort((a: any, b: any) => b.severityRank - a.severityRank)
+    .map((item: any) => item.text);
   const behaviorCategoryDetails = behaviorCategoryKeys.flatMap((key) =>
     (categories?.[key]?.problems ?? []).map((text: string) => {
       const label = behaviorCategoryLabels[key] ?? 'Zachowanie';
@@ -72,11 +152,66 @@ export function buildStockingCompatibilitySections(stockingCompatibility: any) {
   const spaceDetails = [
     ...new Set([...(categories?.tankSize?.problems ?? [])].filter(Boolean)),
   ].slice(0, 5);
+  const aggressiveRatio = Number(metrics?.aggressiveRatio);
+  const maxAggressionLevel = Number(metrics?.maxAggressionLevel);
+  const averageAggressionLevel = Number(metrics?.averageAggressionLevel);
+  const aggressionRisk = (() => {
+    if (
+      (Number.isFinite(maxAggressionLevel) && maxAggressionLevel >= 4 && Number.isFinite(aggressiveRatio) && aggressiveRatio >= 0.55) ||
+      (Number.isFinite(aggressiveRatio) && aggressiveRatio >= 0.7)
+    ) {
+      return 'critical';
+    }
+    if (
+      (Number.isFinite(aggressiveRatio) && aggressiveRatio >= 0.45) ||
+      (Number.isFinite(maxAggressionLevel) && maxAggressionLevel >= 4)
+    ) {
+      return 'high';
+    }
+    if (
+      (Number.isFinite(aggressiveRatio) && aggressiveRatio >= 0.25) ||
+      (Number.isFinite(maxAggressionLevel) && maxAggressionLevel >= 3)
+    ) {
+      return 'medium';
+    }
+    return 'low';
+  })();
+  const aggressionDetails = [
+    ...[...new Set(aggressionPairDetails)].slice(0, 4),
+    Number.isFinite(aggressiveRatio)
+      ? `Udzial agresywnej obsady: ${Math.round(aggressiveRatio * 100)}%`
+      : null,
+    Number.isFinite(averageAggressionLevel)
+      ? `Sredni poziom agresji: ${Math.round(averageAggressionLevel * 10) / 10}/5`
+      : null,
+    Number.isFinite(maxAggressionLevel)
+      ? `Maksymalny poziom agresji: ${Math.round(maxAggressionLevel * 10) / 10}/5`
+      : null,
+  ].filter(Boolean);
+  const aggressionCategoryProblems = [
+    ...(categories?.aggression?.problems ?? []),
+    ...(categories?.territoriality?.problems ?? []),
+    ...(categories?.predation?.problems ?? []),
+    ...(categories?.finNipping?.problems ?? []),
+  ].filter(Boolean);
+  const topAggressionProblems = [
+    ...new Set([...aggressionConflictProblems, ...aggressionCategoryProblems]),
+  ].slice(0, 6);
+  const aggressionProblems =
+    aggressionRisk === 'critical'
+      ? ['Bardzo wysoki poziom agresji w obsadzie.', ...topAggressionProblems]
+      : aggressionRisk === 'high'
+        ? ['Wysoki poziom agresji - obserwuj konflikty miedzy gatunkami.', ...topAggressionProblems]
+        : aggressionRisk === 'medium'
+          ? ['Umiarkowana agresja - zachowaj ostroznosc przy nowych gatunkach.', ...topAggressionProblems]
+          : topAggressionProblems.length > 0
+            ? ['Niski poziom agresji.', ...topAggressionProblems]
+            : ['Niski poziom agresji. Brak wyraznych relacji agresji miedzy gatunkami.'];
 
   return [
     {
       key: 'biologicalLoad',
-      label: 'Bioload',
+      label: 'Obciazenie biologiczne',
       data: {
         uiStatus: riskToUi(
           biologicalLoad?.adjustedRisk ?? biologicalLoad?.rawRisk ?? 'low'
@@ -131,8 +266,18 @@ export function buildStockingCompatibilitySections(stockingCompatibility: any) {
         details: uniqueBehaviorDetails,
       },
     },
+    {
+      key: 'aggressionProfile',
+      label: 'Agresywnosc',
+      data: {
+        uiStatus: riskToUi(aggressionRisk),
+        problems: aggressionProblems,
+        details: aggressionDetails,
+      },
+    },
   ].map((item) => ({
     ...item,
     data: item.data ?? { uiStatus: 'OK', problems: [], details: [] },
   }));
 }
+

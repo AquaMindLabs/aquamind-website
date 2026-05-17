@@ -13,7 +13,7 @@ test('resolveAiAssistantGate: free plan without feature shows upgrade prompt', (
 
   assert.equal(gate.hasAccess, false);
   assert.equal(gate.showUpgradePrompt, true);
-  assert.match(gate.upgradePromptMessage, /Ulepsz plan/i);
+  assert.match(gate.upgradePromptMessage, /Asystent AI Pro/i);
   assert.equal(gate.targetPlan, 'pro');
 });
 
@@ -30,7 +30,7 @@ test('resolveAiAssistantGate: pro plan with feature has full access', () => {
   assert.equal(gate.upgradePromptMessage, '');
 });
 
-test('resolveAiAssistantGate: premium without feature is blocked without free prompt', () => {
+test('resolveAiAssistantGate: premium without feature shows upgrade prompt', () => {
   const gate = resolveAiAssistantGate({
     hasAiAssistantFeature: false,
     currentPlan: 'premium',
@@ -38,7 +38,7 @@ test('resolveAiAssistantGate: premium without feature is blocked without free pr
   });
 
   assert.equal(gate.hasAccess, false);
-  assert.equal(gate.showUpgradePrompt, false);
+  assert.equal(gate.showUpgradePrompt, true);
+  assert.match(gate.upgradePromptMessage, /Asystent AI Pro/i);
   assert.equal(gate.lockMessage, 'Asystent AI jest dostepny w planie Pro.');
 });
-

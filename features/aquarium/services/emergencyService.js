@@ -80,16 +80,16 @@ function buildNo2EmergencyCase(no2Value) {
     summary:
       'Azotyny ograniczaja transport tlenu i moga szybko pogorszyc stan ryb.',
     steps: [
-      'Natychmiast wykonaj podmiane 40-60% wody o tej samej temperaturze.',
-      'Wlacz mocne napowietrzanie i maksymalny ruch tafli.',
+      'Natychmiast wykonaj podmianę 40-60% wody o tej samej temperaturze.',
+      'Włącz mocne napowietrzanie i maksymalny ruch tafli.',
       'Na 24h ogranicz karmienie do minimum lub wstrzymaj calkowicie.',
-      'Sprawdz droznosc filtra i przeplyw, ale nie plucz calego medium naraz.',
+      'Sprawdz droznosc filtra i przepływ, ale nie płucz calego medium naraz.',
       'Powtorz test NO2 po 3-6h i ponownie nastepnego dnia.',
     ],
     avoid: [
       'Nie dodawaj od razu nowych ryb.',
       'Nie myj calego filtra w kranowce ani nie wymieniaj wszystkich mediow naraz.',
-      'Nie koryguj parametrow wieloma preparatami jednoczesnie.',
+      'Nie koryguj parametrów wieloma preparatami jednoczesnie.',
     ],
   };
 }
@@ -103,9 +103,9 @@ function buildNh3Nh4EmergencyCase(nh3nh4Value) {
     severity,
     title: `NH3/NH4 ${levelLabel} (${nh3nh4Value} mg/l)`,
     summary:
-      'Amoniak i jon amonowy moga byc silnie toksyczne, szczegolnie przy wyzszym pH i temperaturze.',
+      'Amoniak i jon amonowy moga byc silnie toksyczne, szczegółnie przy wyzszym pH i temperaturze.',
     steps: [
-      'Wykonaj podmiane 40-60% wody i uzdatnij nowa wode.',
+      'Wykonaj podmianę 40-60% wody i uzdatnij nowa wode.',
       'Zwiksz napowietrzanie oraz ruch tafli.',
       'Wstrzymaj karmienie na 24h, potem dawkuj bardzo oszczednie.',
       'Sprawdz, czy filtr pracuje stabilnie i czy nie doszlo do przerwy biologii.',
@@ -113,7 +113,7 @@ function buildNh3Nh4EmergencyCase(nh3nh4Value) {
     ],
     avoid: [
       'Nie dodawaj kolejnych srodkow na slepo bez ponownego pomiaru.',
-      'Nie podnoz gwaltownie pH podczas epizodu amoniaku.',
+      'Nie podnoz gwałtownie pH podczas epizodu amoniaku.',
       'Nie przenos calej obsady bez przygotowanego, stabilnego zbiornika.',
     ],
   };
@@ -127,16 +127,16 @@ function buildGaspingEmergencyCase() {
     summary:
       'To objaw niedoboru tlenu lub ostrego zatrucia, wymagajacy szybkiej reakcji.',
     steps: [
-      'Natychmiast zwieksz napowietrzanie i ruch tafli.',
-      'Wykonaj szybka podmiane 30-50% wody.',
-      'Sprawdz temperature i dzialanie filtra.',
+      'Natychmiast zwiększ napowietrzanie i ruch tafli.',
+      'Wykonaj szybka podmianę 30-50% wody.',
+      'Sprawdz temperature i działanie filtra.',
       'Wykonaj test NO2 oraz NH3/NH4 jak najszybciej.',
       'Obserwuj ryby przez kolejne 1-2h po interwencji.',
     ],
     avoid: [
-      'Nie zaczynaj od leczenia calego zbiornika bez pomiarow.',
+      'Nie zaczynaj od leczenia calego zbiornika bez pomiarów.',
       'Nie podawaj dodatkowej karmy w trakcie kryzysu.',
-      'Nie wylaczaj filtra na dluzszy czas.',
+      'Nie wyłączaj filtra na dluzszy czas.',
     ],
   };
 }
@@ -147,17 +147,17 @@ function buildFilterStoppedEmergencyCase(filterStatusLabel) {
     severity: 'critical',
     title: 'Filtr przestal dzialac',
     summary:
-      'Przerwa filtracji szybko obniza tlen i destabilizuje biologie akwarium.',
+      'Przerwa filtracji szybko obniża tlen i destabilizuje biologie akwarium.',
     steps: [
-      'Przywroc prace filtra (zasilanie, wirnik, droznosc przewodow).',
+      'Przywró prace filtra (zasilanie, wirnik, droznosc przewodow).',
       'Do czasu naprawy uruchom mocne napowietrzanie.',
-      'Jesli przestoj byl dluzszy niz ~1-2h, wykonaj podmiane 30-50% wody.',
-      'Sprawdz NO2 i NH3/NH4 po przywroceniu obiegu.',
+      'Jesli przestoj byl dluzszy niż ~1-2h, wykonaj podmianę 30-50% wody.',
+      'Sprawdz NO2 i NH3/NH4 po przywróeniu obiegu.',
       'Przez 24-48h karm oszczednie i monitoruj ryby.',
     ],
     avoid: [
-      'Nie uruchamiaj filtra na zabrudzonych mediach bez kontroli zapachu i przeplywu.',
-      'Nie plucz wszystkich mediow biologicznych jednoczesnie.',
+      'Nie uruchamiaj filtra na zabrudzonych mediach bez kontroli zapachu i przepływu.',
+      'Nie płucz wszystkich mediow biologicznych jednoczesnie.',
       `Nie ignoruj statusu filtra: ${filterStatusLabel}.`,
     ],
   };
@@ -169,16 +169,16 @@ function buildHighTemperatureEmergencyCase(temperatureValue, thresholdValue) {
     severity: temperatureValue >= thresholdValue + 1 ? 'critical' : 'warning',
     title: `Temperatura za wysoka (${temperatureValue} C)`,
     summary:
-      'Przegrzanie zmniejsza ilosc tlenu w wodzie i moze nasilac stres oraz toksycznosc.',
+      'Przegrzanie zmniejsza ilosc tlenu w wodzie i może nasilac stres oraz toksycznosc.',
     steps: [
       'Zwiksz natlenienie i ruch tafli.',
-      'Ogranicz oswietlenie i zrodla ciepla przy akwarium.',
+      'Ogranicz oświetlenie i źród?a ciepla przy akwarium.',
       'Chlodz zbiornik stopniowo (maks. ok. 1 C na kilka godzin).',
       'Sprawdz, czy grzalka nie jest zablokowana w pozycji grzania.',
       'Kontroluj temperature co 30-60 min do stabilizacji.',
     ],
     avoid: [
-      'Nie schladzaj gwaltownie (szok termiczny).',
+      'Nie schladzaj gwałtownie (szok termiczny).',
       'Nie wrzucaj lodu bezposrednio do akwarium.',
       'Nie podmieniaj od razu duzej objetosci bardzo zimna woda.',
     ],

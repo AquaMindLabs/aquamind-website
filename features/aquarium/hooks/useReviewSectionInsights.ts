@@ -32,6 +32,7 @@ type UseReviewSectionInsightsParams = {
   incompatiblePlantCount: number;
   incompatiblePlantMajorCount: number;
   currentMeasurementDisplay: any;
+  currentAnalysis: any;
   currentMeasurementValueSourceMsByKey: Map<string, number>;
   selectedTankTargetRanges: any;
   measurements: any[];
@@ -79,6 +80,7 @@ export function useReviewSectionInsights({
   incompatiblePlantCount,
   incompatiblePlantMajorCount,
   currentMeasurementDisplay,
+  currentAnalysis,
   currentMeasurementValueSourceMsByKey,
   selectedTankTargetRanges,
   measurements,
@@ -218,6 +220,7 @@ export function useReviewSectionInsights({
         activeAlgaeCasesCount: activeAlgaeCases.length,
         activeAlgaeCases,
         selectedTankHealthAssessment,
+        measurementAnalysis: currentAnalysis,
       },
       {
         summarizeCompatibilityResults,
@@ -339,6 +342,7 @@ export function useReviewSectionInsights({
   }, [
     currentMeasurement,
     currentMeasurementDisplay,
+    currentAnalysis,
     currentMeasurementValueSourceMsByKey,
     getMeasurementNumericValue,
     hasPlantMeasurements,
@@ -378,7 +382,9 @@ export function useReviewSectionInsights({
   ]);
 
   const fishTabSeverity = useMemo(() => {
-    const fishItems = stockItems.filter((item) => item.type === 'fish');
+    const fishItems = (Array.isArray(stockItems) ? stockItems : []).filter(
+      (item) => item?.type === 'fish'
+    );
 
     if (fishItems.length === 0) {
       return 'none';
@@ -420,7 +426,9 @@ export function useReviewSectionInsights({
   ]);
 
   const plantTabSeverity = useMemo(() => {
-    const plantItems = stockItems.filter((item) => item.type === 'plant');
+    const plantItems = (Array.isArray(stockItems) ? stockItems : []).filter(
+      (item) => item?.type === 'plant'
+    );
 
     if (plantItems.length === 0) {
       return 'none';

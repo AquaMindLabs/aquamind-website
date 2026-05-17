@@ -120,6 +120,7 @@ import {
 import { PLANT_CATALOG_EXPANDED } from '@/data/plantCatalogExpanded';
 import { PLANT_CATALOG_STARTER } from '@/data/plantCatalogStarter';
 import {
+  getAdaptiveTaskChecksStorageKey,
   getSelectedTankStorageKey,
 } from '@/features/aquarium/services/storageKeys';
 import {
@@ -142,17 +143,7 @@ import {
   buildTankOnboardingPlanService,
   generateAdaptiveTaskSchedule,
 } from '@/features/aquarium/services/tasksService';
-import { evaluateStockingCompatibilityModel } from '@/features/aquarium/services/stockingCompatibilityService';
 import { buildOnboardingPanelModel } from '@/features/aquarium/services/onboardingAdapter';
-import {
-  AiChatRequestError,
-  requestAiChat,
-} from '@/features/aquarium/services/aiChatService';
-import {
-  pickVisionImage,
-  requestAiVisionAnalyzeWithRetry,
-  uploadVisionImageForUser,
-} from '@/features/aquarium/services/aiVisionService';
 import { evaluateEmergencyState } from '@/features/aquarium/services/emergencyService';
 import {
   buildTargetRangeInputDraftFromRangesService,
@@ -175,12 +166,7 @@ import {
   getRecommendationDueAtMs as getRecommendationDueAtMsLogic,
 } from '@/logic/waterAnalysis';
 import { auth, db } from '@/shared/services/firebase';
-import { logTelemetryError, logTelemetryEvent } from '@/shared/services/observability';
-import {
-  normalizeArray,
-  normalizeObject,
-  normalizeString,
-} from '@/shared/utils/runtimeGuards';
+import { logTelemetryError } from '@/shared/services/observability';
 import { safeSome } from '@/shared/utils/safeArray';
 
 let notificationsModulePromise = null;
@@ -200,17 +186,32 @@ const REMOTE_JSON_REQUEST_HEADERS = Object.freeze({
   'User-Agent':
     'MyAquariumAssistant/1.0 (mobile app; https://my-aquarium-assistant.firebaseapp.com)',
 });
-function getFirstRunStatusLabel(statusSeverity = 'no_data') {
-  if (statusSeverity === 'critical') {
-    return 'Wymaga pilnej uwagi';
+const ADAPTIVE_TASK_BUCKET_PREVIEW_LIMIT = 4;
+
+function getAdaptiveTaskOccurrenceKey(task) {
+  const taskId = String(task?.id ?? '').trim();
+  const dayBucketMs = Number(task?.dayBucketMs);
+  if (!taskId || !Number.isFinite(dayBucketMs) || dayBucketMs <= 0) {
+    return '';
   }
-  if (statusSeverity === 'warning') {
-    return 'Wymaga kilku korekt';
+  return `${taskId}::${Math.round(dayBucketMs)}`;
+}
+
+function normalizeAdaptiveTaskChecks(value) {
+  if (!value || typeof value !== 'object') {
+    return {};
   }
-  if (statusSeverity === 'ok') {
-    return 'Stabilny start';
-  }
-  return 'Brak peĹ‚nego zestawu danych';
+
+  return Object.entries(value).reduce((accumulator, [key, checked]) => {
+    const normalizedKey = String(key ?? '').trim();
+    if (!normalizedKey) {
+      return accumulator;
+    }
+    if (checked) {
+      accumulator[normalizedKey] = true;
+    }
+    return accumulator;
+  }, {});
 }
 
 function buildFishCommonsFallbackImageUrl(latinName, width = 420) {
@@ -394,7 +395,7 @@ function parsePositiveNumberOrThrow(label, rawValue) {
   const value = parseNumberOrThrow(label, rawValue);
 
   if (value <= 0) {
-    throw new Error(`Pole ${label} musi byc wiÄ™ksze od 0`);
+    throw new Error(`Pole ${label} musi byc wieksze od 0`);
   }
 
   return value;
@@ -408,7 +409,7 @@ function parseOptionalNonNegativeNumberOrThrow(label, rawValue) {
   }
 
   if (value < 0) {
-    throw new Error(`Pole ${label} nie moĹĽe byc mniejsze od 0`);
+    throw new Error(`Pole ${label} nie moze byc mniejsze od 0`);
   }
 
   return value;
@@ -418,7 +419,7 @@ function parseNonNegativeNumberOrThrow(label, rawValue) {
   const value = parseNumberOrThrow(label, rawValue);
 
   if (value < 0) {
-    throw new Error(`Pole ${label} nie moĹĽe byc mniejsze od 0`);
+    throw new Error(`Pole ${label} nie moze byc mniejsze od 0`);
   }
 
   return value;
@@ -587,7 +588,7 @@ function formatRoundedTankRangeToTens(minLiters, maxLiters) {
 function getEquipmentCatalogDescription(item) {
   const normalizedType = String(item?.type ?? '').trim().toLowerCase();
   if (normalizedType === 'light') {
-    return 'O\u015bwietlenie wspiera wzrost ro\u015blin. Moc i skuteczno\u015b\u0107 zale\u017cy od litra\u017cu i czasu \u015bwiecenia.';
+    return 'Oswietlenie wspiera wzrost roslin. Moc i skutecznosc zalezy od litrazu i czasu swiecenia.';
   }
 
   const normalizedEquipmentType = normalizeEquipmentType(item?.type);
@@ -599,18 +600,18 @@ function getEquipmentCatalogDescription(item) {
       return 'Kompaktowa grzalka do stabilnego dogrzewania mniejszych zbiornikow.';
     }
     if (maxLiters <= 180) {
-      return 'Uniwersalna grzalka do codzieĹ„nego utrzymania temperatury w akwarium towarzyskim.';
+      return 'Uniwersalna grzalka do codziennego utrzymania temperatury w akwarium towarzyskim.';
     }
-    return 'Mocniejsza grzalka do wiÄ™kszych zbiornikow lub pomieszczen z chlodniejszym otoczeniem.';
+    return 'Mocniejsza grzalka do wiekszych zbiornikow lub pomieszczen z chlodniejszym otoczeniem.';
   }
 
   if (flowLh <= 500) {
-    return 'Lagodniejsza filtracja do mniejszych akwariĂłw i spokojniejszej obsady.';
+    return 'Lagodniejsza filtracja do mniejszych akwariow i spokojniejszej obsady.';
   }
   if (flowLh <= 1200) {
-    return 'Uniwersalny filtr do codzieĹ„nej filtracji biologiczno-mechanicznej.';
+    return 'Uniwersalny filtr do codziennej filtracji biologiczno-mechanicznej.';
   }
-  return 'Wydajniejszy filtr do wiÄ™kszych zbiornikow albo mocniej obciazonej obsady.';
+  return 'Wydajniejszy filtr do wiekszych zbiornikow albo mocniej obciazonej obsady.';
 }
 
 function normalizeEquipmentCatalogType(value) {
@@ -1224,11 +1225,11 @@ function getMeasurementDefaultAction(key, severity) {
   }
 
   if (key === 'no3') {
-    return 'Wykonaj podmianÄ™ wody i ogranicz karmienie, a dodatkowo zwiÄ™ksz mase roslin szybko rosnacych.';
+    return 'Wykonaj podmiane wody i ogranicz karmienie, a dodatkowo zwieksz mase roslin szybko rosnacych.';
   }
 
   if (key === 'temperature') {
-    return 'Skoryguj ustawieĹ„ia grzalki/chlodzenia stopniowo i obserwuj reakcje ryb.';
+    return 'Skoryguj ustawienia grzalki/chlodzenia stopniowo i obserwuj reakcje ryb.';
   }
 
   if (key === 'co2') {
@@ -1240,42 +1241,42 @@ function getMeasurementDefaultAction(key, severity) {
   }
 
   if (key === 'tds') {
-    return 'Dostosuj mineralizacje i podmiany, aby wrĂłic do stabilnego zakresu TDS.';
+    return 'Dostosuj mineralizacje i podmiany, aby wrocic do stabilnego zakresu TDS.';
   }
 
   return severity === 'critical'
-    ? 'WprowadĹş korekte jeszcze dzisiaj i powtorz pomiar po zmianach.'
-    : 'Zaplanow korekte przy najbliĹĽszej pielegnacji i kontrolny pomiar.';
+    ? 'Wprowadz korekte jeszcze dzisiaj i powtorz pomiar po zmianach.'
+    : 'Zaplanow korekte przy najblizszej pielegnacji i kontrolny pomiar.';
 }
 
 function getMeasurementDefaultImpact(key, severity) {
   if (severity === 'ok') {
-    return 'Przy utrzymaniu tego poziomu parametr nie powinien teraz zwiÄ™kszac ryzyka dla obsady.';
+    return 'Przy utrzymaniu tego poziomu parametr nie powinien teraz zwiekszac ryzyka dla obsady.';
   }
 
   if (key === 'no2') {
-    return 'Podwyzszone NO2 szybko podnosi stres i moĹĽe prowadzic do zatruc.';
+    return 'Podwyzszone NO2 szybko podnosi stres i moze prowadzic do zatruc.';
   }
 
   if (key === 'no3') {
-    return 'Wysokie NO3 zwiÄ™ksza ryzyko glonow, oslabienia ryb i gorszego samopoczucia obsady.';
+    return 'Wysokie NO3 zwieksza ryzyko glonow, oslabienia ryb i gorszego samopoczucia obsady.';
   }
 
   if (key === 'nh3nh4') {
-    return 'Podwyzszone NH3/NH4 zwiÄ™ksza ryzyko podtrucia i problemĂłw z oddychaniem u ryb.';
+    return 'Podwyzszone NH3/NH4 zwieksza ryzyko podtrucia i problemow z oddychaniem u ryb.';
   }
 
   if (key === 'temperature') {
-    return 'Niestabilna temperatura nasila stres i moĹĽe oslabic odpornoĹ›Ä‡ ryb.';
+    return 'Niestabilna temperatura nasila stres i moze oslabic odpornosc ryb.';
   }
 
   if (key === 'ph') {
-    return 'Odchylenie pH moĹĽe zwiÄ™kszac stres i podatnosc na infekcje.';
+    return 'Odchylenie pH moze zwiekszac stres i podatnosc na infekcje.';
   }
 
   return severity === 'critical'
-    ? 'Bez korekty moĹĽe dojsc do pogorszenia kondycji zbiornika i obsady.'
-    : 'Bez korekty moĹĽe stopniowo obniĹĽac komfort zycia ryb i roslin.';
+    ? 'Bez korekty moze dojsc do pogorszenia kondycji zbiornika i obsady.'
+    : 'Bez korekty moze stopniowo obnizac komfort zycia ryb i roslin.';
 }
 
 const SEVERITY_LABEL = {
@@ -1343,7 +1344,7 @@ const SUBSTRATE_OPTIONS = [
   { value: 'sand', label: 'Piasek', labelKey: 'substrateSand' },
   { value: 'fine_gravel', label: 'Drobny zwir', labelKey: 'substrateFineGravel' },
   { value: 'gravel', label: 'Zwir', labelKey: 'substrateGravel' },
-  { value: 'active_soil', label: 'PodĹ‚oĹĽe aktywne', labelKey: 'substrateActiveSoil' },
+  { value: 'active_soil', label: 'Podloze aktywne', labelKey: 'substrateActiveSoil' },
   { value: 'garden_soil', label: 'Ziemia ogrodowa' },
   { value: 'mixed', label: 'Mieszane', labelKey: 'substrateMixed' },
   { value: 'other', label: 'Inne', labelKey: 'substrateOther' },
@@ -1561,7 +1562,7 @@ const ADD_TANK_WIZARD_STEPS = [
   { id: 'start', title: 'Sposob uruchomienia' },
   { id: 'onboarding', title: 'Onboarding' },
   { id: 'profile', title: 'Profil akwarium' },
-  { id: 'substrate', title: 'PodĹ‚oĹĽe' },
+  { id: 'substrate', title: 'Podloze' },
   { id: 'water', title: 'Parametry wody' },
   { id: 'temperature', title: 'Temperatura' },
   { id: 'summary', title: 'Podsumowanie' },
@@ -1600,10 +1601,10 @@ const ADD_TANK_PROFILE_OPTIONS = [
   { value: 'custom', label: 'Wlasny profil' },
 ];
 const WIZARD_SUBSTRATE_LAYER_OPTIONS = [
-  { value: 'none', label: 'Brak podĹ‚oĹĽa', modelValue: 'other' },
+  { value: 'none', label: 'Brak podloza', modelValue: 'other' },
   { value: 'sand', label: 'Piasek', modelValue: 'sand' },
   { value: 'gravel', label: 'Zwir', modelValue: 'gravel' },
-  { value: 'active_soil', label: 'PodĹ‚oĹĽe aktywne', modelValue: 'active_soil' },
+  { value: 'active_soil', label: 'Podloze aktywne', modelValue: 'active_soil' },
   { value: 'substrate', label: 'Substrat pod rosliny', modelValue: 'mixed' },
   { value: 'soil_layer', label: 'Ziemia / warstwa odzywcza', modelValue: 'garden_soil' },
   { value: 'other', label: 'Inne', modelValue: 'other' },
@@ -1850,7 +1851,8 @@ function deriveWizardProfileFromTank(tank) {
 
 function wizardStartTypeLabel(startType) {
   return (
-    ADD_TANK_START_OPTIONS.find((item) => item.value === startType)?.label ?? 'Nowy zbiornik od zera'
+    ADD_TANK_START_OPTIONS.find((item) => item.value === startType)?.label ??
+    'Nowy zbiornik od zera'
   );
 }
 
@@ -1863,7 +1865,8 @@ function wizardProfileLabel(profile) {
 function getWizardSubstrateLayerModelValue(layerType) {
   const normalized = String(layerType ?? '').trim().toLowerCase();
   return (
-    WIZARD_SUBSTRATE_LAYER_OPTIONS.find((item) => item.value === normalized)?.modelValue ?? 'other'
+    WIZARD_SUBSTRATE_LAYER_OPTIONS.find((item) => item.value === normalized)?.modelValue ??
+    'other'
   );
 }
 
@@ -1900,8 +1903,7 @@ function getWaterTargetDefaults(profile) {
 
   const next = {};
   WATER_TARGET_FIELDS.forEach((field) => {
-    const raw =
-      source[field.key] ?? WATER_TARGET_DEFAULTS_BY_PROFILE[DEFAULT_WATER_PROFILE][field.key];
+    const raw = source[field.key] ?? WATER_TARGET_DEFAULTS_BY_PROFILE[DEFAULT_WATER_PROFILE][field.key];
     next[field.key] = {
       min: Number(raw.min),
       max: Number(raw.max),
@@ -2102,257 +2104,6 @@ async function updateDocWithTelemetry(collectionName, docRef, payload, context =
   }
 }
 
-const ACCEPTED_PROBLEM_ACKS_MAX = 160;
-const LEGACY_ACCEPTED_PROBLEM_ACKS_MAINTENANCE_KEY = 'acceptedProblemAcks';
-
-function normalizeProblemTextForMatch(value) {
-  return String(value ?? '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function buildProblemAcceptanceKeyFromAlert(alertItem) {
-  const explicitId = normalizeProblemTextForMatch(alertItem?.id);
-  if (explicitId) {
-    return `id:${explicitId}`;
-  }
-  const area = normalizeProblemTextForMatch(alertItem?.area ?? alertItem?.affectedArea);
-  const title = normalizeProblemTextForMatch(alertItem?.title ?? alertItem?.text);
-  if (!title) {
-    return '';
-  }
-  return `title:${area || 'general'}:${title}`.slice(0, 280);
-}
-
-function normalizeAcceptedProblemAcks(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return {};
-  }
-
-  const normalized = {};
-  const entries = Object.entries(value).slice(0, ACCEPTED_PROBLEM_ACKS_MAX);
-  entries.forEach(([rawKey, rawEntry]) => {
-    const key = normalizeProblemTextForMatch(rawKey);
-    if (!key) {
-      return;
-    }
-    const entry = rawEntry && typeof rawEntry === 'object' ? rawEntry : {};
-    const title = String(entry.title ?? '').trim();
-    const area = String(entry.area ?? entry.affectedArea ?? '').trim();
-    normalized[key] = {
-      title,
-      area,
-      severity: String(entry.severity ?? '').trim(),
-      source: String(entry.source ?? '').trim(),
-      acceptedAt: String(entry.acceptedAt ?? '').trim(),
-      acceptedForTankUpdatedAt: String(entry.acceptedForTankUpdatedAt ?? '').trim(),
-      scopeKey: String(entry.scopeKey ?? '').trim(),
-      scopeFingerprint: String(entry.scopeFingerprint ?? '').trim(),
-      normalizedTitle: normalizeProblemTextForMatch(title),
-      normalizedArea: normalizeProblemTextForMatch(area),
-    };
-  });
-  return normalized;
-}
-
-function mergeAcceptedProblemAcks(baseValue, overlayValue) {
-  return {
-    ...normalizeAcceptedProblemAcks(baseValue),
-    ...normalizeAcceptedProblemAcks(overlayValue),
-  };
-}
-
-function toSafeTimestampMs(value) {
-  if (value === null || value === undefined) {
-    return null;
-  }
-  if (typeof value === 'number') {
-    return Number.isFinite(value) ? value : null;
-  }
-  if (value instanceof Date) {
-    const ms = value.getTime();
-    return Number.isFinite(ms) ? ms : null;
-  }
-  if (typeof value === 'string') {
-    const ms = Date.parse(value);
-    return Number.isFinite(ms) ? ms : null;
-  }
-  if (typeof value === 'object') {
-    if (typeof value.toDate === 'function') {
-      try {
-        const asDate = value.toDate();
-        if (asDate instanceof Date) {
-          const ms = asDate.getTime();
-          return Number.isFinite(ms) ? ms : null;
-        }
-      } catch {
-        // ignore malformed toDate values
-      }
-    }
-    const seconds = Number(value.seconds);
-    if (Number.isFinite(seconds)) {
-      const nanos = Number(value.nanoseconds);
-      const ms = seconds * 1000 + (Number.isFinite(nanos) ? nanos / 1_000_000 : 0);
-      return Number.isFinite(ms) ? ms : null;
-    }
-  }
-  return null;
-}
-
-function getAcceptedProblemAcksFromTank(tank) {
-  const primary = normalizeAcceptedProblemAcks(tank?.acceptedProblemAcks);
-  const maintenanceState =
-    tank?.maintenanceActionState &&
-    typeof tank.maintenanceActionState === 'object' &&
-    !Array.isArray(tank.maintenanceActionState)
-      ? tank.maintenanceActionState
-      : {};
-  const legacy = normalizeAcceptedProblemAcks(
-    maintenanceState?.[LEGACY_ACCEPTED_PROBLEM_ACKS_MAINTENANCE_KEY]
-  );
-  return {
-    ...legacy,
-    ...primary,
-  };
-}
-
-function getActiveAcceptedProblemAcksFromTank(tank) {
-  return getAcceptedProblemAcksFromTank(tank);
-}
-
-function buildMaintenanceStateWithAcceptedProblemAcks(tank, acceptedProblemAcks) {
-  const base =
-    tank?.maintenanceActionState &&
-    typeof tank.maintenanceActionState === 'object' &&
-    !Array.isArray(tank.maintenanceActionState)
-      ? tank.maintenanceActionState
-      : {};
-  return {
-    ...base,
-    [LEGACY_ACCEPTED_PROBLEM_ACKS_MAINTENANCE_KEY]: acceptedProblemAcks,
-  };
-}
-
-function buildAcceptedProblemEntry(
-  alertItem,
-  acceptedAtIso,
-  acceptedForTankUpdatedAtIso,
-  scopeKey = '',
-  scopeFingerprint = ''
-) {
-  const title = String(alertItem?.title ?? alertItem?.text ?? '').trim();
-  const area = String(alertItem?.area ?? alertItem?.affectedArea ?? '').trim();
-  return {
-    title,
-    area,
-    severity: String(alertItem?.severity ?? '').trim().toLowerCase(),
-    source: String(alertItem?.source ?? 'review').trim(),
-    acceptedAt: String(acceptedAtIso ?? ''),
-    acceptedForTankUpdatedAt: String(acceptedForTankUpdatedAtIso ?? ''),
-    scopeKey: String(scopeKey ?? '').trim(),
-    scopeFingerprint: String(scopeFingerprint ?? '').trim(),
-  };
-}
-
-function resolveAcceptedProblemScopeKey(alertItem) {
-  const area = normalizeProblemTextForMatch(alertItem?.area);
-  const affectedArea = normalizeProblemTextForMatch(alertItem?.affectedArea);
-  const source = normalizeProblemTextForMatch(alertItem?.source);
-
-  if (
-    area.includes('sprzet') ||
-    affectedArea === 'equipment' ||
-    source.includes('equipment')
-  ) {
-    return 'equipment';
-  }
-  if (
-    area.includes('parametr') ||
-    affectedArea === 'water_parameters' ||
-    source.includes('water_analysis') ||
-    source.includes('temperature_context')
-  ) {
-    return 'parameters';
-  }
-  if (
-    area.includes('ryb') ||
-    affectedArea === 'fish' ||
-    affectedArea === 'stocking' ||
-    source.includes('fish') ||
-    source.includes('stocking')
-  ) {
-    return 'fish';
-  }
-  if (
-    area.includes('roslin') ||
-    affectedArea === 'plants' ||
-    source.includes('plant') ||
-    source.includes('lighting_context')
-  ) {
-    return 'plants';
-  }
-  if (
-    area.includes('problem') ||
-    affectedArea === 'health' ||
-    source.includes('issue_tracking')
-  ) {
-    return 'issues';
-  }
-  return 'general';
-}
-
-function isAcceptedProblemEntryStillActiveForItem(entry, alertItem, getScopeFingerprint) {
-  if (!entry || typeof entry !== 'object') {
-    return false;
-  }
-  const entryScope = normalizeProblemTextForMatch(entry.scopeKey);
-  if (!entryScope) {
-    return true;
-  }
-  const itemScope = resolveAcceptedProblemScopeKey(alertItem);
-  if (itemScope && entryScope !== itemScope) {
-    return false;
-  }
-  const expectedScopeFingerprint = String(entry.scopeFingerprint ?? '').trim();
-  if (!expectedScopeFingerprint) {
-    return true;
-  }
-  const currentScopeFingerprint = String(getScopeFingerprint?.(entryScope) ?? '').trim();
-  if (!currentScopeFingerprint) {
-    return true;
-  }
-  return currentScopeFingerprint === expectedScopeFingerprint;
-}
-
-function findAcceptedProblemForPenalty(penaltyItem, acceptedAcksByKey) {
-  const penaltyText = normalizeProblemTextForMatch(penaltyItem?.text);
-  if (!penaltyText) {
-    return null;
-  }
-
-  const candidates = Object.values(normalizeAcceptedProblemAcks(acceptedAcksByKey));
-  for (const candidate of candidates) {
-    const normalizedTitle = normalizeProblemTextForMatch(candidate?.title);
-    if (!normalizedTitle) {
-      continue;
-    }
-    if (penaltyText.includes(normalizedTitle) || normalizedTitle.includes(penaltyText)) {
-      return candidate;
-    }
-    const tokenMatches = normalizedTitle
-      .split(' ')
-      .filter((token) => token.length >= 5 && penaltyText.includes(token)).length;
-    if (tokenMatches >= 2) {
-      return candidate;
-    }
-  }
-  return null;
-}
-
 function normalizeWasteProductionLevelValue(value, fallback = null) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) {
@@ -2541,7 +2292,7 @@ function getLightIntensityLabel(value) {
 
 function getTankLightingLabelForIssues(tankProfile) {
   if (Boolean(tankProfile?.isDaylightOnly)) {
-    return 'Ĺ›wiatĹ‚o dzieĹ„ne (bez lampy)';
+    return 'swiatlo dzienne (bez lampy)';
   }
 
   const lightModelName = String(tankProfile?.lightModelName ?? '').trim();
@@ -2900,7 +2651,7 @@ function inferPlantParameterStabilitySensitivity(item) {
   if (
     text.includes('stabilne warunki') ||
     text.includes('delikatn') ||
-    text.includes('gubic liĹ›cie')
+    text.includes('gubic liscie')
   ) {
     return 'high';
   }
@@ -3138,7 +2889,7 @@ function evaluatePlantLightingForTank(item, tankProfile = null) {
     return {
       status: 'unknown',
       label: 'Brak danych',
-      message: 'Brak kompletnych danych o wymaganiach ?wietlnych rosliny.',
+      message: 'Brak kompletnych danych o wymaganiach swietlnych rosliny.',
       requirements,
     };
   }
@@ -3147,8 +2898,8 @@ function evaluatePlantLightingForTank(item, tankProfile = null) {
     if (Boolean(tankProfile?.isDaylightOnly)) {
       return {
         status: 'too_low',
-        label: 'Za malo Ĺ›wiatĹ‚a',
-        message: `Roslina potrzebuje ${Math.round(minLumens)}-${Math.round(maxLumens)} lm/l, a akwarium ma tylko Ĺ›wiatĹ‚o dzieĹ„ne.`,
+        label: 'Za malo swiatla',
+        message: `Roslina potrzebuje ${Math.round(minLumens)}-${Math.round(maxLumens)} lm/l, a akwarium ma tylko swiatlo dzienne.`,
         requirements,
       };
     }
@@ -3168,8 +2919,8 @@ function evaluatePlantLightingForTank(item, tankProfile = null) {
   if (tankLumensPerLiter < minLumens) {
     return {
       status: 'too_low',
-      label: 'Za malo Ĺ›wiatĹ‚a',
-      message: `Za malo Ĺ›wiatĹ‚a: ${roundedTankLumens} lm/l przy wymaganiu ${roundedMin}-${roundedMax} lm/l.`,
+      label: 'Za malo swiatla',
+      message: `Za malo swiatla: ${roundedTankLumens} lm/l przy wymaganiu ${roundedMin}-${roundedMax} lm/l.`,
       requirements,
     };
   }
@@ -3177,16 +2928,16 @@ function evaluatePlantLightingForTank(item, tankProfile = null) {
   if (tankLumensPerLiter > maxLumens) {
     return {
       status: 'too_high',
-      label: 'Za mocne Ĺ›wiatĹ‚o',
-      message: `Za mocne Ĺ›wiatĹ‚o: ${roundedTankLumens} lm/l przy wymaganiu ${roundedMin}-${roundedMax} lm/l.`,
+      label: 'Za mocne swiatlo',
+      message: `Za mocne swiatlo: ${roundedTankLumens} lm/l przy wymaganiu ${roundedMin}-${roundedMax} lm/l.`,
       requirements,
     };
   }
 
   return {
     status: 'ok',
-    label: 'Ĺ›wiatĹ‚o OK',
-    message: `Ĺ›wiatĹ‚o OK: ${roundedTankLumens} lm/l miesci sie w wymaganiu ${roundedMin}-${roundedMax} lm/l.`,
+    label: 'Swiatlo OK',
+    message: `Swiatlo OK: ${roundedTankLumens} lm/l miesci sie w wymaganiu ${roundedMin}-${roundedMax} lm/l.`,
     requirements,
   };
 }
@@ -3251,7 +3002,7 @@ function evaluateLampFitForTank({
       status: 'too_low',
       label: 'Za slaba',
       isFit: false,
-      message: `Za slaba dla litraĹĽu: ${roundedValue} lm/l (minimum ${fallbackMin} lm/l).`,
+      message: `Za slaba dla litrazu: ${roundedValue} lm/l (minimum ${fallbackMin} lm/l).`,
     };
   }
 
@@ -3260,7 +3011,7 @@ function evaluateLampFitForTank({
       status: 'too_high',
       label: 'Za mocna',
       isFit: false,
-      message: `Za mocna dla litraĹĽu: ${roundedValue} lm/l (maksimum ${fallbackMax} lm/l).`,
+      message: `Za mocna dla litrazu: ${roundedValue} lm/l (maksimum ${fallbackMax} lm/l).`,
     };
   }
 
@@ -3268,7 +3019,7 @@ function evaluateLampFitForTank({
     status: 'ok',
     label: 'OK',
     isFit: true,
-    message: `OK dla litraĹĽu: ${roundedValue} lm/l.`,
+    message: `OK dla litrazu: ${roundedValue} lm/l.`,
   };
 }
 
@@ -3545,7 +3296,7 @@ const SEMI_AGGRESSIVE_FISH_KEYWORDS = [
   'semi aggressive',
   'semi-aggressive',
   'terytorial',
-  'moĹĽe podskubywac',
+  'moze podskubywac',
   'zaczepna',
   'bojownik',
   'betta',
@@ -3703,7 +3454,7 @@ function normalizeAggressionType(value) {
   if (normalized.includes('intraspecific') || normalized.includes('wewnatrzgatunk')) {
     return 'intraspecific';
   }
-  if (normalized.includes('interspecific') || normalized.includes('miÄ™dzygatunk')) {
+  if (normalized.includes('interspecific') || normalized.includes('miedzygatunk')) {
     return 'interspecific';
   }
   if (normalized.includes('territorial') || normalized.includes('terytorial')) {
@@ -3756,15 +3507,15 @@ function normalizeEatsShrimp(value, predatorRisk = false) {
   const normalized = normalizeText(value);
   if (normalized === 'yes' || normalized === 'tak') return 'yes';
   if (normalized === 'no' || normalized === 'nie') return 'no';
-  if (normalized === 'maybe' || normalized === 'moĹĽe' || normalized === 'ryzyko') return 'maybe';
+  if (normalized === 'maybe' || normalized === 'moze' || normalized === 'ryzyko') return 'maybe';
   return predatorRisk ? 'maybe' : 'no';
 }
 
 function normalizeSexRatio(value) {
   const normalized = normalizeText(value).replace(/\s+/g, '_');
   if (!normalized || normalized === 'unknown' || normalized === 'nieznane') return 'unknown';
-  if (normalized.includes('mostly_male') || normalized.includes('wiÄ™kszoĹ›Ä‡_samc')) return 'mostly_males';
-  if (normalized.includes('mostly_female') || normalized.includes('wiÄ™kszoĹ›Ä‡_samic')) return 'mostly_females';
+  if (normalized.includes('mostly_male') || normalized.includes('wiekszosc_samc')) return 'mostly_males';
+  if (normalized.includes('mostly_female') || normalized.includes('wiekszosc_samic')) return 'mostly_females';
   if (normalized.includes('pair') || normalized.includes('para')) return 'pair';
   if (normalized.includes('harem')) return 'harem';
   if (normalized.includes('mixed') || normalized.includes('miesz')) return 'mixed';
@@ -3791,7 +3542,7 @@ function normalizeDensityLevel(value) {
 
 function normalizeFlowPreference(value) {
   const normalized = normalizeText(value);
-  if (normalized.includes('low') || normalized.includes('sĹ‚aby') || normalized.includes('spokoj')) {
+  if (normalized.includes('low') || normalized.includes('slaby') || normalized.includes('spokoj')) {
     return 'low';
   }
   if (normalized.includes('high') || normalized.includes('mocny') || normalized.includes('silny')) {
@@ -3863,7 +3614,7 @@ function normalizeShrimpSafe(value) {
   if (normalized === 'no' || normalized === 'nie') {
     return 'no';
   }
-  if (normalized === 'maybe' || normalized === 'moĹĽe' || normalized === 'ryzyko') {
+  if (normalized === 'maybe' || normalized === 'moze' || normalized === 'ryzyko') {
     return 'maybe';
   }
   return 'yes';
@@ -4275,7 +4026,8 @@ function evaluateFishPairCompatibility(firstFish, secondFish, tankLiters = null)
     secondTempLegacy === 'semi_aggressive' ? 'semi-aggressive' : secondTempLegacy;
   const matrixConflict =
     AGGRESSION_COMPATIBILITY_MATRIX[firstAggLevel]?.[secondAggLevel] ??
-    AGGRESSION_COMPATIBILITY_MATRIX[secondAggLevel]?.[firstAggLevel] ?? false;
+    AGGRESSION_COMPATIBILITY_MATRIX[secondAggLevel]?.[firstAggLevel] ??
+    false;
   if (matrixConflict) {
     applyPenalty(20, 'Podwyzszone ryzyko konfliktu zachowan terytorialnych.');
   }
@@ -4283,17 +4035,17 @@ function evaluateFishPairCompatibility(firstFish, secondFish, tankLiters = null)
     (firstTempLegacy === 'aggressive' && secondTempLegacy === 'peaceful') ||
     (firstTempLegacy === 'peaceful' && secondTempLegacy === 'aggressive')
   ) {
-    applyPenalty(35, 'PoĹ‚Ä…czenie ryby agresywnej i spokojnej.');
+    applyPenalty(35, 'Polaczenie ryby agresywnej i spokojnej.');
   } else if (
     (firstTempLegacy === 'aggressive' && secondTempLegacy === 'semi_aggressive') ||
     (firstTempLegacy === 'semi_aggressive' && secondTempLegacy === 'aggressive')
   ) {
-    applyPenalty(20, 'PoĹ‚Ä…czenie ryb agresywnych i polagresywnych.');
+    applyPenalty(20, 'Polaczenie ryb agresywnych i polagresywnych.');
   } else if (
     (firstTempLegacy === 'semi_aggressive' && secondTempLegacy === 'peaceful') ||
     (firstTempLegacy === 'peaceful' && secondTempLegacy === 'semi_aggressive')
   ) {
-    applyPenalty(15, 'PoĹ‚Ä…czenie ryb polagresywnych i spokojnych.');
+    applyPenalty(15, 'Polaczenie ryb polagresywnych i spokojnych.');
   }
 
   const bigger =
@@ -4341,7 +4093,7 @@ function evaluateFishPairCompatibility(firstFish, secondFish, tankLiters = null)
   ) {
     applyPenalty(
       10,
-      `${firstLabel} wymaga wiÄ™kszej grupy (min. ${firstProfile.minGroupSize}).`
+      `${firstLabel} wymaga wiekszej grupy (min. ${firstProfile.minGroupSize}).`
     );
   }
   if (
@@ -4350,7 +4102,7 @@ function evaluateFishPairCompatibility(firstFish, secondFish, tankLiters = null)
   ) {
     applyPenalty(
       10,
-      `${secondLabel} wymaga wiÄ™kszej grupy (min. ${secondProfile.minGroupSize}).`
+      `${secondLabel} wymaga wiekszej grupy (min. ${secondProfile.minGroupSize}).`
     );
   }
 
@@ -4360,7 +4112,7 @@ function evaluateFishPairCompatibility(firstFish, secondFish, tankLiters = null)
     (firstShrimp && secondProfile.shrimpSafe === 'no') ||
     (secondShrimp && firstProfile.shrimpSafe === 'no')
   ) {
-    applyPenalty(35, 'Ryba moĹĽe traktowac krewetki jako pokarm.');
+    applyPenalty(35, 'Ryba moze traktowac krewetki jako pokarm.');
   } else if (
     (firstShrimp && secondProfile.shrimpSafe === 'maybe') ||
     (secondShrimp && firstProfile.shrimpSafe === 'maybe')
@@ -4556,27 +4308,6 @@ function isShrimpLikeFish(rawFish) {
   return SHRIMP_KEYWORDS.some((keyword) => text.includes(keyword));
 }
 
-function isSnailLikeFish(rawFish) {
-  const { latinKey, text } = buildFishConflictFingerprint(rawFish);
-  if (!latinKey && !text) {
-    return false;
-  }
-  if (
-    latinKey.startsWith('neritina') ||
-    latinKey.startsWith('pomacea') ||
-    latinKey.startsWith('melanoides') ||
-    latinKey.startsWith('anentome')
-  ) {
-    return true;
-  }
-  return (
-    text.includes('snail') ||
-    text.includes('slimak') ||
-    text.includes('nerit') ||
-    text.includes('ampular')
-  );
-}
-
 function getFishAggressionConflict(firstFish, secondFish, tankLiters = null) {
   const compatibility = evaluateFishPairCompatibility(
     firstFish,
@@ -4624,26 +4355,6 @@ function scoreToCompatibilityStatus(scoreValue) {
   if (score >= 45) return 'caution';
   if (score >= 25) return 'high_risk';
   return 'incompatible';
-}
-
-function getStockingScoreScaleLabel(scoreValue) {
-  const score = Number(scoreValue);
-  if (!Number.isFinite(score)) {
-    return 'Brak danych';
-  }
-  if (score >= 85) {
-    return 'Bardzo dobra obsada';
-  }
-  if (score >= 70) {
-    return 'Dobra, drobne uwagi';
-  }
-  if (score >= 55) {
-    return 'Srednia, wymaga korekt';
-  }
-  if (score >= 40) {
-    return 'Problematyczna';
-  }
-  return 'Niezalecana / niezgodna';
 }
 
 function getZoneKeyFromProfile(profile) {
@@ -4842,11 +4553,11 @@ function calculateFiltrationCompensation(aquarium, filters, stockingList = []) {
     (turnoverPerHour > turnoverProfile.idealMax && sensitiveToCurrentCount > 0);
 
   if (turnoverPerHour > turnoverProfile.strongMax) {
-    warnings.push('Nurt jest bardzo silny - moĹĽe meczyc spokojne gatunki i utrudniac odpoczynek.');
+    warnings.push('Nurt jest bardzo silny - moze meczyc spokojne gatunki i utrudniac odpoczynek.');
     status = 'za silny nurt';
   } else if (turnoverPerHour > turnoverProfile.idealMax && sensitiveToCurrentCount > 0) {
     warnings.push(
-      'Zbyt silny nurt moĹĽe stresowac gatunki spokojne lub slabo plywajace.'
+      'Zbyt silny nurt moze stresowac gatunki spokojne lub slabo plywajace.'
     );
   }
 
@@ -5066,77 +4777,6 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
     sexRatio: normalizeSexRatio(item?.sexRatio),
     lifeStage: normalizeLifeStage(item?.lifeStage),
   }));
-  const compatibilityModelInput = fishProfiles.map((entry) => {
-    const profile = entry.profile ?? {};
-    const speciesId = String(entry.item?.catalogFishId ?? entry.item?.id ?? '').trim();
-    const commonName = String(
-      entry.item?.commonName ?? entry.item?.name ?? entry.item?.latinName ?? 'Gatunek'
-    ).trim();
-    const scientificName = String(entry.item?.latinName ?? '').trim();
-    const waterPreference =
-      normalizeAquariumType(aquarium?.aquariumType) === 'malawi' ||
-      normalizeAquariumType(aquarium?.aquariumType) === 'tanganyika'
-        ? 'hard_alkaline'
-        : Number(profile?.phMax) <= 7.1 && Number(profile?.ghMax) <= 10
-          ? 'soft_acidic'
-          : Number(profile?.phMin) >= 7.3 && Number(profile?.ghMin) >= 10
-            ? 'hard_alkaline'
-            : 'neutral';
-    return {
-      speciesId,
-      commonName,
-      scientificName,
-      quantity: entry.quantity,
-      kind: isShrimpLikeFish(entry.item) ? 'shrimp' : isSnailLikeFish(entry.item) ? 'snail' : 'fish',
-      profile: {
-        id: speciesId,
-        commonName,
-        scientificName,
-        minTankVolumeLiters: Number(profile?.minTankLiters),
-        recommendedTankVolumeLiters: Number(profile?.minTankLiters),
-        minTankLengthCm: Number(profile?.minTankLengthCm),
-        temperatureMinC: Number(profile?.temperatureMin),
-        temperatureMaxC: Number(profile?.temperatureMax),
-        phMin: Number(profile?.phMin),
-        phMax: Number(profile?.phMax),
-        ghMin: Number(profile?.ghMin),
-        ghMax: Number(profile?.ghMax),
-        khMin: Number(profile?.khMin),
-        khMax: Number(profile?.khMax),
-        adultSizeCm: Number(profile?.adultSizeCm),
-        temperament: String(profile?.temperament ?? 'peaceful'),
-        socialType: String(profile?.socialType ?? 'solitary'),
-        minGroupSize: Number(profile?.minGroupSize ?? 1),
-        recommendedGroupSize: Number(profile?.recommendedGroupSize ?? profile?.minGroupSize ?? 1),
-        swimmingZone: String(profile?.waterZone ?? 'middle'),
-        activityLevel: String(profile?.activity ?? 'medium'),
-        dietType: String(profile?.diet ?? 'omnivore'),
-        mayEatSmallFish: Boolean(profile?.eatsSmallFish),
-        mayEatShrimp:
-          String(profile?.eatsShrimp ?? '').toLowerCase() === 'yes' || Boolean(profile?.predatorRisk),
-        mayNibbleFins: Boolean(profile?.finNipper),
-        longFinRisk: Boolean(profile?.longFinRiskTarget),
-        isShrimpSafe: String(profile?.shrimpSafe ?? 'yes') === 'yes',
-        isPlantSafe: true,
-        waterPreference,
-        biotopeTags: Array.isArray(profile?.specialTags) ? profile.specialTags : [],
-      },
-    };
-  });
-  const compatibilityModelResult = evaluateStockingCompatibilityModel(
-    {
-      volumeLiters: Number(tank.volumeLiters),
-      lengthCm: Number(tank.lengthCm),
-      temperatureC: Number(measurement?.temperature ?? aquarium?.temperatureC),
-      ph: Number(measurement?.ph ?? aquarium?.ph),
-      gh: Number(measurement?.gh ?? aquarium?.gh),
-      kh: Number(measurement?.kh ?? aquarium?.kh),
-      aquariumType: aquarium?.aquariumType ?? tank?.aquariumType,
-      hasPlants: plantItems.length > 0,
-      hasHidingPlaces: (Number(tank?.hidingPlacesCount) || 0) > 0,
-    },
-    compatibilityModelInput
-  );
   if (fishProfiles.length === 0) {
     const emptyFiltration = calculateFiltrationCompensation(
       filtrationContext,
@@ -5170,7 +4810,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
           plantAreaFactor: 0,
           biomassAvailabilityFactor: 0,
         },
-        message: 'Brak obsady ryb - obciÄ…ĹĽenie biologiczne jest niskie.',
+        message: 'Brak obsady ryb - obciazenie biologiczne jest niskie.',
       },
       spaceLoad: {
         risk: 'low',
@@ -5178,31 +4818,21 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
       },
       behaviorLoad: {
         risk: 'low',
-        message: 'Brak obsady ryb - brak konfliktĂłw behawioralnych.',
+        message: 'Brak obsady ryb - brak konfliktow behawioralnych.',
       },
       filtration: emptyFiltration,
       recommendations: [],
     };
     return {
-      overallStatus: compatibilityModelResult.overallStatus,
-      overallUiStatus: compatibilityModelResult.overallStatus === 'unknown'
-        ? 'Brak danych'
-        : compatibilityModelResult.overallStatus === 'compatible'
-          ? 'Zgodne'
-          : compatibilityModelResult.overallStatus === 'caution'
-            ? 'Ostroznie'
-            : 'Niezgodne',
-      score: compatibilityModelResult.score,
-      summary: compatibilityModelResult.summary,
-      issues: compatibilityModelResult.issues,
-      commonParameterRange: compatibilityModelResult.commonParameterRange,
+      overallStatus: 'compatible',
+      score: 100,
       categories: Object.keys(DEFAULT_COMPATIBILITY_CATEGORIES).reduce((acc, key) => {
         acc[key] = { score: 100, status: 'compatible', uiStatus: 'OK', problems: [], recommendations: [] };
         return acc;
       }, {}),
       conflicts: [],
-      warnings: (compatibilityModelResult.issues ?? []).map((item) => String(item?.message ?? '').trim()).filter(Boolean),
-      recommendations: compatibilityModelResult.recommendations ?? [],
+      warnings: [],
+      recommendations: [],
       stockingAssessment: emptyAssessment,
       metrics: {
         aggressiveBioloadCount: 0,
@@ -5289,7 +4919,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
     addPenalty(
       'waterParameters',
       35,
-      'Zakresy temperatur gatunkow nie pokrywaja sie - moĹĽe to zwiÄ™kszac ryzyko stresu i chorĂłb.',
+      'Zakresy temperatur gatunkow nie pokrywaja sie - moze to zwiekszac ryzyko stresu i chorob.',
       'Dobierz gatunki o bardziej zblizonych wymaganiach temperatury.'
     );
   }
@@ -5319,14 +4949,14 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
         addPenalty(
           'waterParameters',
           5,
-          `${fishLabel}: aktualne pH moĹĽe byc poza komfortowym zakresem gatunku.`
+          `${fishLabel}: aktualne pH moze byc poza komfortowym zakresem gatunku.`
         );
       }
       if (Number.isFinite(ghValue) && (ghValue < Number(profile.ghMin) || ghValue > Number(profile.ghMax))) {
         addPenalty(
           'waterParameters',
           4,
-          `${fishLabel}: aktualne GH moĹĽe byc poza komfortowym zakresem gatunku.`
+          `${fishLabel}: aktualne GH moze byc poza komfortowym zakresem gatunku.`
         );
       }
       if (
@@ -5336,7 +4966,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
         addPenalty(
           'waterParameters',
           6,
-          `${fishLabel}: aktualna temperatura moĹĽe byc poza komfortowym zakresem gatunku.`
+          `${fishLabel}: aktualna temperatura moze byc poza komfortowym zakresem gatunku.`
         );
       }
     });
@@ -5350,8 +4980,8 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
       addPenalty(
         'tankSize',
         ratio >= 1.8 ? 55 : ratio >= 1.4 ? 42 : 30,
-        `${fishLabel}: zbiornik jest mniejszy niĹĽ zwykle zalecane minimum (${Math.round(minTankLiters)} l).`,
-        'WiÄ™kszy zbiornik zwykle obniĹĽa ryzyko agresji i stresu.'
+        `${fishLabel}: zbiornik jest mniejszy niz zwykle zalecane minimum (${Math.round(minTankLiters)} l).`,
+        'Wiekszy zbiornik zwykle obniza ryzyko agresji i stresu.'
       );
     }
     if (Number.isFinite(Number(tank.lengthCm)) && Number(tank.lengthCm) > 0) {
@@ -5360,7 +4990,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
         addPenalty(
           'tankSize',
           14,
-          `${fishLabel}: dĹ‚ugoĹ›Ä‡ akwarium moĹĽe byc za mala (${Math.round(Number(tank.lengthCm))} cm vs min ${Math.round(minLength)} cm).`,
+          `${fishLabel}: dlugosc akwarium moze byc za mala (${Math.round(Number(tank.lengthCm))} cm vs min ${Math.round(minLength)} cm).`,
           'Przy gatunkach terytorialnych dluzszy zbiornik zwykle ulatwia podzial stref.'
         );
       }
@@ -5371,8 +5001,8 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
         addPenalty(
           'territoriality',
           18,
-          `${fishLabel}: powierzchnia dna moĹĽe byc za mala dla rewiru tego gatunku.`,
-          'ZwiÄ™ksz powierzchnie dna albo ogranicz liczbe gatunkow dennych/terytorialnych.'
+          `${fishLabel}: powierzchnia dna moze byc za mala dla rewiru tego gatunku.`,
+          'Zwieksz powierzchnie dna albo ogranicz liczbe gatunkow dennych/terytorialnych.'
         );
       }
     }
@@ -5381,16 +5011,16 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
       addPenalty(
         'tankSize',
         12,
-        `${fishLabel}: liczebnosc moĹĽe byc za wysoka jak na litraĹĽ.`,
-        'Zmniejsz liczebnosc lub zwiÄ™ksz litraĹĽ.'
+        `${fishLabel}: liczebnosc moze byc za wysoka jak na litraz.`,
+        'Zmniejsz liczebnosc lub zwieksz litraz.'
       );
     }
     if (profile.socialStructure === 'harem' && (sexRatio === 'mostly_males' || sexRatio === 'unknown')) {
       addPenalty(
         'socialNeeds',
         sexRatio === 'unknown' ? 10 : 18,
-        `${fishLabel}: ten gatunek zwykle lepiej funkcjonuje w ukladzie haremowym, a udzial samcow moĹĽe zwiÄ™kszac konflikty.`,
-        'Rozwaz uklad 1 samiec + kilka samic i wiÄ™cej kryjowek.'
+        `${fishLabel}: ten gatunek zwykle lepiej funkcjonuje w ukladzie haremowym, a udzial samcow moze zwiekszac konflikty.`,
+        'Rozwaz uklad 1 samiec + kilka samic i wiecej kryjowek.'
       );
     }
     if (profile.socialStructure === 'pair' && quantity !== 2) {
@@ -5405,14 +5035,14 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
       addPenalty(
         'socialNeeds',
         16,
-        `${fishLabel}: grupa jest mniejsza niĹĽ zwykle zalecane minimum (${profile.minGroupSize}).`,
-        'ZwiÄ™ksz liczebnosc grupy albo wybierz gatunek mniej stadny.'
+        `${fishLabel}: grupa jest mniejsza niz zwykle zalecane minimum (${profile.minGroupSize}).`,
+        'Zwieksz liczebnosc grupy albo wybierz gatunek mniej stadny.'
       );
     } else if (quantity < Number(profile.recommendedGroupSize || profile.minGroupSize || 1)) {
       addPenalty(
         'socialNeeds',
         6,
-        `${fishLabel}: liczebnosc jest poniĹĽej czesto zalecanej grupy (${profile.recommendedGroupSize}).`
+        `${fishLabel}: liczebnosc jest ponizej czesto zalecanej grupy (${profile.recommendedGroupSize}).`
       );
     }
   });
@@ -5478,8 +5108,8 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
     addPenalty(
       'aggression',
       34,
-      'Udzial ryb agresywnych w obsadzie jest wysoki, co moĹĽe nasilac nekanie spokojniejszych gatunkow.',
-      'Ogranicz udzial agresywnych gatunkow albo zwiÄ™ksz litraĹĽ i liczbe kryjowek.'
+      'Udzial ryb agresywnych w obsadzie jest wysoki, co moze nasilac nekanie spokojniejszych gatunkow.',
+      'Ogranicz udzial agresywnych gatunkow albo zwieksz litraz i liczbe kryjowek.'
     );
   } else if (aggressiveRatio >= 0.52) {
     addPenalty(
@@ -5572,7 +5202,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
           'aggression',
           aggressionPenalty,
           `${firstName} i ${secondName} maja wysoki potencjal agresji, a ryzyko rosnie przy wspolnej strefie.`,
-          'W wiÄ™kszym akwarium z kryjowkami to poĹ‚Ä…czenie moĹĽe byc latwiejsze.'
+          'W wiekszym akwarium z kryjowkami to polaczenie moze byc latwiejsze.'
         );
         conflicts.push({
           id: `${first.item?.id ?? index}-${second.item?.id ?? compareIndex}-aggr`,
@@ -5581,7 +5211,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
           severity: aggressionPenalty >= 25 ? 'critical' : 'warning',
           firstFish: first.item,
           secondFish: second.item,
-          message: `${firstName} i ${secondName}: podwyzszone ryzyko konfliktĂłw agresji.`,
+          message: `${firstName} i ${secondName}: podwyzszone ryzyko konfliktow agresji.`,
         });
       }
       const bigger =
@@ -5600,7 +5230,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
         addPenalty(
           'predation',
           predatorPenalty,
-          `${bigger.item?.commonName ?? bigger.item?.name} moĹĽe traktowac ${smaller.item?.commonName ?? smaller.item?.name} jako potencjalny pokarm.`,
+          `${bigger.item?.commonName ?? bigger.item?.name} moze traktowac ${smaller.item?.commonName ?? smaller.item?.name} jako potencjalny pokarm.`,
           'Nie lacz drapieznika z wyraznie mniejszymi rybami.'
         );
         conflicts.push({
@@ -5621,7 +5251,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
           'finNipping',
           28,
           `${firstName} i ${secondName}: mozliwe podgryzanie pletw.`,
-          'Rozdziel gatunki lub zapewnij wiÄ™cej przestrzeni i kryjowek.'
+          'Rozdziel gatunki lub zapewnij wiecej przestrzeni i kryjowek.'
         );
       }
     }
@@ -5640,14 +5270,14 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
       addPenalty(
         'territoriality',
         26,
-        `${fishLabel}: dost?pna przestrzen moĹĽe byc za mala do liczby rewirow (${zone}).`,
-        'Zmniejsz liczbe osobnikow lub zwiÄ™ksz przestrzen akwarium.'
+        `${fishLabel}: dostepna przestrzen moze byc za mala do liczby rewirow (${zone}).`,
+        'Zmniejsz liczbe osobnikow lub zwieksz przestrzen akwarium.'
       );
     } else if (zonePressure > 0.75) {
       addPenalty(
         'territoriality',
         14,
-        `${fishLabel}: rewir moĹĽe byc ciasny dla tej liczebnosci (${zone}).`
+        `${fishLabel}: rewir moze byc ciasny dla tej liczebnosci (${zone}).`
       );
     }
     if (profile.needsShelter && hidingFactor < 0.35) {
@@ -5662,7 +5292,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
       addPenalty(
         'aggression',
         14,
-        `${fishLabel}: niskie przelamanie linii widzenia moĹĽe zwiÄ™kszac agresje.`,
+        `${fishLabel}: niskie przelamanie linii widzenia moze zwiekszac agresje.`,
         'Dodaj elementy dzielace widok (rosliny, korzenie, skaly).'
       );
     }
@@ -5675,29 +5305,30 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
       addPenalty(
         'aggression',
         sexRatio === 'mostly_males' ? 34 : 20,
-        `${fishLabel}: przy wysokiej agresji samcow i tym litraĹĽu ryzyko konfliktĂłw moĹĽe byc podwyzszone.`,
-        'Ogranicz liczbe samcow lub zapewnij wiÄ™kszy zbiornik.'
+        `${fishLabel}: przy wysokiej agresji samcow i tym litrazu ryzyko konfliktow moze byc podwyzszone.`,
+        'Ogranicz liczbe samcow lub zapewnij wiekszy zbiornik.'
       );
     }
     if (profile.breedingAggression === 'high' && profile.socialStructure !== 'school') {
       addPenalty(
         'territoriality',
         8,
-        `${fishLabel}: w okresie tarla ten gatunek moĹĽe silnie bronic rewiru.`
+        `${fishLabel}: w okresie tarla ten gatunek moze silnie bronic rewiru.`
       );
     }
     if (zoneLoad >= 10 && zone !== 'whole_tank') {
       addPenalty(
         'zoneCompetition',
         10,
-        `${fishLabel}: duze zagÄ™szczenie ryb w strefie ${zone} moĹĽe prowadzic do konkurencji.`
+        `${fishLabel}: duze zageszczenie ryb w strefie ${zone} moze prowadzic do konkurencji.`
       );
     }
   });
 
   let biologicalCompensationPercent =
     Number(
-      filtrationCompensation.filtrationCompensationScore ?? filtrationCompensation.compensationPercent
+      filtrationCompensation.filtrationCompensationScore ??
+      filtrationCompensation.compensationPercent
     ) || 0;
   if (filtrationCompensation.status === 'za slaba') {
     biologicalCompensationPercent = 0;
@@ -5747,19 +5378,19 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
   if (riskToRank(biologicalLoadRawRisk) >= 2 && biologicalCompensationPercent > 0) {
     appendUnique(
       warnings,
-      'Mocna filtracja czesciowo kompensuje obciÄ…ĹĽenie biologiczne.'
+      'Mocna filtracja czesciowo kompensuje obciazenie biologiczne.'
     );
   }
   if (riskToRank(biologicalLoadRawRisk) >= 1 && plantCompensationPercent >= 8) {
     appendUnique(
       warnings,
-      'Masa roslinna wspiera buforowanie obciÄ…ĹĽenia azotowego i stabilizacje biologii.'
+      'Masa roslinna wspiera buforowanie obciazenia azotowego i stabilizacje biologii.'
     );
   }
   if (riskToRank(biologicalLoadRawRisk) >= 1 && plantItems.length > 0 && plantCompensationPercent < 8) {
     appendUnique(
       recommendations,
-      'ZwiÄ™ksz mase roslin (szczegĂłĹ‚nie szybkorosnacych), aby mocniej odciazyc obieg azotu.'
+      'Zwieksz mase roslin (szczegolnie szybkorosnacych), aby mocniej odciazyc obieg azotu.'
     );
   }
   appendUnique(
@@ -5778,7 +5409,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
   if (filtrationCompensation.status === 'za silny nurt') {
     appendUnique(
       warnings,
-      'Zbyt silny nurt moĹĽe stresowac gatunki spokojne lub slabo plywajace.'
+      'Zbyt silny nurt moze stresowac gatunki spokojne lub slabo plywajace.'
     );
   }
   if (riskToRank(biologicalLoadRawRisk) >= 1) {
@@ -5854,35 +5485,35 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
   const overallStatus = riskToCompatibilityStatus(rankToRisk(worstRiskRank));
   const biologicalLoadMessage =
     biologicalLoadAdjustedRisk === 'low'
-      ? 'ObciÄ…ĹĽenie biologiczne jest niskie lub dobrze kontrolowane.'
+      ? 'Obciazenie biologiczne jest niskie lub dobrze kontrolowane.'
       : biologicalLoadAdjustedRisk === 'medium'
-        ? 'ObciÄ…ĹĽenie biologiczne jest podwyzszone. Kontroluj NO3 i regularnosc podmian.'
+        ? 'Obciazenie biologiczne jest podwyzszone. Kontroluj NO3 i regularnosc podmian.'
         : biologicalLoadAdjustedRisk === 'high'
-          ? 'ObciÄ…ĹĽenie biologiczne jest wysokie. Filtracja moĹĽe pomagac, ale nie zastapi podmian.'
-          : 'ObciÄ…ĹĽenie biologiczne jest krytyczne - ryzyko skokow NH3/NH4, NO2 i NO3 jest wysokie.';
+          ? 'Obciazenie biologiczne jest wysokie. Filtracja moze pomagac, ale nie zastapi podmian.'
+          : 'Obciazenie biologiczne jest krytyczne - ryzyko skokow NH3/NH4, NO2 i NO3 jest wysokie.';
   const spaceLoadMessage =
     spaceLoadRisk === 'low'
       ? 'Przestrzen akwarium wydaje sie odpowiednia dla obecnej obsady.'
       : spaceLoadRisk === 'medium'
         ? 'Przestrzen jest na granicy komfortu dla czesci obsady.'
         : spaceLoadRisk === 'high'
-          ? 'Akwarium moĹĽe byc zbyt male przestrzennie dla tej obsady.'
+          ? 'Akwarium moze byc zbyt male przestrzennie dla tej obsady.'
           : 'Przestrzen jest krytycznie niewystarczajaca dla obecnej obsady.';
   const behaviorLoadMessage =
     behaviorLoadRisk === 'low'
-      ? 'Ryzyko konfliktĂłw behawioralnych jest niskie.'
+      ? 'Ryzyko konfliktow behawioralnych jest niskie.'
       : behaviorLoadRisk === 'medium'
         ? 'Wystepuje umiarkowane ryzyko stresu/agresji - obserwuj zachowanie ryb.'
         : behaviorLoadRisk === 'high'
-          ? 'Ryzyko konfliktĂłw behawioralnych jest wysokie (agresja/terytorialnosc/strefy).'
-          : 'Ryzyko konfliktĂłw behawioralnych jest krytyczne.';
+          ? 'Ryzyko konfliktow behawioralnych jest wysokie (agresja/terytorialnosc/strefy).'
+          : 'Ryzyko konfliktow behawioralnych jest krytyczne.';
   if (
     filtrationCompensation.status === 'nadfiltracja' &&
     (riskToRank(spaceLoadRisk) >= 1 || riskToRank(behaviorLoadRisk) >= 1)
   ) {
     appendUnique(
       warnings,
-      'Nadfiltracja nie oznacza, ze mozna dowolnie zwiÄ™kszac obsade.'
+      'Nadfiltracja nie oznacza, ze mozna dowolnie zwiekszac obsade.'
     );
   }
 
@@ -5941,156 +5572,18 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
       'Obserwuj zachowanie ryb po zmianach obsady i reaguj szybko na nekanie/slabniecie osobnikow.'
     );
   }
-  const modelStatus = String(compatibilityModelResult?.overallStatus ?? '').trim() || 'unknown';
-  const legacyDisplayScore = clampScore(Math.round(score), 0, 100);
-  const normalizedStatusFromScore =
-    legacyDisplayScore >= 85
-      ? 'compatible'
-      : legacyDisplayScore >= 55
-        ? 'caution'
-        : 'incompatible';
-  const finalOverallStatus = modelStatus === 'unknown' ? 'unknown' : normalizedStatusFromScore;
-  const modelSummary = String(compatibilityModelResult?.summary ?? '').trim();
-  const modelIssues = Array.isArray(compatibilityModelResult?.issues)
-    ? compatibilityModelResult.issues
-    : [];
-  const modelCommonParameterRange =
-    compatibilityModelResult?.commonParameterRange &&
-    typeof compatibilityModelResult.commonParameterRange === 'object'
-      ? compatibilityModelResult.commonParameterRange
-      : null;
-  const modelRecommendations = Array.isArray(compatibilityModelResult?.recommendations)
-    ? compatibilityModelResult.recommendations
-    : [];
-  const normalizedUiStatus =
-    finalOverallStatus === 'unknown'
-      ? 'Brak danych'
-      : getStockingScoreScaleLabel(legacyDisplayScore);
-  const mergedWarnings = [...warnings];
-  modelIssues.forEach((item) => {
-    const message = String(item?.message ?? '').trim();
-    if (message) {
-      appendUnique(mergedWarnings, message);
-    }
-  });
-  const mergedRecommendations = [...recommendations];
-  modelRecommendations.forEach((text) => appendUnique(mergedRecommendations, text));
-  const speciesNameById = new Map(
-    compatibilityModelInput
-      .map((item) => [String(item?.speciesId ?? '').trim(), String(item?.commonName ?? '').trim()])
-      .filter((entry) => entry[0])
-  );
-  const aggressionDependenciesFromConflicts = (conflicts ?? [])
-    .filter((item) =>
-      ['aggression', 'territoriality', 'predation', 'finNipping'].includes(
-        String(item?.category ?? '')
-      )
-    )
-    .map((item) => {
-      const category = String(item?.category ?? '');
-      const source = String(
-        item?.firstFish?.commonName ?? item?.firstFish?.name ?? item?.firstFish?.latinName ?? ''
-      ).trim();
-      const target = String(
-        item?.secondFish?.commonName ?? item?.secondFish?.name ?? item?.secondFish?.latinName ?? ''
-      ).trim();
-      if (!source || !target) {
-        return null;
-      }
-      const severity = String(item?.severity ?? 'warning').toLowerCase();
-      const message =
-        category === 'predation'
-          ? 'Mozliwosc drapieznictwa.'
-          : category === 'finNipping'
-            ? 'Mozliwe podgryzanie pletw.'
-            : category === 'territoriality'
-              ? 'Mozliwy konflikt terytorialny.'
-              : 'Mozliwa agresja miedzy gatunkami.';
-      return {
-        type: category || 'aggression',
-        severity,
-        source,
-        target,
-        message,
-      };
-    })
-    .filter(Boolean);
-  const aggressionDependenciesFromIssues = (modelIssues ?? [])
-    .filter((item) =>
-      ['temperament', 'predation', 'fin_nipping', 'territory', 'shrimp_risk'].includes(
-        String(item?.type ?? '')
-      )
-    )
-    .flatMap((item) => {
-      const ids = Array.isArray(item?.speciesIds) ? item.speciesIds : [];
-      if (ids.length < 2) {
-        return [];
-      }
-      const firstId = String(ids[0] ?? '').trim();
-      const secondId = String(ids[1] ?? '').trim();
-      const source = speciesNameById.get(firstId) || firstId;
-      const target = speciesNameById.get(secondId) || secondId;
-      if (!source || !target) {
-        return [];
-      }
-      return [
-        {
-          type: String(item?.type ?? 'aggression'),
-          severity: String(item?.severity ?? 'warning').toLowerCase(),
-          source,
-          target,
-          message: String(item?.message ?? '').trim() || 'Mozliwy konflikt miedzy gatunkami.',
-        },
-      ];
-    });
-  const aggressionDependencies = [
-    ...aggressionDependenciesFromConflicts,
-    ...aggressionDependenciesFromIssues,
-  ].filter((item, index, list) => {
-    const key = [
-      String(item?.type ?? '').toLowerCase(),
-      String(item?.severity ?? '').toLowerCase(),
-      String(item?.source ?? '').toLowerCase(),
-      String(item?.target ?? '').toLowerCase(),
-      String(item?.message ?? '').toLowerCase(),
-    ].join('|');
-    return (
-      list.findIndex((entry) => {
-        const entryKey = [
-          String(entry?.type ?? '').toLowerCase(),
-          String(entry?.severity ?? '').toLowerCase(),
-          String(entry?.source ?? '').toLowerCase(),
-          String(entry?.target ?? '').toLowerCase(),
-          String(entry?.message ?? '').toLowerCase(),
-        ].join('|');
-        return entryKey === key;
-      }) === index
-    );
-  });
 
   return {
-    overallStatus: finalOverallStatus,
-    overallUiStatus: normalizedUiStatus,
-    score: legacyDisplayScore,
-    summary:
-      modelSummary ||
-      (finalOverallStatus === 'compatible'
-        ? 'Obsada wyglada stabilnie.'
-        : finalOverallStatus === 'caution'
-          ? 'Obsada wymaga kilku korekt.'
-          : finalOverallStatus === 'unknown'
-            ? 'Brakuje danych do pewnej oceny obsady.'
-            : 'Obsada jest problematyczna i wymaga zmian.'),
-    issues: modelIssues,
-    commonParameterRange: modelCommonParameterRange,
+    overallStatus,
+    overallUiStatus: scoreToUiStatus(score),
+    score,
     biologicalLoadRisk: biologicalLoadAdjustedRisk,
     spaceLoadRisk,
     behaviorLoadRisk,
     categories,
     conflicts,
-    aggressionDependencies,
-    warnings: mergedWarnings,
-    recommendations: mergedRecommendations,
+    warnings,
+    recommendations,
     stockingAssessment,
     metrics: {
       aggressiveBioloadCount,
@@ -7003,7 +6496,7 @@ const FISH_LOCALIZED_COMMON_NAMES_BY_LATIN = Object.freeze({
   },
   'physella acuta': {
     pl: 'Rozdetka',
-    en: 'BĹ‚Ä…dder snail',
+    en: 'Bladder snail',
     de: 'Blasenschnecke',
   },
   'planorbella duryi': {
@@ -7330,7 +6823,7 @@ const PLANT_COMMON_NAME_OVERRIDES_BY_LATIN = Object.freeze({
   'hygrophila polysperma': 'Nadwodka wielonasienna',
   'hygrophila corymbosa': 'Nadwodka corymbosa',
   'hygrophila corymbosa siamensis': 'Nadwodka syjamska',
-  'hygrophila difformis': 'Nadwodka wieloksztaĹ‚tna',
+  'hygrophila difformis': 'Nadwodka wielokszta\u0142tna',
   'hygrophila pinnatifida': 'Nadwodka pinnatifida',
   'taxiphyllum barbieri': 'Mch jawajski',
   'vesicularia montagnei': 'Mch christmas',
@@ -7388,7 +6881,7 @@ const PLANT_COMMON_NAME_OVERRIDES_EXTRA_BY_LATIN = Object.freeze({
   'rotala indica': 'Rotala indica',
   'bacopa caroliniana': 'Bacopa caroliniana',
   'bacopa monnieri': 'Bacopa monnieri',
-  'hygrophila difformis': 'Nadwodka wieloksztaltna',
+  'hygrophila difformis': 'Nadwodka wielokszta\u0142tna',
   'limnophila sessiliflora': 'Limnofila osiadlokwiatowa',
   'limnophila aromatica': 'Limnofila aromatyczna',
   'myriophyllum mattogrossense': 'Wywlocznik mattogrossense',
@@ -7424,7 +6917,8 @@ function getPlantCommonNameOverride(latinKey) {
 
   return (
     PLANT_COMMON_NAME_OVERRIDES_BY_LATIN[latinKey] ??
-    PLANT_COMMON_NAME_OVERRIDES_EXTRA_BY_LATIN[latinKey] ?? ''
+    PLANT_COMMON_NAME_OVERRIDES_EXTRA_BY_LATIN[latinKey] ??
+    ''
   );
 }
 
@@ -7435,7 +6929,8 @@ function getPlantCommonsFileOverride(latinKey) {
 
   return (
     PLANT_COMMONS_FILE_OVERRIDES_BY_LATIN[latinKey] ??
-    PLANT_COMMONS_FILE_OVERRIDES_EXTRA_BY_LATIN[latinKey] ?? ''
+    PLANT_COMMONS_FILE_OVERRIDES_EXTRA_BY_LATIN[latinKey] ??
+    ''
   );
 }
 
@@ -7942,9 +7437,9 @@ const PRACTICAL_WATER_TOLERANCE = {
 
 const SENSITIVE_STOCK_KEYWORDS = [
   'wrazliw',
-  'stabilnych parametrĂłw',
+  'stabilnych parametrow',
   'stabilne warunki',
-  'miÄ™kkiej wod',
+  'miekkiej wod',
   'crystal red',
   'ramireza',
   'dyskowiec',
@@ -8090,7 +7585,7 @@ function checkFishCompatibility(item, measurement, tankLiters, tankProfile = nul
       !isSoftBottomSubstrate(substrateTypes)
     ) {
       issues.push(
-        `Ten gatunek zwykle lepiej czuje sie na miÄ™kkim podĹ‚oĹĽu, a w akwarium ustawiono: ${getSubstrateLabels(substrateTypes)}.`
+        `Ten gatunek zwykle lepiej czuje sie na miekkim podlozu, a w akwarium ustawiono: ${getSubstrateLabels(substrateTypes)}.`
       );
     }
 
@@ -8108,9 +7603,9 @@ function checkFishCompatibility(item, measurement, tankLiters, tankProfile = nul
         tankLightRank > lightLevelToRank(fishLightRange.max))
     ) {
       issues.push(
-        `Ĺ›wiatĹ‚o (${getTankLightingLabelForIssues(
+        `Swiatlo (${getTankLightingLabelForIssues(
           tankProfile
-        )}) moĹĽe nie byc optymalne dla tego gatunku.`
+        )}) moze nie byc optymalne dla tego gatunku.`
       );
     }
   }
@@ -8132,7 +7627,7 @@ function isPotentialDiggingFish(item) {
     'kopi',
     'przekop',
     'grzebi',
-    'podĹ‚oĹĽe',
+    'podloze',
     'geophagus',
     'earth eater',
     'pyszczak',
@@ -8187,7 +7682,7 @@ function checkPlantCompatibility(
     ) > 1
   ) {
     issues.push(
-      `Docelowy litraĹĽ dla tej rosliny to min. ${requirementsProfile.minTankVolumeL} l, a akwarium ma ${tankLiters} l.`
+      `Docelowy litraz dla tej rosliny to min. ${requirementsProfile.minTankVolumeL} l, a akwarium ma ${tankLiters} l.`
     );
   }
 
@@ -8199,7 +7694,7 @@ function checkPlantCompatibility(
       Number(tankProfile.heightCm) < Number(requirementsProfile.minTankHeightCm)
     ) {
       issues.push(
-        `WysokoĹ›Ä‡ zbiornika (${Math.round(Number(tankProfile.heightCm))} cm) jest poniĹĽej zalecenia dla tej rosliny (${requirementsProfile.minTankHeightCm} cm).`
+        `Wysokosc zbiornika (${Math.round(Number(tankProfile.heightCm))} cm) jest ponizej zalecenia dla tej rosliny (${requirementsProfile.minTankHeightCm} cm).`
       );
     }
 
@@ -8208,7 +7703,7 @@ function checkPlantCompatibility(
       normalizeDensityLevel(tankProfile?.zones?.plantArea) === 'low'
     ) {
       issues.push(
-        'Tylna strefa nasadzen jest uboga, a ta roslina najlepiej pracuje jako tlo. Rozwaz wiÄ™cej miejsca na tyl zbiornika.'
+        'Tylna strefa nasadzen jest uboga, a ta roslina najlepiej pracuje jako tlo. Rozwaz wiecej miejsca na tyl zbiornika.'
       );
     }
 
@@ -8227,14 +7722,14 @@ function checkPlantCompatibility(
 
       if (!hasActiveRootTabsSupport) {
         issues.push(
-          `Ta roslina zwykle rosnie lepiej w bardziej zasobnym podĹ‚oĹĽu, a w akwarium ustawiono: ${getSubstrateLabels(substrateTypes)}.`
+          `Ta roslina zwykle rosnie lepiej w bardziej zasobnym podlozu, a w akwarium ustawiono: ${getSubstrateLabels(substrateTypes)}.`
         );
       } else if (
         Number.isFinite(rootTabsSupportDaysLeft) &&
         rootTabsSupportDaysLeft <= ROOT_TABS_DUE_SOON_DAYS
       ) {
         issues.push(
-          `PodĹ‚oĹĽe (${getSubstrateLabels(substrateTypes)}) jest wspierane kulkami nawozowymi, ale ich dziaĹ‚anie moĹĽe sie skonczyc za ok. ${Math.max(
+          `Podloze (${getSubstrateLabels(substrateTypes)}) jest wspierane kulkami nawozowymi, ale ich dzialanie moze sie skonczyc za ok. ${Math.max(
             0,
             Math.round(rootTabsSupportDaysLeft)
           )} dni.`
@@ -8263,7 +7758,7 @@ function checkPlantCompatibility(
         (lightHours < minHours || lightHours > maxHours)
       ) {
         issues.push(
-          `Czas Ĺ›wiecenia (${lightHours} h) moĹĽe utrudniac tej roslinie stabilny wzrost (zwykle ${minHours}-${maxHours} h).`
+          `Czas swiecenia (${lightHours} h) moze utrudniac tej roslinie stabilny wzrost (zwykle ${minHours}-${maxHours} h).`
         );
       }
     }
@@ -8285,7 +7780,7 @@ function checkPlantCompatibility(
       Number(measuredCo2) < 8
     ) {
       issues.push(
-        `CO2 (${Math.round(Number(measuredCo2))} mg/l) moĹĽe byc zbyt niskie dla stabilnego wzrostu tej rosliny.`
+        `CO2 (${Math.round(Number(measuredCo2))} mg/l) moze byc zbyt niskie dla stabilnego wzrostu tej rosliny.`
       );
     }
 
@@ -8295,7 +7790,7 @@ function checkPlantCompatibility(
       !isNutrientSubstrate(substrateTypes)
     ) {
       issues.push(
-        'Roslina ma wysokie zapotrzebowanie nawozowe - przy tym podĹ‚oĹĽu rozwaz regularne nawozenie i wsparcie strefy korzeniowej.'
+        'Roslina ma wysokie zapotrzebowanie nawozowe - przy tym podlozu rozwaz regularne nawozenie i wsparcie strefy korzeniowej.'
       );
     }
   }
@@ -8306,18 +7801,18 @@ function checkPlantCompatibility(
   const diggerCount = fishItems.filter((fishItem) => isPotentialDiggingFish(fishItem)).length;
   if (!requirementsProfile.compatibleWithDiggers && diggerCount > 0) {
     issues.push(
-      `W akwarium sa ryby potencjalnie kopiace w podĹ‚oĹĽu (${diggerCount}), a ta roslina slabo to toleruje.`
+      `W akwarium sa ryby potencjalnie kopiace w podlozu (${diggerCount}), a ta roslina slabo to toleruje.`
     );
   }
 
   if (issues.length > 0 && requirementsProfile.parameterStabilitySensitivity === 'high') {
     issues.push(
-      'Ta roslina jest wrazliwa na skoki parametrĂłw - korekty wykonuj stopniowo.'
+      'Ta roslina jest wrazliwa na skoki parametrow - korekty wykonuj stopniowo.'
     );
   }
   if (issues.length > 0 && requirementsProfile.carboSensitivity === 'high') {
     issues.push(
-      'Roslina moĹĽe byc wrazliwa na agresywne dawkowanie carbo - zaczynaj od mniejszych dawek i obserwuj liĹ›cie.'
+      'Roslina moze byc wrazliwa na agresywne dawkowanie carbo - zaczynaj od mniejszych dawek i obserwuj liscie.'
     );
   }
 
@@ -8544,13 +8039,12 @@ function buildContextualEcosystemInsights({
   }
 
   const isTestEnabled = (key) => Boolean(enabledTests?.[key]);
-  const safeStockItems = normalizeArray(stockItems);
-  const fishItems = safeStockItems.filter((item) => item?.type === 'fish');
-  const plantItems = safeStockItems.filter((item) => item?.type === 'plant');
+  const fishItems = stockItems.filter((item) => item.type === 'fish');
+  const plantItems = stockItems.filter((item) => item.type === 'plant');
   const fishCount = fishItems.reduce((sum, item) => sum + getFishQuantity(item), 0);
   const plantCount = plantItems.length;
   const tankLiters = Number(tank?.liters);
-  const stockingSummary = buildFishStockingSummary(safeStockItems, tankLiters);
+  const stockingSummary = buildFishStockingSummary(stockItems, tankLiters);
   const plantToFishRatio = fishCount > 0 ? plantCount / fishCount : 0;
   const no3Value = Number.isFinite(Number(measurement?.no3))
     ? Number(measurement.no3)
@@ -8608,14 +8102,14 @@ function buildContextualEcosystemInsights({
       value: `${Math.round(no3Value * 10) / 10} mg/l`,
       expectedRange: `NO3 <= ${no3SafeMax} mg/l i trend stabilny`,
       issue:
-        'Duza obsada przy malej masie roslin zwiÄ™ksza produkcje azotanow szybciej niĹĽ zbiornik je wykorzystuje.',
+        'Duza obsada przy malej masie roslin zwieksza produkcje azotanow szybciej niz zbiornik je wykorzystuje.',
       action:
         'Na 10-14 dni: podmiany 20-25% co 3-4 dni, karmienie -20-30%, odmulanie dna i dodanie szybko rosnacych roslin (np. rogatek, hygrophila, nurzaniec).',
       dueInDays: severity === 'critical' ? 0 : 1,
     });
 
     summaryHints.push(
-      'Parametry trzeba czytac razem z obciÄ…ĹĽeniem zbiornika: przy tej obsadzie NO3 bedzie wracalo bez korekty karmienia i masy roslin.'
+      'Parametry trzeba czytac razem z obciazeniem zbiornika: przy tej obsadzie NO3 bedzie wracalo bez korekty karmienia i masy roslin.'
     );
   }
 
@@ -8630,9 +8124,9 @@ function buildContextualEcosystemInsights({
       value: 'brak aktywnego testu',
       expectedRange: `NO3 <= ${no3SafeMax} mg/l`,
       issue:
-        'Przy tej obsadzie bez testu NO3 trudno wychwycic narastanie obciÄ…ĹĽenia biologicznego.',
+        'Przy tej obsadzie bez testu NO3 trudno wychwycic narastanie obciazenia biologicznego.',
       action:
-        'WĹ‚Ä…cz test NO3 w ustawieĹ„iach i kontroluj go min. 2 razy w tygodniu przez najbliĹĽsze 2 tygodnie.',
+        'Wlacz test NO3 w ustawieniach i kontroluj go min. 2 razy w tygodniu przez najblizsze 2 tygodnie.',
       dueInDays: 1,
     });
   }
@@ -8644,13 +8138,13 @@ function buildContextualEcosystemInsights({
   ) {
     recommendations.push({
       severity: hasStrongBioloadPressure ? 'critical' : 'warning',
-      parameter: 'Filtracja / obciÄ…ĹĽenie',
+      parameter: 'Filtracja / obciazenie',
       value: hasStrongBioloadPressure ? 'wysokie' : 'podwyzszone',
       expectedRange: 'wydajna filtracja biologiczna dla aktualnej obsady',
       issue:
-        'ObciÄ…ĹĽenie biologiczne jest wysokie, a filtracja wymaga poprawy - to przyspiesza skoki NO2/NO3.',
+        'Obciazenie biologiczne jest wysokie, a filtracja wymaga poprawy - to przyspiesza skoki NO2/NO3.',
       action:
-        'Popraw filtracje: wyczysc prefiltr, zwiÄ™ksz media biologiczne i rozwaz mocniejszy zestaw lub drugi filtr.',
+        'Popraw filtracje: wyczysc prefiltr, zwieksz media biologiczne i rozwaz mocniejszy zestaw lub drugi filtr.',
       dueInDays: hasStrongBioloadPressure ? 0 : 2,
     });
   }
@@ -8726,10 +8220,8 @@ function buildAquariumHealthAssessment({
     tank,
     equipmentCatalog
   );
-  const safeStockItems = normalizeArray(stockItems);
-  const fishItems = safeStockItems.filter((item) => item?.type === 'fish');
-  const plantItems = safeStockItems.filter((item) => item?.type === 'plant');
-  const tankLighting = getTankLightingSummary(tank);
+  const fishItems = stockItems.filter((item) => item.type === 'fish');
+  const plantItems = stockItems.filter((item) => item.type === 'plant');
   const filledMeasurementCount = TEST_PARAMETER_OPTIONS.reduce((count, option) => {
     return Number.isFinite(Number(measurement?.[option.key])) ? count + 1 : count;
   }, 0);
@@ -8774,64 +8266,42 @@ function buildAquariumHealthAssessment({
   };
 
   if (!Number.isFinite(tankLiters) || tankLiters <= 0) {
-    applyPenalty(22, 'Brak poprawnego litraĹĽu akwarium.');
+    applyPenalty(22, 'Brak poprawnego litrazu akwarium.');
   } else {
     accuracy += 20;
 
-    const lightingStatus = tankLighting.isDaylightOnly
-      ? 'none'
-      : Number.isFinite(Number(tankLighting.lightHours)) && Number(tankLighting.lightHours) > 0
-        ? 'ok'
-        : 'warning';
-    const lightingDetails =
-      lightingStatus === 'none'
-        ? 'Brak lampy przypisanej do akwarium.'
-        : lightingStatus === 'warning'
-          ? 'Lampa jest przypisana, ale brakuje godzin swiecenia.'
-          : 'Oswietlenie jest przypisane i ma ustawione godziny swiecenia.';
     const equipmentEntries = [
       { label: 'Grzalka', entry: equipmentAssessment.heater },
       { label: 'Filtr', entry: equipmentAssessment.filter },
-      {
-        label: 'Oswietlenie',
-        entry: {
-          status: lightingStatus,
-          details: lightingDetails,
-          actions: [lightingDetails],
-        },
-      },
     ];
     let hasAllEquipmentOk = true;
 
     equipmentEntries.forEach(({ label, entry }) => {
-      const status = String(entry?.status ?? 'none').trim().toLowerCase();
-      const details = String(entry?.actions?.[0] ?? entry?.details ?? '').trim();
-
-      if (status === 'none') {
+      if (entry.status === 'critical') {
         hasAllEquipmentOk = false;
         applyPenalty(
-          22,
-          `Sprzet (${label}): ${details || 'Brak kluczowego sprzetu.'}`,
+          6,
+          `Sprzet (${label}): ${entry.actions[0] ?? entry.details}`,
           'equipment'
         );
         return;
       }
 
-      if (status === 'critical') {
+      if (entry.status === 'warning') {
         hasAllEquipmentOk = false;
         applyPenalty(
-          12,
-          `Sprzet (${label}): ${details || 'Wymaga pilnej poprawy.'}`,
+          3,
+          `Sprzet (${label}): ${entry.actions[0] ?? entry.details}`,
           'equipment'
         );
         return;
       }
 
-      if (status === 'warning') {
+      if (entry.status === 'none') {
         hasAllEquipmentOk = false;
         applyPenalty(
-          7,
-          `Sprzet (${label}): ${details || 'Wymaga poprawy.'}`,
+          2,
+          `Sprzet (${label}): brak dopasowanego zestawu do litrazu.`,
           'equipment'
         );
       }
@@ -8889,7 +8359,7 @@ function buildAquariumHealthAssessment({
     if (analysis?.status === 'critical') {
       applyPenalty(16, 'Parametry wody sa wyraznie poza bezpiecznym zakresem.');
     } else if (analysis?.status === 'warning') {
-      applyPenalty(8, 'Czesc parametrĂłw wody warto skorygowac.');
+      applyPenalty(8, 'Czesc parametrow wody warto skorygowac.');
     } else if (analysis?.status === 'ok') {
       applyBonus(3);
     }
@@ -8901,7 +8371,7 @@ function buildAquariumHealthAssessment({
 
     const riskPenalty = Math.min(riskNotes.length * 2, 8);
     if (riskPenalty > 0) {
-      applyPenalty(riskPenalty, 'Widac dodatkowe ryzyka dla stabilnoĹ›ci zbiornika.');
+      applyPenalty(riskPenalty, 'Widac dodatkowe ryzyka dla stabilnosci zbiornika.');
     }
   }
 
@@ -8946,32 +8416,23 @@ function buildAquariumHealthAssessment({
     measurement
   );
 
-  if (plantItems.length === 0) {
+  const plantCompatibilityPenalty = Math.min(
+    plantCompatibilitySummary.totalMajorIssues * 3 +
+      plantCompatibilitySummary.totalSubstrateIssues * 1,
+    12
+  );
+  if (plantCompatibilityPenalty > 0) {
+    const plantSubstrateHint =
+      plantCompatibilitySummary.totalSubstrateIssues > 0
+        ? ` (w tym podloze: ${plantCompatibilitySummary.totalSubstrateIssues} ostrz.)`
+        : '';
     applyPenalty(
-      18,
-      'Brak roslin w zbiorniku. Rosliny pomagaja stabilizowac biologicznie akwarium i ograniczac glony.',
-      'plants'
+      plantCompatibilityPenalty,
+      `Rosliny maja ${plantCompatibilitySummary.totalIssues} sygnalow niedopasowania do warunkow${plantSubstrateHint}.`
     );
-  } else {
-    const plantCompatibilityPenalty = Math.min(
-      plantCompatibilitySummary.totalMajorIssues * 3 +
-        plantCompatibilitySummary.totalSubstrateIssues * 1,
-      12
-    );
-    if (plantCompatibilityPenalty > 0) {
-      const plantSubstrateHint =
-        plantCompatibilitySummary.totalSubstrateIssues > 0
-          ? ' (w tym podloze: ' + plantCompatibilitySummary.totalSubstrateIssues + ' ostrz.)'
-          : '';
-      applyPenalty(
-        plantCompatibilityPenalty,
-        'Rosliny maja ' + plantCompatibilitySummary.totalIssues + ' sygnalow niedopasowania do warunkow' + plantSubstrateHint + '.',
-        'plants'
-      );
-    }
   }
 
-  if (fishItems.length > 0 && stockingCompatibility.score < 85) {
+  if (stockingCompatibility.score < 85) {
     const dynamicPenalty = Math.min(
       Math.max(6, Math.round((100 - Number(stockingCompatibility.score)) * 0.34)),
       34
@@ -9020,7 +8481,7 @@ function buildAquariumHealthAssessment({
     ];
 
     if (names.length === 0) {
-      return 'problem wymagaj?cy kontroli';
+      return 'problem wymagajacy kontroli';
     }
 
     const visibleNames = names.slice(0, 3).join(', ');
@@ -9046,7 +8507,7 @@ function buildAquariumHealthAssessment({
     const fishDiseasePenalty = Math.min(6 + Math.round((fishDiseaseLoad - 1) * 3), 14);
     applyPenalty(
       fishDiseasePenalty,
-      `Choroby ryb wymagaj? terapii: ${formatIssueNames(activeFishDiseaseCases)}.`,
+      `Choroby ryb wymagaja terapii: ${formatIssueNames(activeFishDiseaseCases)}.`,
       'health'
     );
   }
@@ -9056,7 +8517,7 @@ function buildAquariumHealthAssessment({
     const plantDiseasePenalty = Math.min(4 + Math.round((plantDiseaseLoad - 1) * 2), 10);
     applyPenalty(
       plantDiseasePenalty,
-      `Choroby roslin wymagaj? terapii: ${formatIssueNames(activePlantDiseaseCases)}.`,
+      `Choroby roslin wymagaja terapii: ${formatIssueNames(activePlantDiseaseCases)}.`,
       'health'
     );
   }
@@ -9066,7 +8527,7 @@ function buildAquariumHealthAssessment({
     const algaePenalty = Math.min(5 + Math.round((algaeLoad - 1) * 2), 12);
     applyPenalty(
       algaePenalty,
-      `Glony wymagaj? opanowania: ${formatIssueNames(activeAlgaeCases)}.`,
+      `Glony wymagaja opanowania: ${formatIssueNames(activeAlgaeCases)}.`,
       'health'
     );
   }
@@ -9535,24 +8996,24 @@ function buildProbableCausesByContext(kind, candidate, context) {
     push('Trend PO4 jest wzrostowy.');
   }
   if (trends?.ph?.direction !== 'stable' && trends?.ph?.direction !== 'unknown') {
-    push('pH wykazuje niestabilnoĹ›Ä‡ miÄ™dzy pomiarami.');
+    push('pH wykazuje niestabilnosc miedzy pomiarami.');
   }
   if (
     trends?.temperature?.direction !== 'stable' &&
     trends?.temperature?.direction !== 'unknown'
   ) {
-    push('Temperatura wykazuje wahania miÄ™dzy pomiarami.');
+    push('Temperatura wykazuje wahania miedzy pomiarami.');
   }
 
   if (kind === 'algae' || kind === 'plant_disease') {
     if (Number.isFinite(lightHours) && lightHours > 9) {
-      push(`Dlugie swiecenie (${lightHours} h) moĹĽe napedzac nierownowage.`);
+      push(`Dlugie swiecenie (${lightHours} h) moze napedzac nierownowage.`);
     }
     if (Number.isFinite(lumensPerLiter) && lumensPerLiter > 50) {
-      push(`Mocne oĹ›wietlenie (${Math.round(lumensPerLiter)} lm/l) wymaga stabilnego nawozenia i CO2.`);
+      push(`Mocne oswietlenie (${Math.round(lumensPerLiter)} lm/l) wymaga stabilnego nawozenia i CO2.`);
     }
     if (Number.isFinite(co2) && co2 < 10) {
-      push(`CO2 jest niskie (${Math.round(co2)} mg/l), co moĹĽe oslabiac konkurencje roslin.`);
+      push(`CO2 jest niskie (${Math.round(co2)} mg/l), co moze oslabiac konkurencje roslin.`);
     }
     if (Number.isFinite(po4) && po4 > 2) {
       push(`PO4 jest wysokie (${Math.round(po4 * 100) / 100} mg/l).`);
@@ -9564,7 +9025,7 @@ function buildProbableCausesByContext(kind, candidate, context) {
       push('Brak aktywnego wsparcia nawozenia strefy korzeniowej.');
     }
     if (Number.isFinite(fe) && fe < 0.02 && kind === 'plant_disease') {
-      push(`Niskie Fe (${Math.round(fe * 100) / 100} mg/l) moĹĽe ograniczac wzrost roslin.`);
+      push(`Niskie Fe (${Math.round(fe * 100) / 100} mg/l) moze ograniczac wzrost roslin.`);
     }
   }
 
@@ -9573,7 +9034,7 @@ function buildProbableCausesByContext(kind, candidate, context) {
       context?.stockingCompatibility?.overallStatus ?? ''
     );
     if (overallStockingStatus === 'high_risk' || overallStockingStatus === 'incompatible') {
-      push('Obsada jest ryzykowna, co zwiÄ™ksza stres i podatnosc ryb na chorĂłby.');
+      push('Obsada jest ryzykowna, co zwieksza stres i podatnosc ryb na choroby.');
     }
   }
 
@@ -9582,7 +9043,7 @@ function buildProbableCausesByContext(kind, candidate, context) {
   }
 
   if (Number.isFinite(tankAgeDays) && tankAgeDays > 0 && tankAgeDays < 30) {
-    push(`Mlody wiek akwarium (${tankAgeDays} dni) moĹĽe zwiÄ™kszac ryzyko nierownowagi.`);
+    push(`Mlody wiek akwarium (${tankAgeDays} dni) moze zwiekszac ryzyko nierownowagi.`);
   }
 
   return dedupeTextList(causes, 6);
@@ -9604,20 +9065,20 @@ function buildDiagnosisTimelinePlan(kind, candidate, context) {
   if (kind === 'disease') {
     h24.push('Sprawdz NO2, NH3/NH4, temperature i napowietrzanie; popraw warunki zanim wdrozysz leczenie.');
     h24.push('Oddziel osobniki najslabsze do obserwacji (jesli to bezpieczne).');
-    d7.push('Prowadz codzieĹ„na obserwacje zachowania i apetytu; zapisuj zmiany.');
-    d7.push('Wykonaj 2-3 kontrol?? parametrĂłw i utrzymuj regularne podmiany.');
+    d7.push('Prowadz codzienna obserwacje zachowania i apetytu; zapisuj zmiany.');
+    d7.push('Wykonaj 2-3 kontrole parametrow i utrzymuj regularne podmiany.');
     d30.push('Po ustabilizowaniu zbiornika zweryfikuj obsade i ogranicz dlugoterminowy stres.');
   } else if (kind === 'plant_disease') {
-    h24.push('Sprawdz Ĺ›wiatĹ‚o (czas/moc), CO2 i podstawowe makro/mikro; nie zmieniaj wszystkiego naraz.');
-    h24.push('Usun najmocniej uszkodzone liĹ›cie.');
-    d7.push('WprowadĹş jedna korekte co 2-3 dni i obserwuj nowe przyrosty.');
-    d7.push('Kontroluj NO3/PO4/Fe oraz stabilnoĹ›Ä‡ pH.');
-    d30.push('Ustal staly schemat Ĺ›wiatĹ‚a, nawozenia i podmian; oceniaj glownie nowe liĹ›cie.');
+    h24.push('Sprawdz swiatlo (czas/moc), CO2 i podstawowe makro/mikro; nie zmieniaj wszystkiego naraz.');
+    h24.push('Usun najmocniej uszkodzone liscie.');
+    d7.push('Wprowadz jedna korekte co 2-3 dni i obserwuj nowe przyrosty.');
+    d7.push('Kontroluj NO3/PO4/Fe oraz stabilnosc pH.');
+    d30.push('Ustal staly schemat swiatla, nawozenia i podmian; oceniaj glownie nowe liscie.');
   } else {
     h24.push('Mechanicznie usun glony i wykonaj serwis, bez agresywnych dawek preparatow na start.');
-    h24.push('Skoryguj Ĺ›wiatĹ‚o do stabilnego zakresu i ogranicz przekarmianie.');
+    h24.push('Skoryguj swiatlo do stabilnego zakresu i ogranicz przekarmianie.');
     d7.push('Monitoruj trendy NO3/PO4/CO2 i poprawiaj jedna zmienna naraz.');
-    d7.push('Wzmocnij konkurencje roslin (masa roslinna, stabilnoĹ›Ä‡ nawozenia).');
+    d7.push('Wzmocnij konkurencje roslin (masa roslinna, stabilnosc nawozenia).');
     d30.push('Utrzymaj profilaktyke: regularne podmiany, przycinki i higiena filtra.');
   }
 
@@ -9986,7 +9447,7 @@ function buildTankOnboardingPlan(tank, measurements, enabledTests = {}) {
       checklistStart: [],
       firstMeasurements: [],
       statusText:
-        'Nie udalo sie zbudowac planu onboardingu dla tego akwarium. Sprawdz dane i sprĂłbuj ponownie.',
+        'Nie udalo sie zbudowac planu onboardingu dla tego akwarium. Sprawdz dane i sproboj ponownie.',
       dayNumber: 0,
       targetEndDay: 0,
       isStabilized: false,
@@ -10089,7 +9550,8 @@ export default function HomeScreen() {
   const googleClientIdForCurrentPlatform = Platform.select({
     ios: googleIosClientId,
     android:
-      (__DEV__ ? googleAndroidDebugClientId : googleAndroidReleaseClientId) ?? googleAndroidClientId,
+      (__DEV__ ? googleAndroidDebugClientId : googleAndroidReleaseClientId) ??
+      googleAndroidClientId,
     default: googleWebClientId,
   });
   const isGoogleAuthConfiguredForPlatform = Boolean(
@@ -10290,8 +9752,6 @@ export default function HomeScreen() {
   const [tankWaterProfile, setTankWaterProfile] = useState(DEFAULT_WATER_PROFILE);
   const [tankSingleSpeciesFishId, setTankSingleSpeciesFishId] = useState('');
   const [tankSingleSpeciesFishSearch, setTankSingleSpeciesFishSearch] = useState('');
-  const [isSingleSpeciesFishCatalogVisible, setIsSingleSpeciesFishCatalogVisible] =
-    useState(false);
   const [tankWaterProfileCustomized, setTankWaterProfileCustomized] = useState(false);
   const [tankTargetRangeDraft, setTankTargetRangeDraft] = useState(() =>
     buildTargetRangeInputDraftFromRanges(
@@ -10306,13 +9766,7 @@ export default function HomeScreen() {
   const [tankOnboardingMode, setTankOnboardingMode] = useState('fresh_start');
   const [addTankBusy, setAddTankBusy] = useState(false);
   const [isAddingTankModalVisible, setIsAddingTankModalVisible] = useState(false);
-  const [isFirstRunStatusModalVisible, setIsFirstRunStatusModalVisible] = useState(false);
-  const [firstRunStatusTankId, setFirstRunStatusTankId] = useState('');
   const [editingTankId, setEditingTankId] = useState(null);
-  const [activeEditTankSection, setActiveEditTankSection] = useState(null);
-  const [activeEditTankSectionDraft, setActiveEditTankSectionDraft] = useState(null);
-  const [singleSpeciesFishCatalogContext, setSingleSpeciesFishCatalogContext] =
-    useState('default');
   const [, setTanksLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [saveBusy, setSaveBusy] = useState(false);
@@ -10326,6 +9780,12 @@ export default function HomeScreen() {
   const [isAddMeasurementModalVisible, setIsAddMeasurementModalVisible] =
     useState(false);
   const [selectedHomeScoreSummary, setSelectedHomeScoreSummary] = useState(null);
+  const [adaptiveTaskChecks, setAdaptiveTaskChecks] = useState({});
+  const [adaptiveTaskExpandedBuckets, setAdaptiveTaskExpandedBuckets] = useState({
+    today: false,
+    week: false,
+    month: false,
+  });
   const [isSettingsTestsExpanded, setIsSettingsTestsExpanded] = useState(false);
   const [isSubscriptionExpanded, setIsSubscriptionExpanded] = useState(false);
   const [deleteAccountBusy, setDeleteAccountBusy] = useState(false);
@@ -10365,18 +9825,9 @@ export default function HomeScreen() {
   const [expandedAlgaeCatalogId, setExpandedAlgaeCatalogId] = useState(null);
   const [isIssueTankPickerVisible, setIsIssueTankPickerVisible] = useState(false);
   const [issueTankPickerPayload, setIssueTankPickerPayload] = useState(null);
-  const [catalogAiContextTankId, setCatalogAiContextTankId] = useState('');
-  const [catalogAiContextSummary, setCatalogAiContextSummary] = useState('');
-  const [catalogAiBusy, setCatalogAiBusy] = useState(false);
-  const [catalogAiError, setCatalogAiError] = useState('');
-  const [catalogAiResultByKey, setCatalogAiResultByKey] = useState({});
-  const [catalogAiProblemInput, setCatalogAiProblemInput] = useState('');
-  const [catalogAiSelectedImage, setCatalogAiSelectedImage] = useState(null);
   const [tankDiseaseCases, setTankDiseaseCases] = useState([]);
   const [tankDiseaseHistoryCases, setTankDiseaseHistoryCases] = useState([]);
   const [diseaseCaseBusy, setDiseaseCaseBusy] = useState(false);
-  const [acceptedProblemBusyKey, setAcceptedProblemBusyKey] = useState('');
-  const [acceptedProblemAcksOverlayByTankId, setAcceptedProblemAcksOverlayByTankId] = useState({});
 
   const mergedEquipmentCatalog = useMemo(() => {
     const catalogById = new Map();
@@ -10436,9 +9887,6 @@ export default function HomeScreen() {
 
   const skipNextUnverifiedAlertRef = useRef(false);
   const lastUnverifiedAlertAtMsRef = useRef(0);
-  const firstRunStartTrackedRef = useRef(false);
-  const firstRunStatusTrackedTankIdRef = useRef('');
-  const firstRunRecommendationTrackedTankIdRef = useRef('');
   const deleteAccountConfirmedRef = useRef(null);
   const fishImageLookupInFlightRef = useRef(new Set());
   const fishImageLookupAttemptedRef = useRef(new Set());
@@ -10476,7 +9924,7 @@ export default function HomeScreen() {
             resolvedUser = auth.currentUser ?? nextUser;
           } catch (reloadError) {
             console.warn(
-              'BĹ‚Ä…d odĹ›wieĹĽenia statusu emailVerified:',
+              'Blad odswiezenia statusu emailVerified:',
               reloadError instanceof Error ? reloadError.message : String(reloadError)
             );
           }
@@ -10488,7 +9936,7 @@ export default function HomeScreen() {
 
           signOut(auth).catch((error) => {
             console.warn(
-              'BĹ‚Ä…d wylogowania nieweryfikowanego konta:',
+              'Blad wylogowania nieweryfikowanego konta:',
               error instanceof Error ? error.message : String(error)
             );
           });
@@ -10522,7 +9970,7 @@ export default function HomeScreen() {
           setStockItems([]);
           setIsEditingFish(false);
           setIsEditingPlant(false);
-          setIsPlantFertilizationExpanded(false);
+          setIsPlantFertilizationExpanded(true);
           setIsPlantStockExpanded(true);
           setIsPlantFertilizationAddFormVisible(false);
           setEditingFishItemId(null);
@@ -10555,11 +10003,6 @@ export default function HomeScreen() {
           setOnboardingTaskBusy(false);
           setOnboardingToggleBusy(false);
           setIsAddingTankModalVisible(false);
-          setIsFirstRunStatusModalVisible(false);
-          setFirstRunStatusTankId('');
-          firstRunStartTrackedRef.current = false;
-          firstRunStatusTrackedTankIdRef.current = '';
-          firstRunRecommendationTrackedTankIdRef.current = '';
           setEditingTankId(null);
           setIsEquipmentCatalogModalVisible(false);
           setEquipmentCatalogType('');
@@ -10621,13 +10064,6 @@ export default function HomeScreen() {
           setExpandedAlgaeCatalogId(null);
           setIsIssueTankPickerVisible(false);
           setIssueTankPickerPayload(null);
-          setCatalogAiContextTankId('');
-          setCatalogAiContextSummary('');
-          setCatalogAiBusy(false);
-          setCatalogAiError('');
-          setCatalogAiResultByKey({});
-          setCatalogAiProblemInput('');
-          setCatalogAiSelectedImage(null);
           setTankDiseaseCases([]);
           setTankDiseaseHistoryCases([]);
           setDeleteAccountBusy(false);
@@ -10638,7 +10074,7 @@ export default function HomeScreen() {
         }
       } catch (error) {
         console.warn(
-          'BĹ‚Ä…d obslugi onAuthStateChanged:',
+          'Blad obslugi onAuthStateChanged:',
           error instanceof Error ? error.message : String(error)
         );
         logTelemetryError(error, {
@@ -10713,18 +10149,15 @@ export default function HomeScreen() {
         );
 
         const snapshot = await getDocs(tanksQuery);
-        const data = normalizeArray(snapshot?.docs)
+        const data = snapshot.docs
           .map((item) => {
-            const payload = normalizeTankRuntime(
-              normalizeObject(item?.data?.())
-            );
+            const payload = item.data();
             return {
-              id: normalizeString(item?.id),
+              id: item.id,
               ...payload,
-              onboardingMode: normalizeOnboardingMode(payload?.onboardingMode),
+              onboardingMode: normalizeOnboardingMode(payload.onboardingMode),
             };
           })
-          .filter((item) => Boolean(item?.id))
           .sort(
             (a, b) =>
               getCreatedAtMs(b.createdAt) -
@@ -10758,7 +10191,7 @@ export default function HomeScreen() {
         await AsyncStorage.setItem(storageKey, nextSelectedTank.id);
       } catch (error) {
         alert(
-          'BĹ‚Ä…d pobierania akwariĂłw: ' +
+          'Blad pobierania akwariow: ' +
             (error instanceof Error ? error.message : '')
         );
       } finally {
@@ -10789,21 +10222,20 @@ export default function HomeScreen() {
       );
 
       const snapshot = await getDocs(measurementsQuery);
-      const data = normalizeArray(snapshot?.docs)
+      const data = snapshot.docs
         .map((item) => {
-          const payload = normalizeMeasurementRuntime(
-            normalizeObject(item?.data?.())
-          );
+          const payload = item.data();
 
           return {
-            id: normalizeString(item?.id),
+            id: item.id,
             ...payload,
+            quantity:
+              payload.type === 'fish'
+                ? Math.max(1, Number(payload.quantity) || 1)
+                : payload.quantity,
           };
         })
-        .filter(
-          (item) =>
-            Boolean(item?.id) && String(item?.tankId ?? '') === String(tankId)
-        )
+        .filter((item) => item.tankId === tankId)
         .sort(
           (a, b) =>
             getMeasurementRecordedAtMs(b) - getMeasurementRecordedAtMs(a)
@@ -10812,7 +10244,7 @@ export default function HomeScreen() {
       setMeasurements(data);
     } catch (error) {
       alert(
-        'BĹ‚Ä…d pobierania historii: ' +
+        'Blad pobierania historii: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -10835,15 +10267,12 @@ export default function HomeScreen() {
       );
 
       const snapshot = await getDocs(stockQuery);
-      const allStockItems = normalizeArray(snapshot?.docs)
+      const allStockItems = snapshot.docs
         .map((item) => ({
-          id: normalizeString(item?.id),
-          ...normalizeStockItemRuntime(normalizeObject(item?.data?.())),
+          id: item.id,
+          ...item.data(),
         }))
-        .filter(
-          (item) =>
-            Boolean(item?.id) && String(item?.tankId ?? '') === String(tankId)
-        );
+        .filter((item) => item.tankId === tankId);
       const disallowedStockItemIds = allStockItems
         .filter((item) => !isAllowedStockItem(item))
         .map((item) => item.id);
@@ -10869,7 +10298,7 @@ export default function HomeScreen() {
       );
     } catch (error) {
       alert(
-        'BĹ‚Ä…d pobierania obsady: ' +
+        'Blad pobierania obsady: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -10888,36 +10317,24 @@ export default function HomeScreen() {
     setHomeLoading(true);
 
     try {
-      const [measurementsSnapshot, stockItemsSnapshot, issuesSnapshot] =
-        await Promise.all([
-          getDocs(
-            query(collection(db, 'measurements'), where('userId', '==', userId))
-          ),
-          getDocs(
-            query(collection(db, 'stockItems'), where('userId', '==', userId))
-          ),
-          getDocs(
-            query(
-              collection(db, 'tankDiseaseCases'),
-              where('userId', '==', userId)
-            )
-          ),
-        ]);
+      const [measurementsSnapshot, stockItemsSnapshot, issuesSnapshot] = await Promise.all([
+        getDocs(query(collection(db, 'measurements'), where('userId', '==', userId))),
+        getDocs(query(collection(db, 'stockItems'), where('userId', '==', userId))),
+        getDocs(query(collection(db, 'tankDiseaseCases'), where('userId', '==', userId))),
+      ]);
 
-      const allMeasurements = normalizeArray(measurementsSnapshot?.docs)
+      const allMeasurements = measurementsSnapshot.docs
         .map((item) => ({
-          id: normalizeString(item?.id),
-          ...normalizeMeasurementRuntime(normalizeObject(item?.data?.())),
+          id: item.id,
+          ...item.data(),
         }))
-        .filter((item) => Boolean(item?.id))
         .sort((a, b) => getMeasurementRecordedAtMs(b) - getMeasurementRecordedAtMs(a));
 
-      const allStockItemsRaw = normalizeArray(stockItemsSnapshot?.docs)
+      const allStockItemsRaw = stockItemsSnapshot.docs
         .map((item) => ({
-          id: normalizeString(item?.id),
-          ...normalizeStockItemRuntime(normalizeObject(item?.data?.())),
-        }))
-        .filter((item) => Boolean(item?.id));
+          id: item.id,
+          ...item.data(),
+        }));
       const disallowedStockItemIds = allStockItemsRaw
         .filter((item) => !isAllowedStockItem(item))
         .map((item) => item.id);
@@ -10934,12 +10351,11 @@ export default function HomeScreen() {
         .filter((item) => isAllowedStockItem(item))
         .sort((a, b) => getCreatedAtMs(b.createdAt) - getCreatedAtMs(a.createdAt));
 
-      const activeIssues = normalizeArray(issuesSnapshot?.docs)
+      const activeIssues = issuesSnapshot.docs
         .map((item) => ({
-          id: normalizeString(item?.id),
-          ...normalizeTankDiseaseCaseRuntime(normalizeObject(item?.data?.())),
+          id: item.id,
+          ...item.data(),
         }))
-        .filter((item) => Boolean(item?.id))
         .filter((item) => String(item.status ?? 'active').toLowerCase() === 'active')
         .sort((a, b) => getCreatedAtMs(b.createdAt) - getCreatedAtMs(a.createdAt));
 
@@ -10950,7 +10366,7 @@ export default function HomeScreen() {
       setHomeActiveIssueCases(activeIssues);
     } catch (error) {
       alert(
-        'BĹ‚Ä…d pobierania danych ekranu glownego: ' +
+        'Blad pobierania danych ekranu glownego: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -10971,15 +10387,12 @@ export default function HomeScreen() {
         where('userId', '==', userId)
       );
       const snapshot = await getDocs(diseaseCasesQuery);
-      const allCases = normalizeArray(snapshot?.docs)
+      const allCases = snapshot.docs
         .map((item) => ({
-          id: normalizeString(item?.id),
-          ...normalizeTankDiseaseCaseRuntime(normalizeObject(item?.data?.())),
+          id: item.id,
+          ...item.data(),
         }))
-        .filter(
-          (item) =>
-            Boolean(item?.id) && String(item?.tankId ?? '') === String(tankId)
-        )
+        .filter((item) => item.tankId === tankId)
         .sort((a, b) => getCreatedAtMs(b.createdAt) - getCreatedAtMs(a.createdAt));
       const activeCases = allCases.filter(
         (item) => String(item.status ?? 'active').toLowerCase() === 'active'
@@ -10989,7 +10402,7 @@ export default function HomeScreen() {
       setTankDiseaseHistoryCases(allCases);
     } catch (error) {
       alert(
-        'BĹ‚Ä…d pobierania chorĂłb akwarium: ' +
+        'Blad pobierania chorob akwarium: ' +
           (error instanceof Error ? error.message : '')
       );
     }
@@ -11344,7 +10757,7 @@ export default function HomeScreen() {
         setFishCatalog(hydratedFallbackData);
       } else {
         alert(
-          'BĹ‚Ä…d pobierania katalogu ryb: ' +
+          'Blad pobierania katalogu ryb: ' +
             (error instanceof Error ? error.message : '')
         );
       }
@@ -11661,7 +11074,7 @@ export default function HomeScreen() {
       setPlantCatalog(data);
     } catch (error) {
       alert(
-        'BĹ‚Ä…d pobierania katalogu roslin: ' +
+        'Blad pobierania katalogu roslin: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -11762,7 +11175,7 @@ export default function HomeScreen() {
       'algaeCatalog',
       setAlgaeCatalog,
       setAlgaeCatalogLoading,
-      'BĹ‚Ä…d pobierania katalogu glonow'
+      'Blad pobierania katalogu glonow'
     );
   }, [fetchIssueCatalog]);
 
@@ -11771,7 +11184,7 @@ export default function HomeScreen() {
       'fishDiseaseCatalog',
       setDiseaseCatalog,
       setDiseaseCatalogLoading,
-      'BĹ‚Ä…d pobierania katalogu chorĂłb ryb'
+      'Blad pobierania katalogu chorob ryb'
     );
   }, [fetchIssueCatalog]);
 
@@ -11780,7 +11193,7 @@ export default function HomeScreen() {
       'plantDiseaseCatalog',
       setPlantDiseaseCatalog,
       setPlantDiseaseCatalogLoading,
-      'BĹ‚Ä…d pobierania katalogu chorĂłb roslin'
+      'Blad pobierania katalogu chorob roslin'
     );
   }, [fetchIssueCatalog]);
 
@@ -11806,7 +11219,7 @@ export default function HomeScreen() {
     } catch (error) {
       setEquipmentCatalog([]);
       alert(
-        'BĹ‚Ä…d pobierania katalogu sprz?tu: ' +
+        'Blad pobierania katalogu sprzetu: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -12092,7 +11505,7 @@ export default function HomeScreen() {
     setSelectedCatalogPlantIds([]);
     setIsEditingFish(false);
     setIsEditingPlant(false);
-    setIsPlantFertilizationExpanded(false);
+    setIsPlantFertilizationExpanded(true);
     setIsPlantStockExpanded(true);
     setIsPlantFertilizationAddFormVisible(false);
     setEditingFishItemId(null);
@@ -12165,19 +11578,6 @@ export default function HomeScreen() {
       setStockType('plant');
     }
   }, [activeSection, stockType, setStockType]);
-
-  useEffect(() => {
-    if (catalogAiContextTankId) {
-      return;
-    }
-    if (selectedTank?.id) {
-      setCatalogAiContextTankId(String(selectedTank.id));
-      return;
-    }
-    if (Array.isArray(tanks) && tanks[0]?.id) {
-      setCatalogAiContextTankId(String(tanks[0].id));
-    }
-  }, [catalogAiContextTankId, selectedTank?.id, tanks]);
 
   useEffect(() => {
     if (!user?.uid || activeSection !== 'home') {
@@ -12263,7 +11663,7 @@ export default function HomeScreen() {
       }
     } catch (error) {
       alert(
-        'BĹ‚Ä…d odĹ›wieĹĽania danych: ' +
+        'Blad odswiezania danych: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -12321,7 +11721,7 @@ export default function HomeScreen() {
         setPassword('');
         setAuthMode('login');
         alert(
-          'Konto utworzone. WysĹ‚aliĹ›my link weryfikacyjny na email. Zweryfikuj adres i zaloguj siÄ™ ponownie.'
+          'Konto utworzone. Wyslalismy link weryfikacyjny na email. Zweryfikuj adres i zaloguj sie ponownie.'
         );
       } else {
         const credentials = await signInWithEmailAndPassword(
@@ -12337,7 +11737,7 @@ export default function HomeScreen() {
             await sendEmailVerification(refreshedUser);
           } catch (verificationError) {
             console.warn(
-              'BĹ‚Ä…d ponownej wysylki weryfikacji email:',
+              'Blad ponownej wysylki weryfikacji email:',
               verificationError instanceof Error
                 ? verificationError.message
                 : String(verificationError)
@@ -12347,7 +11747,7 @@ export default function HomeScreen() {
           skipNextUnverifiedAlertRef.current = true;
           await signOut(auth);
           showUnverifiedEmailAlert(
-            'Najpierw zweryfikuj email. WysĹ‚aliĹ›my ponownie link aktywacyjny.'
+            'Najpierw zweryfikuj email. Wyslalismy ponownie link aktywacyjny.'
           );
           return;
         }
@@ -12355,7 +11755,7 @@ export default function HomeScreen() {
     } catch (error) {
       skipNextUnverifiedAlertRef.current = false;
       alert(
-        `${authMode === 'register' ? 'BĹ‚Ä…d rejestracji' : 'BĹ‚Ä…d logowania'}: ` +
+        `${authMode === 'register' ? 'Blad rejestracji' : 'Blad logowania'}: ` +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -12392,7 +11792,7 @@ export default function HomeScreen() {
           );
         } else {
           alert(
-            'BĹ‚Ä…d logowania Google: ' +
+            'Blad logowania Google: ' +
               (error instanceof Error ? error.message : '')
           );
         }
@@ -12461,7 +11861,7 @@ export default function HomeScreen() {
       setAuthBusy(false);
     }
     alert(
-      'Logowanie Google wrĂłilo do aplikacji, ale Google nie przekazal tokenu. SprĂłbuj ponownie za chwile.'
+      'Logowanie Google wrocilo do aplikacji, ale Google nie przekazal tokenu. Sprobuj ponownie za chwile.'
     );
   }, [
     completeGoogleAuthWithTokens,
@@ -12540,7 +11940,7 @@ export default function HomeScreen() {
           setAuthBusy(false);
         }
         alert(
-          'Logowanie Google nie zwrĂłilo tokenu. Sprawdz konfiguracje OAuth i sprĂłbuj ponownie.'
+          'Logowanie Google nie zwrocilo tokenu. Sprawdz konfiguracje OAuth i sprobuj ponownie.'
         );
         return;
       }
@@ -12562,7 +11962,7 @@ export default function HomeScreen() {
           ? t('deleteAccountReauthGoogleStartError', {
               value: error instanceof Error ? error.message : String(error ?? ''),
             })
-          : 'BĹ‚Ä…d uruchamiania logowania Google: ' +
+          : 'Blad uruchamiania logowania Google: ' +
             (error instanceof Error ? error.message : '')
       );
     }
@@ -12593,10 +11993,10 @@ export default function HomeScreen() {
     try {
       await sendPasswordResetEmail(auth, normalizedEmail);
       setIsForgotPasswordModalVisible(false);
-      alert('WysĹ‚aliĹ›my link do resetu hasla na podany email.');
+      alert('Wyslalismy link do resetu hasla na podany email.');
     } catch (error) {
       alert(
-        'BĹ‚Ä…d wysylki resetu hasla: ' +
+        'Blad wysylki resetu hasla: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -12710,7 +12110,7 @@ export default function HomeScreen() {
 
     if (!nextTank) {
       alert(
-        'W obecnym planie nie ma kolejnych aktywnych akwariĂłw do przeĹ‚Ä…czenia.'
+        'W obecnym planie nie ma kolejnych aktywnych akwariow do przelaczenia.'
       );
       return;
     }
@@ -12722,7 +12122,7 @@ export default function HomeScreen() {
       await AsyncStorage.setItem(storageKey, nextTank.id);
     } catch (error) {
       alert(
-        'BĹ‚Ä…d zapisu wybranego akwarium: ' +
+        'Blad zapisu wybranego akwarium: ' +
           (error instanceof Error ? error.message : '')
       );
     }
@@ -12736,7 +12136,7 @@ export default function HomeScreen() {
     const tankIndex = tanks.findIndex((item) => item?.id === tank?.id);
     if (tankIndex >= 0 && isTankLockedByPlan(currentPlan, tankIndex)) {
       alert(
-        'W planie Free moĹĽesz aktywnie prowadzic 1 akwarium. PozostaĹ‚e akwaria sa bezpiecznie zapisane i odblokujÄ… sie po powrĂłie do Premium.'
+        'W planie Free mozesz aktywnie prowadzic 1 akwarium. Pozostale akwaria sa bezpiecznie zapisane i odblokuja sie po powrocie do Premium.'
       );
       return;
     }
@@ -12754,7 +12154,7 @@ export default function HomeScreen() {
       ]);
     } catch (error) {
       alert(
-        'BĹ‚Ä…d otwierania akwarium: ' +
+        'Blad otwierania akwarium: ' +
           (error instanceof Error ? error.message : '')
       );
     }
@@ -12784,7 +12184,7 @@ export default function HomeScreen() {
   );
   const filteredSingleSpeciesFishCatalog = useMemo(() => {
     const normalizedSearch = normalizeText(tankSingleSpeciesFishSearch);
-    const filtered = fishCatalog
+    return fishCatalog
       .filter((item) => {
         if (!normalizedSearch) {
           return true;
@@ -12794,15 +12194,9 @@ export default function HomeScreen() {
         );
         return haystack.includes(normalizedSearch);
       })
-      .sort((a, b) => compareCatalogEntryCommonNames(a, b, catalogSortLocale));
-    return filtered;
+      .sort((a, b) => compareCatalogEntryCommonNames(a, b, catalogSortLocale))
+      .slice(0, 32);
   }, [catalogSortLocale, fishCatalog, tankSingleSpeciesFishSearch]);
-  const visibleSingleSpeciesFishCatalog = useMemo(() => {
-    if (String(tankSingleSpeciesFishSearch ?? '').trim().length > 0) {
-      return filteredSingleSpeciesFishCatalog;
-    }
-    return filteredSingleSpeciesFishCatalog.slice(0, CATALOG_EAGER_RENDER_LIMIT);
-  }, [filteredSingleSpeciesFishCatalog, tankSingleSpeciesFishSearch]);
 
   const handleStartEditTank = () => {
     if (!selectedTank) {
@@ -12811,7 +12205,7 @@ export default function HomeScreen() {
     }
     if (selectedTankLockedByPlan) {
       alert(
-        'To akwarium jest zablokowane przez obecny plan i jest dost?pne tylko do odczytu.'
+        'To akwarium jest zablokowane przez obecny plan i jest dostepne tylko do odczytu.'
       );
       return;
     }
@@ -12842,8 +12236,6 @@ export default function HomeScreen() {
         : targetRanges;
 
     setEditingTankId(selectedTank.id);
-    setActiveEditTankSection(null);
-    setActiveEditTankSectionDraft(null);
     setTankName(selectedTank.name ?? '');
     setTankLiters(
       selectedTank.liters === undefined ? '' : String(selectedTank.liters)
@@ -12931,15 +12323,13 @@ export default function HomeScreen() {
         `${t('subscriptionTankLimitReached', {
           plan: currentSubscriptionTierLabel,
           limit: tankLimit,
-        })}\n\nW planie Free moĹĽesz aktywnie prowadzic 1 akwarium. PozostaĹ‚e akwaria sa bezpiecznie zapisane i odblokujÄ… sie po powrĂłie do Premium.`
+        })}\n\nW planie Free mozesz aktywnie prowadzic 1 akwarium. Pozostale akwaria sa bezpiecznie zapisane i odblokuja sie po powrocie do Premium.`
       );
       return;
     }
 
     const defaultProfile = getDefaultWaterProfileForAquariumType('');
     setEditingTankId(null);
-    setActiveEditTankSection(null);
-    setActiveEditTankSectionDraft(null);
     setTankName('');
     setTankLiters('');
     setTankLengthCm('');
@@ -12976,30 +12366,9 @@ export default function HomeScreen() {
     setIsAddingTankModalVisible(true);
   };
 
-  const handleCompleteFirstRun = useCallback(() => {
-    setIsFirstRunStatusModalVisible(false);
-    setFirstRunStatusTankId('');
-
-    if (!user?.uid) {
-      return;
-    }
-
-    updateAppSettings({
-      firstTankCreated: true,
-      firstRunCompleted: true,
-    });
-    if (!appSettings.firstRunCompleted) {
-      logTelemetryEvent('FIRST_RUN_COMPLETED', {
-        userId: user.uid,
-      });
-    }
-  }, [appSettings.firstRunCompleted, updateAppSettings, user?.uid]);
-
   const handleCancelEditTank = useCallback(() => {
     const defaultProfile = getDefaultWaterProfileForAquariumType('');
     setEditingTankId(null);
-    setActiveEditTankSection(null);
-    setActiveEditTankSectionDraft(null);
     setTankName('');
     setTankLiters('');
     setTankLengthCm('');
@@ -13096,25 +12465,9 @@ export default function HomeScreen() {
   };
 
   const handleSelectSingleSpeciesFish = (fishId) => {
-    if (
-      singleSpeciesFishCatalogContext === 'edit-profile' &&
-      activeEditTankSection === 'profile'
-    ) {
-      setActiveEditTankSectionDraft((prev) => ({
-        ...(prev ?? {}),
-        tankSingleSpeciesFishId: String(fishId ?? ''),
-      }));
-      setTankSingleSpeciesFishSearch('');
-      setIsSingleSpeciesFishCatalogVisible(false);
-      setSingleSpeciesFishCatalogContext('default');
-      return;
-    }
-
     const selectedFish = fishCatalog.find((item) => item.id === fishId) ?? null;
     setTankSingleSpeciesFishId(String(fishId ?? ''));
     setTankSingleSpeciesFishSearch('');
-    setIsSingleSpeciesFishCatalogVisible(false);
-    setSingleSpeciesFishCatalogContext('default');
     setTankTargetRangeDraft(
       buildTargetRangeInputDraftFromRanges(
         buildSingleSpeciesTargetRangesFromFish(
@@ -13125,184 +12478,6 @@ export default function HomeScreen() {
       )
     );
   };
-  const handleOpenSingleSpeciesFishCatalog = useCallback(() => {
-    setSingleSpeciesFishCatalogContext('default');
-    setIsSingleSpeciesFishCatalogVisible(true);
-    if (!user?.uid || fishCatalogLoading || fishCatalog.length > 0) {
-      return;
-    }
-    fetchFishCatalog().catch(() => null);
-  }, [fetchFishCatalog, fishCatalog.length, fishCatalogLoading, user?.uid]);
-  const handleOpenSingleSpeciesFishCatalogForEditProfile = useCallback(() => {
-    setSingleSpeciesFishCatalogContext('edit-profile');
-    setIsSingleSpeciesFishCatalogVisible(true);
-    if (!user?.uid || fishCatalogLoading || fishCatalog.length > 0) {
-      return;
-    }
-    fetchFishCatalog().catch(() => null);
-  }, [fetchFishCatalog, fishCatalog.length, fishCatalogLoading, user?.uid]);
-  const handleCloseSingleSpeciesFishCatalog = useCallback(() => {
-    setIsSingleSpeciesFishCatalogVisible(false);
-    setSingleSpeciesFishCatalogContext('default');
-  }, []);
-
-  const renderSingleSpeciesFishPickerBlock = () => (
-    <View
-      style={{
-        borderWidth: 1,
-        borderColor: themeBorder,
-        borderRadius: 10,
-        padding: 8,
-        marginBottom: 10,
-        backgroundColor: themeCardBg,
-      }}>
-      <Text
-        style={{
-          color: themeTextPrimary,
-          fontSize: 12,
-          fontWeight: '700',
-          marginBottom: 6,
-        }}>
-        Gatunek ryby (jednogatunkowe)
-      </Text>
-      <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
-        {selectedSingleSpeciesFish
-          ? `Wybrano: ${getFishCatalogDisplayLabel(selectedSingleSpeciesFish)}`
-          : 'Wybierz gatunek z katalogu, a zakresy pH/GH/temperatury ustawia sie z karty ryby.'}
-      </Text>
-      <Pressable
-        onPress={handleOpenSingleSpeciesFishCatalog}
-        style={{
-          borderWidth: 1,
-          borderColor: themeInputBorder,
-          borderRadius: 8,
-          paddingVertical: 9,
-          paddingHorizontal: 10,
-          backgroundColor: themeInputBg,
-        }}>
-        <Text style={{ color: themeInputText, fontSize: 12, fontWeight: '700' }}>
-          Wyszukaj gatunek
-        </Text>
-      </Pressable>
-    </View>
-  );
-
-  const renderSingleSpeciesFishCatalogModal = () => (
-    <BottomSheetModal
-      visible
-      onClose={handleCloseSingleSpeciesFishCatalog}
-      title="Katalog ryb"
-      themeCardBg={themeCardBg}
-      themeBorder={themeBorder}
-      themeTextPrimary={themeTextPrimary}
-      themeCardBgAlt={themeCardBgAlt}
-      themeOverlay={themeOverlay}
-      themeDragHandle={themeDragHandle}
-      isLightTheme={isLightTheme}
-      maxWidth={620}
-      heightPercent={74}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}>
-      <ScrollView
-        style={{ flex: 1 }}
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="on-drag"
-        contentContainerStyle={{
-          paddingHorizontal: 14,
-          paddingTop: 14,
-          paddingBottom: Math.max(insets.bottom + 20, 20),
-        }}>
-        <TextInput
-          placeholder="Wyszukaj gatunek"
-          placeholderTextColor={themePlaceholder}
-          value={tankSingleSpeciesFishSearch}
-          onChangeText={setTankSingleSpeciesFishSearch}
-          style={{
-            borderWidth: 1,
-            borderColor: themeInputBorder,
-            color: themeInputText,
-            padding: 10,
-            borderRadius: 8,
-            backgroundColor: themeInputBg,
-            marginBottom: 10,
-          }}
-        />
-        <View
-          style={{
-            borderWidth: 1,
-            borderColor: themeBorder,
-            borderRadius: 10,
-            backgroundColor: themeCardBgAlt,
-            padding: 8,
-          }}>
-          {fishCatalogLoading ? (
-            <Text style={{ color: themeTextSecondary, fontSize: 12, padding: 4 }}>
-              Ladowanie katalogu...
-            </Text>
-          ) : visibleSingleSpeciesFishCatalog.length === 0 ? (
-            <Text style={{ color: themeTextSecondary, fontSize: 12, padding: 4 }}>
-              Brak wynikow w katalogu.
-            </Text>
-                ) : (
-                  visibleSingleSpeciesFishCatalog.map((fish) => {
-                    const draftFishId = String(
-                      activeEditTankSectionDraft?.tankSingleSpeciesFishId ?? ''
-                    );
-                    const isSelected =
-                      singleSpeciesFishCatalogContext === 'edit-profile'
-                        ? draftFishId === fish.id
-                        : tankSingleSpeciesFishId === fish.id;
-                    return (
-                      <Pressable
-                  key={`single-species-fish-picker-${fish.id}`}
-                  onPress={() => handleSelectSingleSpeciesFish(fish.id)}
-                  style={{
-                    borderWidth: 1,
-                    borderColor: isSelected ? themeAccent : themeBorder,
-                    borderRadius: 8,
-                    paddingVertical: 8,
-                    paddingHorizontal: 10,
-                    marginBottom: 6,
-                    backgroundColor: isSelected ? '#102235' : themeCardBg,
-                  }}>
-                  <Text
-                    style={{
-                      color: isSelected ? 'white' : themeTextPrimary,
-                      fontSize: 12,
-                      fontWeight: '700',
-                    }}>
-                    {fish.commonName || fish.name || 'Gatunek'}
-                  </Text>
-                  <Text
-                    style={{
-                      color: isSelected ? '#c6d9f0' : themeTextSecondary,
-                      fontSize: 11,
-                      marginTop: 2,
-                    }}>
-                    {fish.latinName || '-'}
-                  </Text>
-                </Pressable>
-              );
-            })
-          )}
-        </View>
-
-        <Pressable
-          onPress={handleCloseSingleSpeciesFishCatalog}
-          style={{
-            marginTop: 10,
-            borderWidth: 1,
-            borderColor: themeBorderStrong,
-            borderRadius: 10,
-            paddingVertical: 10,
-            alignItems: 'center',
-            justifyContent: 'center',
-            backgroundColor: themeCardBg,
-          }}>
-          <Text style={{ color: themeTextPrimary, fontWeight: '700' }}>{t('cancel')}</Text>
-        </Pressable>
-      </ScrollView>
-    </BottomSheetModal>
-  );
 
   const handleChangeTankTargetDraftValue = (fieldKey, bound, value) => {
     const normalizedBound = bound === 'max' ? 'Max' : 'Min';
@@ -13312,6 +12487,29 @@ export default function HomeScreen() {
       ...prev,
       [key]: value,
     }));
+  };
+
+  const isTankSubstrateSelected = (value) =>
+    normalizeSubstrateTypes(tankSubstrateTypes).includes(value);
+
+  const handleToggleTankSubstrate = (value) => {
+    const normalized = normalizeSubstrateType(value);
+    if (!normalized) {
+      return;
+    }
+
+    setTankSubstrateTypes((prev) => {
+      const current = normalizeSubstrateTypes(prev);
+      if (current.includes(normalized)) {
+        const next = current.filter((item) => item !== normalized);
+        setTankSubstrateType(next[0] ?? '');
+        return next;
+      }
+
+      const next = [...current, normalized];
+      setTankSubstrateType(next[0] ?? '');
+      return next;
+    });
   };
 
   const syncTankSubstratesFromLayers = useCallback((layers) => {
@@ -13394,32 +12592,32 @@ export default function HomeScreen() {
           return false;
         }
         try {
-          parsePositiveNumberOrThrow('litraĹĽ', tankLiters);
+          parsePositiveNumberOrThrow('litraz', tankLiters);
         } catch (error) {
-          alert(error instanceof Error ? error.message : 'Niepoprawny litraĹĽ.');
+          alert(error instanceof Error ? error.message : 'Niepoprawny litraz.');
           return false;
         }
         if (String(tankLengthCm ?? '').trim()) {
           try {
-            parseOptionalNonNegativeNumberOrThrow('dĹ‚ugoĹ›Ä‡ akwarium', tankLengthCm);
+            parseOptionalNonNegativeNumberOrThrow('dlugosc akwarium', tankLengthCm);
           } catch (error) {
-            alert(error instanceof Error ? error.message : 'Niepoprawna dĹ‚ugoĹ›Ä‡.');
+            alert(error instanceof Error ? error.message : 'Niepoprawna dlugosc.');
             return false;
           }
         }
         if (String(tankWidthCm ?? '').trim()) {
           try {
-            parseOptionalNonNegativeNumberOrThrow('szerokoĹ›Ä‡ akwarium', tankWidthCm);
+            parseOptionalNonNegativeNumberOrThrow('szerokosc akwarium', tankWidthCm);
           } catch (error) {
-            alert(error instanceof Error ? error.message : 'Niepoprawna szerokoĹ›Ä‡.');
+            alert(error instanceof Error ? error.message : 'Niepoprawna szerokosc.');
             return false;
           }
         }
         if (String(tankHeightCm ?? '').trim()) {
           try {
-            parseOptionalNonNegativeNumberOrThrow('wysokoĹ›Ä‡ akwarium', tankHeightCm);
+            parseOptionalNonNegativeNumberOrThrow('wysokosc akwarium', tankHeightCm);
           } catch (error) {
-            alert(error instanceof Error ? error.message : 'Niepoprawna wysokoĹ›Ä‡.');
+            alert(error instanceof Error ? error.message : 'Niepoprawna wysokosc.');
             return false;
           }
         }
@@ -13460,7 +12658,7 @@ export default function HomeScreen() {
 
       if (stepId === 'substrate') {
         if (!Array.isArray(tankSubstrateLayers) || tankSubstrateLayers.length === 0) {
-          alert('Dodaj przynajmniej jedna warstwe podĹ‚oĹĽa.');
+          alert('Dodaj przynajmniej jedna warstwe podloza.');
           return false;
         }
         return true;
@@ -13476,7 +12674,7 @@ export default function HomeScreen() {
           alert(
             error instanceof Error
               ? error.message
-              : 'Popraw zakresy parametrĂłw wody.'
+              : 'Popraw zakresy parametrow wody.'
           );
           return false;
         }
@@ -13643,8 +12841,34 @@ export default function HomeScreen() {
     [createEmptySubstrateLayer, tanks]
   );
 
-  const renderTankWaterProfileSelector = (scopeKey) => (
-    <>
+  const renderTankWaterTargetsSection = (scopeKey) => (
+    <View
+      style={{
+        borderWidth: 1,
+        borderColor: themeBorder,
+        borderRadius: 12,
+        padding: 10,
+        marginBottom: 10,
+        backgroundColor: themeCardBgAlt,
+      }}>
+      <Text
+        style={{
+          color: themeTextPrimary,
+          marginBottom: 6,
+          fontSize: 13,
+          fontWeight: '700',
+        }}>
+        Profil i zakresy docelowe wody
+      </Text>
+      <Text
+        style={{
+          color: themeTextSecondary,
+          marginBottom: 8,
+          fontSize: 12,
+          lineHeight: 17,
+        }}>
+        Analiza bedzie porownywac pomiary do tych ustawien.
+      </Text>
       <View
         style={{
           flexDirection: 'row',
@@ -13680,115 +12904,270 @@ export default function HomeScreen() {
           </Pressable>
         ))}
       </View>
-      {tankWaterProfile === 'single_species' ? renderSingleSpeciesFishPickerBlock() : null}
-    </>
-  );
-
-  const renderTankWaterTargetRangesGrid = (scopeKey) => (
-    <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -4 }}>
-      {WATER_TARGET_FIELDS.map((field) => (
+      {tankWaterProfile === 'single_species' ? (
         <View
-          key={`${scopeKey}-target-${field.key}`}
           style={{
-            width: windowWidth >= 980 ? '33.3333%' : windowWidth >= 640 ? '50%' : '100%',
-            paddingHorizontal: 4,
-            marginBottom: 8,
+            borderWidth: 1,
+            borderColor: themeBorder,
+            borderRadius: 10,
+            padding: 8,
+            marginBottom: 10,
+            backgroundColor: themeCardBg,
           }}>
-          <View
+          <Text
+            style={{
+              color: themeTextPrimary,
+              fontSize: 12,
+              fontWeight: '700',
+              marginBottom: 6,
+            }}>
+            Gatunek ryby (jednogatunkowe)
+          </Text>
+          <TextInput
+            placeholder="Wyszukaj gatunek..."
+            placeholderTextColor={themePlaceholder}
+            value={tankSingleSpeciesFishSearch}
+            onChangeText={setTankSingleSpeciesFishSearch}
             style={{
               borderWidth: 1,
-              borderColor: themeBorder,
-              borderRadius: 10,
-              padding: 8,
-              backgroundColor: themeCardBg,
-            }}>
-            <Text
-              style={{
-                color: themeTextPrimary,
-                fontSize: 12,
-                fontWeight: '700',
-                marginBottom: 6,
-              }}>
-              {field.label} {field.unit ? `(${field.unit})` : ''}
-            </Text>
-            <View style={{ flexDirection: 'row', gap: 6 }}>
-              <TextInput
-                placeholder="min"
-                placeholderTextColor={themePlaceholder}
-                value={tankTargetRangeDraft[`${field.key}Min`] ?? ''}
-                onChangeText={(value) =>
-                  handleChangeTankTargetDraftValue(field.key, 'min', value)
-                }
-                keyboardType="numeric"
-                style={{
-                  flex: 1,
-                  borderWidth: 1,
-                  borderColor: themeInputBorder,
-                  color: themeInputText,
-                  paddingHorizontal: 8,
-                  paddingVertical: 8,
-                  borderRadius: 8,
-                  backgroundColor: themeInputBg,
-                }}
-              />
-              <TextInput
-                placeholder="max"
-                placeholderTextColor={themePlaceholder}
-                value={tankTargetRangeDraft[`${field.key}Max`] ?? ''}
-                onChangeText={(value) =>
-                  handleChangeTankTargetDraftValue(field.key, 'max', value)
-                }
-                keyboardType="numeric"
-                style={{
-                  flex: 1,
-                  borderWidth: 1,
-                  borderColor: themeInputBorder,
-                  color: themeInputText,
-                  paddingHorizontal: 8,
-                  paddingVertical: 8,
-                  borderRadius: 8,
-                  backgroundColor: themeInputBg,
-                }}
-              />
-            </View>
+              borderColor: themeInputBorder,
+              color: themeInputText,
+              paddingHorizontal: 10,
+              paddingVertical: 8,
+              borderRadius: 8,
+              backgroundColor: themeInputBg,
+              marginBottom: 8,
+            }}
+          />
+          <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
+            {selectedSingleSpeciesFish
+              ? `Wybrano: ${getFishCatalogDisplayLabel(selectedSingleSpeciesFish)}`
+              : 'Wybierz gatunek, a zakresy pH/GH/temperatury ustawia sie z karty ryby.'}
+          </Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+            {filteredSingleSpeciesFishCatalog.map((fish) => {
+              const isSelected = tankSingleSpeciesFishId === fish.id;
+              return (
+                <Pressable
+                  key={`${scopeKey}-single-species-fish-${fish.id}`}
+                  onPress={() => handleSelectSingleSpeciesFish(fish.id)}
+                  style={{
+                    borderWidth: 1,
+                    borderColor: isSelected ? themeAccent : themeBorderStrong,
+                    backgroundColor: isSelected
+                      ? '#102235'
+                      : isLightTheme
+                        ? '#ffffff'
+                        : '#111',
+                    borderRadius: 999,
+                    paddingVertical: 5,
+                    paddingHorizontal: 10,
+                    maxWidth: '100%',
+                  }}>
+                  <Text
+                    numberOfLines={1}
+                    style={{
+                      color: isSelected ? 'white' : themeTextPrimary,
+                      fontSize: 11,
+                    }}>
+                    {getFishCatalogDisplayLabel(fish)}
+                  </Text>
+                </Pressable>
+              );
+            })}
           </View>
         </View>
-      ))}
+      ) : null}
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -4 }}>
+        {WATER_TARGET_FIELDS.map((field) => (
+          <View
+            key={`${scopeKey}-target-${field.key}`}
+            style={{
+              width: windowWidth >= 980 ? '33.3333%' : windowWidth >= 640 ? '50%' : '100%',
+              paddingHorizontal: 4,
+              marginBottom: 8,
+            }}>
+            <View
+              style={{
+                borderWidth: 1,
+                borderColor: themeBorder,
+                borderRadius: 10,
+                padding: 8,
+                backgroundColor: themeCardBg,
+              }}>
+              <Text
+                style={{
+                  color: themeTextPrimary,
+                  fontSize: 12,
+                  fontWeight: '700',
+                  marginBottom: 6,
+                }}>
+                {field.label} {field.unit ? `(${field.unit})` : ''}
+              </Text>
+              <View style={{ flexDirection: 'row', gap: 6 }}>
+                <TextInput
+                  placeholder="min"
+                  placeholderTextColor={themePlaceholder}
+                  value={tankTargetRangeDraft[`${field.key}Min`] ?? ''}
+                  onChangeText={(value) =>
+                    handleChangeTankTargetDraftValue(field.key, 'min', value)
+                  }
+                  keyboardType="numeric"
+                  style={{
+                    flex: 1,
+                    borderWidth: 1,
+                    borderColor: themeInputBorder,
+                    color: themeInputText,
+                    paddingHorizontal: 8,
+                    paddingVertical: 8,
+                    borderRadius: 8,
+                    backgroundColor: themeInputBg,
+                  }}
+                />
+                <TextInput
+                  placeholder="max"
+                  placeholderTextColor={themePlaceholder}
+                  value={tankTargetRangeDraft[`${field.key}Max`] ?? ''}
+                  onChangeText={(value) =>
+                    handleChangeTankTargetDraftValue(field.key, 'max', value)
+                  }
+                  keyboardType="numeric"
+                  style={{
+                    flex: 1,
+                    borderWidth: 1,
+                    borderColor: themeInputBorder,
+                    color: themeInputText,
+                    paddingHorizontal: 8,
+                    paddingVertical: 8,
+                    borderRadius: 8,
+                    backgroundColor: themeInputBg,
+                  }}
+                />
+              </View>
+            </View>
+          </View>
+        ))}
+      </View>
     </View>
   );
 
-  const renderTankWaterTargetsSection = (scopeKey) => (
-    <View
-      style={{
-        borderWidth: 1,
-        borderColor: themeBorder,
-        borderRadius: 12,
-        padding: 10,
-        marginBottom: 10,
-        backgroundColor: themeCardBgAlt,
-      }}>
-      <Text
+  const renderTankHeaterContextSection = (scopeKey) => {
+    const selectedRoomMode = normalizeRoomTemperatureMode(tankRoomTemperatureMode);
+    const modeHint =
+      selectedRoomMode === 'cold'
+        ? '18 C'
+        : selectedRoomMode === 'warm'
+          ? '22 C'
+          : selectedRoomMode === 'very_warm'
+            ? '24 C'
+            : selectedRoomMode === 'custom'
+              ? 'Wlasna'
+              : '20 C';
+    return (
+      <View
         style={{
-          color: themeTextPrimary,
-          marginBottom: 6,
-          fontSize: 13,
-          fontWeight: '700',
+          borderWidth: 1,
+          borderColor: themeBorder,
+          borderRadius: 12,
+          padding: 10,
+          marginBottom: 10,
+          backgroundColor: themeCardBgAlt,
         }}>
-        Profil i zakresy docelowe wody
-      </Text>
-      <Text
-        style={{
-          color: themeTextSecondary,
-          marginBottom: 8,
-          fontSize: 12,
-          lineHeight: 17,
-        }}>
-        Analiza bedzie porownywac pomiary do tych ustawieĹ„.
-      </Text>
-      {renderTankWaterProfileSelector(scopeKey)}
-      {renderTankWaterTargetRangesGrid(scopeKey)}
-    </View>
-  );
+        <Text
+          style={{
+            color: themeTextPrimary,
+            marginBottom: 6,
+            fontSize: 13,
+            fontWeight: '700',
+          }}>
+          Temperatura i grzalka (zaawansowane)
+        </Text>
+        <Text
+          style={{
+            color: themeTextSecondary,
+            marginBottom: 8,
+            fontSize: 12,
+            lineHeight: 17,
+          }}>
+          Temperatura pomieszczenia jest opcjonalna. Jesli jej nie podasz, aplikacja przyjmie 20 C.
+        </Text>
+        <TextInput
+          key={`${scopeKey}-target-temp`}
+          placeholder="Temperatura docelowa wody (C), np. 25"
+          placeholderTextColor={themePlaceholder}
+          value={tankTargetTemperatureC}
+          onChangeText={setTankTargetTemperatureC}
+          keyboardType="numeric"
+          style={{
+            borderWidth: 1,
+            borderColor: themeInputBorder,
+            color: themeInputText,
+            paddingHorizontal: 10,
+            paddingVertical: 9,
+            borderRadius: 8,
+            backgroundColor: themeInputBg,
+            marginBottom: 8,
+          }}
+        />
+        <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 6 }}>
+          Tryb temperatury pomieszczenia ({modeHint})
+        </Text>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+          {ROOM_TEMPERATURE_MODE_OPTIONS.map((option) => (
+            <Pressable
+              key={`${scopeKey}-room-mode-${option.value}`}
+              onPress={() => setTankRoomTemperatureMode(option.value)}
+              style={{
+                borderWidth: 1,
+                borderColor:
+                  tankRoomTemperatureMode === option.value
+                    ? themeAccent
+                    : themeBorderStrong,
+                backgroundColor:
+                  tankRoomTemperatureMode === option.value
+                    ? '#102235'
+                    : isLightTheme
+                      ? '#ffffff'
+                      : '#111',
+                borderRadius: 999,
+                paddingVertical: 6,
+                paddingHorizontal: 10,
+              }}>
+              <Text
+                style={{
+                  color:
+                    tankRoomTemperatureMode === option.value
+                      ? 'white'
+                      : themeTextPrimary,
+                  fontSize: 11,
+                }}>
+                {option.label}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+        {tankRoomTemperatureMode === 'custom' ? (
+          <TextInput
+            key={`${scopeKey}-ambient-temp`}
+            placeholder="Temperatura pomieszczenia (C), np. 20"
+            placeholderTextColor={themePlaceholder}
+            value={tankAmbientTemperatureC}
+            onChangeText={setTankAmbientTemperatureC}
+            keyboardType="numeric"
+            style={{
+              borderWidth: 1,
+              borderColor: themeInputBorder,
+              color: themeInputText,
+              paddingHorizontal: 10,
+              paddingVertical: 9,
+              borderRadius: 8,
+              backgroundColor: themeInputBg,
+            }}
+          />
+        ) : null}
+      </View>
+    );
+  };
 
   useEffect(() => {
     if (Array.isArray(tankSubstrateLayers) && tankSubstrateLayers.length > 0) {
@@ -13802,7 +13181,8 @@ export default function HomeScreen() {
       normalized.map((type, index) => ({
         id: `legacy-${index}`,
         type:
-          WIZARD_SUBSTRATE_LAYER_OPTIONS.find((item) => item.modelValue === type)?.value ?? 'other',
+          WIZARD_SUBSTRATE_LAYER_OPTIONS.find((item) => item.modelValue === type)?.value ??
+          'other',
         heightCm: '',
         affectsWater: false,
       }))
@@ -13858,7 +13238,7 @@ export default function HomeScreen() {
           <>
             <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
               Podaj nazwe i pojemnosc akwarium. Na tej podstawie aplikacja bedzie liczyc
-              obsade, sprz?t i zalecenia.
+              obsade, sprzet i zalecenia.
             </Text>
             <TextInput
               placeholder={t('tankNamePlaceholder')}
@@ -13908,7 +13288,7 @@ export default function HomeScreen() {
             {isTankDimensionsExpanded ? (
               <View style={{ marginTop: 8 }}>
                 <TextInput
-                  placeholder="DĹ‚ugoĹ›Ä‡ akwarium (cm)"
+                  placeholder="Dlugosc akwarium (cm)"
                   placeholderTextColor={themePlaceholder}
                   value={tankLengthCm}
                   onChangeText={setTankLengthCm}
@@ -13924,7 +13304,7 @@ export default function HomeScreen() {
                   }}
                 />
                 <TextInput
-                  placeholder="SzerokoĹ›Ä‡ akwarium (cm)"
+                  placeholder="Szerokosc akwarium (cm)"
                   placeholderTextColor={themePlaceholder}
                   value={tankWidthCm}
                   onChangeText={setTankWidthCm}
@@ -13940,7 +13320,7 @@ export default function HomeScreen() {
                   }}
                 />
                 <TextInput
-                  placeholder="WysokoĹ›Ä‡ akwarium (cm)"
+                  placeholder="Wysokosc akwarium (cm)"
                   placeholderTextColor={themePlaceholder}
                   value={tankHeightCm}
                   onChangeText={setTankHeightCm}
@@ -14041,7 +13421,7 @@ export default function HomeScreen() {
                   </View>
                 ) : (
                   <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
-                    Brak listy akwariĂłw do skopiowania. Miejsce pod integracje jest przygotowane.
+                    Brak listy akwariow do skopiowania. Miejsce pod integracje jest przygotowane.
                   </Text>
                 )}
               </View>
@@ -14052,10 +13432,10 @@ export default function HomeScreen() {
         {currentStepId === 'onboarding' ? (
           <>
             <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
-              Czy chcesz, zeby aplikacja prowadzila Cie krok po kroku??
+              Czy chcesz, zeby aplikacja prowadzila Cie krok po kroku?
             </Text>
             <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
-              Onboarding pomoĹĽe zaplanowac pierwsze dni dziaĹ‚ania zbiornika, kontrol?? parametrĂłw,
+              Onboarding pomoze zaplanowac pierwsze dni dzialania zbiornika, kontrole parametrow,
               dojrzewanie filtra i moment bezpiecznego wpuszczania obsady.
             </Text>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
@@ -14094,7 +13474,7 @@ export default function HomeScreen() {
         {currentStepId === 'profile' ? (
           <>
             <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
-              Wybierz profil akwarium. Profil ustawia domyslne zakresy parametrĂłw.
+              Wybierz profil akwarium. Profil ustawia domyslne zakresy parametrow.
             </Text>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
               {ADD_TANK_PROFILE_OPTIONS.map((option) => {
@@ -14120,7 +13500,47 @@ export default function HomeScreen() {
             </View>
             {mappedProfile.waterProfile === 'single_species' ? (
               <View style={{ marginTop: 10 }}>
-                {renderSingleSpeciesFishPickerBlock()}
+                <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 6 }}>
+                  Wybierz gatunek dla profilu jednogatunkowego
+                </Text>
+                <TextInput
+                  placeholder="Wyszukaj gatunek..."
+                  placeholderTextColor={themePlaceholder}
+                  value={tankSingleSpeciesFishSearch}
+                  onChangeText={setTankSingleSpeciesFishSearch}
+                  style={{
+                    borderWidth: 1,
+                    borderColor: themeInputBorder,
+                    color: themeInputText,
+                    paddingHorizontal: 10,
+                    paddingVertical: 8,
+                    borderRadius: 8,
+                    backgroundColor: themeInputBg,
+                    marginBottom: 8,
+                  }}
+                />
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                  {filteredSingleSpeciesFishCatalog.map((fish) => {
+                    const isSelected = tankSingleSpeciesFishId === fish.id;
+                    return (
+                      <Pressable
+                        key={`${scopeKey}-wizard-single-species-fish-${fish.id}`}
+                        onPress={() => handleSelectSingleSpeciesFish(fish.id)}
+                        style={{
+                          borderWidth: 1,
+                          borderColor: isSelected ? themeAccent : themeBorderStrong,
+                          borderRadius: 999,
+                          paddingVertical: 5,
+                          paddingHorizontal: 10,
+                          backgroundColor: isSelected ? '#102235' : themeCardBg,
+                        }}>
+                        <Text style={{ color: isSelected ? 'white' : themeTextPrimary, fontSize: 11 }}>
+                          {getFishCatalogDisplayLabel(fish)}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
               </View>
             ) : null}
             <Pressable
@@ -14137,22 +13557,22 @@ export default function HomeScreen() {
                   height: 20,
                   borderRadius: 5,
                   borderWidth: 1,
-                  borderColor: themeBorderStrong,
+                  borderColor: tankWaterProfileCustomized ? themeAccent : themeBorderStrong,
                   alignItems: 'center',
                   justifyContent: 'center',
-                  backgroundColor: themeCardBg,
+                  backgroundColor: tankWaterProfileCustomized ? '#102235' : themeCardBg,
                 }}>
                 <Text
                   style={{
-                    color: themeTextPrimary,
+                    color: tankWaterProfileCustomized ? 'white' : 'transparent',
                     fontSize: 12,
                     fontWeight: '700',
                   }}>
-                  {tankWaterProfileCustomized ? 'X' : ''}
+                  X
                 </Text>
               </View>
               <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
-                Chce wprowadĹşi?? parametry recznie
+                Chce wprowadzic parametry recznie
               </Text>
             </Pressable>
           </>
@@ -14161,7 +13581,7 @@ export default function HomeScreen() {
         {currentStepId === 'substrate' ? (
           <>
             <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
-              Dodaj warstwy podĹ‚oĹĽa. MoĹĽesz ?czyc kilka typow.
+              Dodaj warstwy podloza. Mozesz laczyc kilka typow.
             </Text>
             <View style={{ gap: 8 }}>
               {tankSubstrateLayers.map((layer, index) => (
@@ -14210,7 +13630,7 @@ export default function HomeScreen() {
                     })}
                   </View>
                   <TextInput
-                    placeholder="WysokoĹ›Ä‡ warstwy (cm) - opcjonalnie"
+                    placeholder="Wysokosc warstwy (cm) - opcjonalnie"
                     placeholderTextColor={themePlaceholder}
                     value={layer.heightCm ?? ''}
                     onChangeText={(value) =>
@@ -14283,7 +13703,7 @@ export default function HomeScreen() {
                 backgroundColor: themeCardBg,
               }}>
               <Text style={{ color: themeTextPrimary, fontWeight: '700', textAlign: 'center' }}>
-                Dodaj podĹ‚oĹĽe
+                Dodaj podloze
               </Text>
             </Pressable>
           </>
@@ -14292,7 +13712,7 @@ export default function HomeScreen() {
         {currentStepId === 'water' ? (
           <>
             <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
-              MoĹĽesz zostawic wartosci domyslne albo dopasowac zakresy do swojej obsady, roslin
+              Mozesz zostawic wartosci domyslne albo dopasowac zakresy do swojej obsady, roslin
               i sposobu prowadzenia akwarium.
             </Text>
             {renderTankWaterTargetsSection(`${scopeKey}-water`)}
@@ -14303,20 +13723,11 @@ export default function HomeScreen() {
           <>
             <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
               Podaj docelowa temperature wody oraz typowa temperature w pomieszczeniu. Dla oceny
-              grzalki najwazniejsza jest roznica miÄ™dzy docelowa temperatura wody a najniĹĽsza
+              grzalki najwazniejsza jest roznica miedzy docelowa temperatura wody a najnizsza
               temperatura pomieszczenia.
             </Text>
-            <Text
-              style={{
-                color: themeTextPrimary,
-                fontWeight: '700',
-                fontSize: 12,
-                marginBottom: 4,
-              }}>
-              Docelowa temperatura wody (C)
-            </Text>
             <TextInput
-              placeholder="np. 25"
+              placeholder="Docelowa temperatura wody (C)"
               placeholderTextColor={themePlaceholder}
               value={tankTargetTemperatureC}
               onChangeText={setTankTargetTemperatureC}
@@ -14331,17 +13742,8 @@ export default function HomeScreen() {
                 borderRadius: 8,
               }}
             />
-            <Text
-              style={{
-                color: themeTextPrimary,
-                fontWeight: '700',
-                fontSize: 12,
-                marginBottom: 4,
-              }}>
-              Typowa temperatura pomieszczenia (C)
-            </Text>
             <TextInput
-              placeholder="np. 21"
+              placeholder="Typowa temperatura pomieszczenia (C)"
               placeholderTextColor={themePlaceholder}
               value={tankRoomTempTypical}
               onChangeText={setTankRoomTempTypical}
@@ -14356,17 +13758,8 @@ export default function HomeScreen() {
                 borderRadius: 8,
               }}
             />
-            <Text
-              style={{
-                color: themeTextPrimary,
-                fontWeight: '700',
-                fontSize: 12,
-                marginBottom: 4,
-              }}>
-              Minimalna temperatura pomieszczenia (C)
-            </Text>
             <TextInput
-              placeholder="np. 19"
+              placeholder="Minimalna temperatura pomieszczenia (C)"
               placeholderTextColor={themePlaceholder}
               value={tankRoomTempMin}
               onChangeText={setTankRoomTempMin}
@@ -14381,17 +13774,8 @@ export default function HomeScreen() {
                 borderRadius: 8,
               }}
             />
-            <Text
-              style={{
-                color: themeTextPrimary,
-                fontWeight: '700',
-                fontSize: 12,
-                marginBottom: 4,
-              }}>
-              Maksymalna temperatura pomieszczenia (C, opcjonalnie)
-            </Text>
             <TextInput
-              placeholder="np. 24"
+              placeholder="Maksymalna temperatura pomieszczenia (C) - opcjonalnie"
               placeholderTextColor={themePlaceholder}
               value={tankRoomTempMax}
               onChangeText={setTankRoomTempMax}
@@ -14455,7 +13839,7 @@ export default function HomeScreen() {
                 Nazwa: <Text style={{ color: themeTextPrimary }}>{tankName || '-'}</Text>
               </Text>
               <Text style={{ color: themeTextSecondary }}>
-                LitraĹĽ: <Text style={{ color: themeTextPrimary }}>{tankLiters || '-'} l</Text>
+                Litraz: <Text style={{ color: themeTextPrimary }}>{tankLiters || '-'} l</Text>
               </Text>
               <Text style={{ color: themeTextSecondary }}>
                 Sposob uruchomienia:{' '}
@@ -14477,7 +13861,7 @@ export default function HomeScreen() {
                 Profil: <Text style={{ color: themeTextPrimary }}>{wizardProfileLabel(tankWizardProfile)}</Text>
               </Text>
               <Text style={{ color: themeTextSecondary }}>
-                PodĹ‚oĹĽe:{' '}
+                Podloze:{' '}
                 <Text style={{ color: themeTextPrimary }}>
                   {tankSubstrateLayers.length > 0
                     ? tankSubstrateLayers
@@ -14733,7 +14117,7 @@ export default function HomeScreen() {
       setEquipmentCatalogSearch('');
     } catch (error) {
       alert(
-        'BĹ‚Ä…d zapisu sprz?tu: ' +
+        'Blad zapisu sprzetu: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -14758,7 +14142,7 @@ export default function HomeScreen() {
     const brand = String(customEquipmentBrand ?? '').trim();
     const model = String(customEquipmentModel ?? '').trim();
     if (!model) {
-      alert('Podaj model lub nazwe sprz?tu.');
+      alert('Podaj model lub nazwe sprzetu.');
       return;
     }
 
@@ -14824,11 +14208,11 @@ export default function HomeScreen() {
           ? parsePositiveNumberOrThrow('moc grzalki (W)', customEquipmentPrimaryValue)
           : parsePositiveNumberOrThrow('wydajnosc filtra (l/h)', customEquipmentPrimaryValue);
       const tankMinLiters = parseOptionalNonNegativeNumberOrThrow(
-        'min litraĹĽ',
+        'min litraz',
         customEquipmentTankMinLiters
       );
       const tankMaxLiters = parseOptionalNonNegativeNumberOrThrow(
-        'max litraĹĽ',
+        'max litraz',
         customEquipmentTankMaxLiters
       );
 
@@ -14837,7 +14221,7 @@ export default function HomeScreen() {
         Number.isFinite(Number(tankMaxLiters)) &&
         Number(tankMaxLiters) < Number(tankMinLiters)
       ) {
-        throw new Error('Maksymalny litraĹĽ nie moĹĽe byc mniejszy niĹĽ minimalny.');
+        throw new Error('Maksymalny litraz nie moze byc mniejszy niz minimalny.');
       }
 
       const customEquipmentItem = {
@@ -14887,7 +14271,7 @@ export default function HomeScreen() {
       setEquipmentCatalogSearch('');
     } catch (error) {
       alert(
-        'BĹ‚Ä…d zapisu innego sprz?tu: ' +
+        'Blad zapisu innego sprzetu: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -14952,7 +14336,7 @@ export default function HomeScreen() {
       await fetchTanks(user.uid, selectedTank.id);
     } catch (error) {
       alert(
-        'BĹ‚Ä…d aktualizacji sprz?tu: ' +
+        'Blad aktualizacji sprzetu: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -14990,7 +14374,7 @@ export default function HomeScreen() {
       await fetchTanks(user.uid, selectedTank.id);
     } catch (error) {
       alert(
-        'BĹ‚Ä…d aktualizacji oĹ›wietlenia: ' +
+        'Blad aktualizacji oswietlenia: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -15010,14 +14394,14 @@ export default function HomeScreen() {
 
     let lightHours = 0;
     try {
-      lightHours = parsePositiveNumberOrThrow('godziny Ĺ›wiecenia', equipmentLightHoursDraft);
+      lightHours = parsePositiveNumberOrThrow('godziny swiecenia', equipmentLightHoursDraft);
     } catch (error) {
-      alert(error instanceof Error ? error.message : 'Niepoprawna liczba godzin Ĺ›wiecenia.');
+      alert(error instanceof Error ? error.message : 'Niepoprawna liczba godzin swiecenia.');
       return;
     }
 
     if (!Number.isFinite(lightHours) || lightHours < 1 || lightHours > 24) {
-      alert('Godziny Ĺ›wiecenia musza byc w zakresie 1-24.');
+      alert('Godziny swiecenia musza byc w zakresie 1-24.');
       return;
     }
 
@@ -15037,7 +14421,7 @@ export default function HomeScreen() {
       setEquipmentLightHoursDraft(String(lightHours));
     } catch (error) {
       alert(
-        'BĹ‚Ä…d zapisu czasu Ĺ›wiecenia: ' +
+        'Blad zapisu czasu swiecenia: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -15076,18 +14460,18 @@ export default function HomeScreen() {
     try {
       durationDays = parsePositiveInteger(
         parsePositiveNumberOrThrow(
-          'czas dziaĹ‚ania kulek nawozowych (dni)',
+          'czas dzialania kulek nawozowych (dni)',
           rootTabsDurationDaysInput
         ),
         ROOT_TABS_DEFAULT_DURATION_DAYS
       );
     } catch (error) {
-      alert(error instanceof Error ? error.message : 'Niepoprawny czas dziaĹ‚ania kulek');
+      alert(error instanceof Error ? error.message : 'Niepoprawny czas dzialania kulek');
       return;
     }
 
     if (durationDays > 365) {
-      alert('Czas dziaĹ‚ania kulek ustaw w zakresie 1-365 dni');
+      alert('Czas dzialania kulek ustaw w zakresie 1-365 dni');
       return;
     }
 
@@ -15136,7 +14520,7 @@ export default function HomeScreen() {
       alert('Kulki nawozowe dodane do harmonogramu.');
     } catch (error) {
       alert(
-        'BĹ‚Ä…d zapisu nawozenia: ' + (error instanceof Error ? error.message : '')
+        'Blad zapisu nawozenia: ' + (error instanceof Error ? error.message : '')
       );
     } finally {
       setPlantFertilizationBusy(false);
@@ -15199,18 +14583,18 @@ export default function HomeScreen() {
     try {
       durationDays = parsePositiveInteger(
         parsePositiveNumberOrThrow(
-          'czas dziaĹ‚ania kulek nawozowych (dni)',
+          'czas dzialania kulek nawozowych (dni)',
           editingRootTabsDurationDaysInput
         ),
         ROOT_TABS_DEFAULT_DURATION_DAYS
       );
     } catch (error) {
-      alert(error instanceof Error ? error.message : 'Niepoprawny czas dziaĹ‚ania kulek');
+      alert(error instanceof Error ? error.message : 'Niepoprawny czas dzialania kulek');
       return;
     }
 
     if (durationDays > 365) {
-      alert('Czas dziaĹ‚ania kulek ustaw w zakresie 1-365 dni');
+      alert('Czas dzialania kulek ustaw w zakresie 1-365 dni');
       return;
     }
 
@@ -15255,7 +14639,7 @@ export default function HomeScreen() {
       handleCancelEditPlantFertilizationEntry();
     } catch (error) {
       alert(
-        'BĹ‚Ä…d edycji wpisu nawozenia: ' +
+        'Blad edycji wpisu nawozenia: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -15301,7 +14685,7 @@ export default function HomeScreen() {
       }
     } catch (error) {
       alert(
-        'BĹ‚Ä…d usuwania wpisu nawozenia: ' +
+        'Blad usuwania wpisu nawozenia: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -15319,7 +14703,7 @@ export default function HomeScreen() {
         `${t('subscriptionTankLimitReached', {
           plan: currentSubscriptionTierLabel,
           limit: tankLimit,
-        })}\n\nW planie Free moĹĽesz aktywnie prowadzic 1 akwarium. PozostaĹ‚e akwaria sa bezpiecznie zapisane i odblokujÄ… sie po powrĂłie do Premium.`
+        })}\n\nW planie Free mozesz aktywnie prowadzic 1 akwarium. Pozostale akwaria sa bezpiecznie zapisane i odblokuja sie po powrocie do Premium.`
       );
       return;
     }
@@ -15330,15 +14714,12 @@ export default function HomeScreen() {
     try {
       const name = tankName.trim();
       let savedInCompatibilityMode = false;
-      const isFirstTankCreation =
-        !editingTankId &&
-        !Boolean(appSettings.firstTankCreated);
 
       if (!name) {
         throw new Error('Pole nazwa akwarium jest wymagane');
       }
 
-      const liters = parsePositiveNumberOrThrow('litraĹĽ', tankLiters);
+      const liters = parsePositiveNumberOrThrow('litraz', tankLiters);
       const startType = normalizeAddTankStartType(tankStartType);
       const profileMapping = mapWizardProfileToModel(tankWizardProfile);
       const aquariumType = normalizeAquariumType(
@@ -15348,15 +14729,15 @@ export default function HomeScreen() {
         throw new Error('Wybierz typ akwarium przed zapisaniem onboardingu.');
       }
       const lengthCm = parseOptionalNonNegativeNumberOrThrow(
-        'dĹ‚ugoĹ›Ä‡ akwarium',
+        'dlugosc akwarium',
         tankLengthCm
       );
       const widthCm = parseOptionalNonNegativeNumberOrThrow(
-        'szerokoĹ›Ä‡ akwarium',
+        'szerokosc akwarium',
         tankWidthCm
       );
       const heightCm = parseOptionalNonNegativeNumberOrThrow(
-        'wysokoĹ›Ä‡ akwarium',
+        'wysokosc akwarium',
         tankHeightCm
       );
       const targetTemperatureC = parsePositiveNumberOrThrow(
@@ -15426,7 +14807,7 @@ export default function HomeScreen() {
           : draftTargetRanges;
 
       if (substrateTypes.length === 0) {
-        throw new Error('Wybierz przynajmniej 1 rodzaj podĹ‚oĹĽa');
+        throw new Error('Wybierz przynajmniej 1 rodzaj podloza');
       }
 
       if (waterProfile === 'single_species') {
@@ -15434,7 +14815,7 @@ export default function HomeScreen() {
           throw new Error('Dla akwarium jednogatunkowego wybierz gatunek ryby');
         }
         if (!singleSpeciesFish) {
-          throw new Error('Wybrany gatunek ryby nie jest dost?pny w katalogu');
+          throw new Error('Wybrany gatunek ryby nie jest dostepny w katalogu');
         }
       }
 
@@ -15686,61 +15067,32 @@ export default function HomeScreen() {
 
       if (editingTankId) {
         setEditingTankId(null);
-        setActiveEditTankSection(null);
-        setActiveEditTankSectionDraft(null);
         if (savedInCompatibilityMode) {
           alert(
-            'Akwarium zaktualizowane w trybie zgodnosci. Aby wszystkie nowe ustawieĹ„ia zapisywaly sie od razu, opublikuj aktualne reguly Firestore.'
+            'Akwarium zaktualizowane w trybie zgodnosci. Aby wszystkie nowe ustawienia zapisywaly sie od razu, opublikuj aktualne reguly Firestore.'
           );
         } else {
           alert('Akwarium zaktualizowane');
         }
       } else {
         setIsAddingTankModalVisible(false);
-        if (isFirstTankCreation) {
-          const createdTankId = String(preferredTankId ?? '').trim();
-          updateAppSettings({
-            firstTankCreated: true,
-          });
-          logTelemetryEvent('FIRST_TANK_CREATED', {
-            userId: user.uid,
-            tankId: createdTankId || null,
-            startType,
-            onboardingMode,
-            aquariumType,
-            onboardingEnabled,
-          });
-          if (onboardingEnabled) {
-            if (createdTankId) {
-              setFirstRunStatusTankId(createdTankId);
-            } else {
-              setFirstRunStatusTankId('');
-            }
-            setIsFirstRunStatusModalVisible(true);
-          }
-          setActiveSection('home');
-        }
         if (savedInCompatibilityMode) {
           alert(
-            'Akwarium dodane w trybie zgodnosci. Aby wszystkie nowe ustawieĹ„ia zapisywaly sie od razu, opublikuj aktualne reguly Firestore.'
+            'Akwarium dodane w trybie zgodnosci. Aby wszystkie nowe ustawienia zapisywaly sie od razu, opublikuj aktualne reguly Firestore.'
           );
         } else {
-          if (!onboardingEnabled) {
-            alert('Akwarium dodane. Onboarding jest wyĹ‚Ä…czony.');
-          } else {
-            alert(
-              onboardingMode === 'fresh_start'
-                ? 'Akwarium dodane. WĹ‚Ä…czylismy onboarding fresh start (dzieĹ„ 1/14).'
-                : onboardingMode === 'restart'
-                  ? 'Akwarium dodane. WĹ‚Ä…czylismy onboarding restartu (dzieĹ„ 1/14).'
-                  : 'Akwarium dodane. WĹ‚Ä…czylismy onboarding startu na dojrzalym medium (dzieĹ„ 1/14).'
-            );
-          }
+          alert(
+            onboardingMode === 'fresh_start'
+              ? 'Akwarium dodane. Wlaczylismy onboarding fresh start (dzien 1/14).'
+              : onboardingMode === 'restart'
+                ? 'Akwarium dodane. Wlaczylismy onboarding restartu (dzien 1/14).'
+                : 'Akwarium dodane. Wlaczylismy onboarding startu na dojrzalym medium (dzien 1/14).'
+          );
         }
       }
     } catch (error) {
       alert(
-        `BĹ‚Ä…d ${editingTankId ? 'edycji' : 'dodawania'} akwarium: ` +
+        `Blad ${editingTankId ? 'edycji' : 'dodawania'} akwarium: ` +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -15757,11 +15109,11 @@ export default function HomeScreen() {
 
     Alert.alert(
       'Usun akwarium',
-      `Czy na pewno chcesz usunÄ…Ä‡ akwarium "${tankToDelete.name}"?\n\nTej operacji nie da sie cofnÄ…Ä‡ (nieodwracalne).`,
+      `Czy na pewno chcesz usunac akwarium "${tankToDelete.name}"?\n\nTej operacji nie da sie cofnac (nieodwracalne).`,
       [
         { text: 'Anuluj', style: 'cancel' },
         {
-          text: 'Usu?',
+          text: 'Usun',
           style: 'destructive',
           onPress: async () => {
             if (!user?.uid || !tankToDelete.id || addTankBusy) {
@@ -15799,10 +15151,10 @@ export default function HomeScreen() {
 
               await fetchTanks(user.uid);
               await fetchHomeData(user.uid);
-              alert('Akwarium i powiazane dane zostaĹ‚y usuniete.');
+              alert('Akwarium i powiazane dane zostaly usuniete.');
             } catch (error) {
               alert(
-                'BĹ‚Ä…d usuwania akwarium: ' +
+                'Blad usuwania akwarium: ' +
                   (error instanceof Error ? error.message : '')
               );
             } finally {
@@ -15907,7 +15259,7 @@ export default function HomeScreen() {
         } else {
           const manualFishName = searchPhrase.replace(/\s+/g, ' ').trim();
           if (manualFishName.length < 2) {
-            throw new Error('Wpisz peĹ‚na nazwe ryby (minimum 2 znaki).');
+            throw new Error('Wpisz pelna nazwe ryby (minimum 2 znaki).');
           }
 
           payload = {
@@ -15973,7 +15325,7 @@ export default function HomeScreen() {
 
         if (selectedPlants.length !== uniqueSelectedPlantIds.length) {
           throw new Error(
-            'Jedna z wybranych roslin nie istnieje w katalogu. OdĹ›wieĹĽ liste i sprĂłbuj ponownie.'
+            'Jedna z wybranych roslin nie istnieje w katalogu. Odswiez liste i sprobuj ponownie.'
           );
         }
 
@@ -16206,7 +15558,7 @@ export default function HomeScreen() {
 
       if (Number(selectedTank.liters) < minLiters) {
         addWarnings.push(
-          'Uwaga: minimalny litraĹĽ tej pozycji jest wiÄ™kszy niĹĽ litraĹĽ aktywnego akwarium.'
+          'Uwaga: minimalny litraz tej pozycji jest wiekszy niz litraz aktywnego akwarium.'
         );
       }
 
@@ -16223,7 +15575,7 @@ export default function HomeScreen() {
       }
     } catch (error) {
       alert(
-        'BĹ‚Ä…d dodawania obsady: ' +
+        'Blad dodawania obsady: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -16273,7 +15625,7 @@ export default function HomeScreen() {
       return true;
     } catch (error) {
       alert(
-        'BĹ‚Ä…d aktualizacji ilosci: ' +
+        'Blad aktualizacji ilosci: ' +
           (error instanceof Error ? error.message : '')
       );
       return false;
@@ -16294,16 +15646,16 @@ export default function HomeScreen() {
         : 'Pozycja usunieta z obsady';
     const errorMessage =
       itemType === 'plant'
-        ? 'BĹ‚Ä…d usuwania rosliny z obsady: '
-        : 'BĹ‚Ä…d usuwania obsady: ';
+        ? 'Blad usuwania rosliny z obsady: '
+        : 'Blad usuwania obsady: ';
 
     Alert.alert(
       'Potwierdz usuniecie',
-      `Czy na pewno chcesz usunÄ…Ä‡ ${itemLabel} z obsady? Tej zmiany nie da sie cofnÄ…Ä‡.`,
+      `Czy na pewno chcesz usunac ${itemLabel} z obsady? Tej zmiany nie da sie cofnac.`,
       [
         { text: 'Anuluj', style: 'cancel' },
         {
-          text: 'Usu?',
+          text: 'Usun',
           style: 'destructive',
           onPress: async () => {
             if (!user || !selectedTank?.id || stockBusy) {
@@ -16488,7 +15840,7 @@ export default function HomeScreen() {
 
       if (measurementInputRows.length === 0) {
         throw new Error(
-          'W ustawieĹ„iach wĹ‚Ä…cz przynajmniej 1 pole, aby pokazac je w formularzu.'
+          'W ustawieniach wlacz przynajmniej 1 pole, aby pokazac je w formularzu.'
         );
       }
 
@@ -16611,8 +15963,8 @@ export default function HomeScreen() {
       }
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : 'nieznany bĹ‚Ä…d';
-      alert('BĹ‚Ä…d: ' + message);
+        error instanceof Error ? error.message : 'nieznany blad';
+      alert('Blad: ' + message);
     } finally {
       setSaveBusy(false);
     }
@@ -16629,11 +15981,11 @@ export default function HomeScreen() {
 
     Alert.alert(
       'Usun wpis z historii',
-      'Czy na pewno chcesz usunÄ…Ä‡ ten wpis pomiaru? Tej operacji nie da sie cofnÄ…Ä‡ (nieodwracalne).',
+      'Czy na pewno chcesz usunac ten wpis pomiaru? Tej operacji nie da sie cofnac (nieodwracalne).',
       [
         { text: 'Anuluj', style: 'cancel' },
         {
-          text: 'Usu?',
+          text: 'Usun',
           style: 'destructive',
           onPress: async () => {
             if (!user?.uid || !selectedTank?.id || measurementDeleteBusy) {
@@ -16654,10 +16006,10 @@ export default function HomeScreen() {
 
               await fetchMeasurements(user.uid, selectedTank.id);
               await fetchHomeData(user.uid);
-              alert('Wpis z historii zostaĹ‚ usuniety.');
+              alert('Wpis z historii zostal usuniety.');
             } catch (error) {
               alert(
-                'BĹ‚Ä…d usuwania wpisu z historii: ' +
+                'Blad usuwania wpisu z historii: ' +
                   (error instanceof Error ? error.message : '')
               );
             } finally {
@@ -16682,12 +16034,12 @@ export default function HomeScreen() {
 
     const issueName = String(issueEntry?.issueName ?? t('noData')).trim();
     Alert.alert(
-      'Usun wpis z historii problemĂłw',
-      `Czy na pewno chcesz usunÄ…Ä‡ "${issueName}"? Tej operacji nie da sie cofnÄ…Ä‡ (nieodwracalne).`,
+      'Usun wpis z historii problemow',
+      `Czy na pewno chcesz usunac "${issueName}"? Tej operacji nie da sie cofnac (nieodwracalne).`,
       [
         { text: 'Anuluj', style: 'cancel' },
         {
-          text: 'Usu?',
+          text: 'Usun',
           style: 'destructive',
           onPress: async () => {
             if (
@@ -16705,10 +16057,10 @@ export default function HomeScreen() {
               await fetchTankDiseaseCases(user.uid, selectedTank.id);
               await fetchHomeData(user.uid);
               setExpandedHistoryIssueId((prev) => (prev === issueId ? null : prev));
-              alert('Wpis z historii problemĂłw zostaĹ‚ usuniety.');
+              alert('Wpis z historii problemow zostal usuniety.');
             } catch (error) {
               alert(
-                'BĹ‚Ä…d usuwania wpisu z historii problemĂłw: ' +
+                'Blad usuwania wpisu z historii problemow: ' +
                   (error instanceof Error ? error.message : '')
               );
             } finally {
@@ -16763,7 +16115,7 @@ export default function HomeScreen() {
       });
     } catch (error) {
       alert(
-        'BĹ‚Ä…d zapisu statusu zadania onboardingu: ' +
+        'Blad zapisu statusu zadania onboardingu: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -16826,10 +16178,10 @@ export default function HomeScreen() {
                 : {}),
             }
       );
-      alert(nextEnabled ? 'Onboarding wĹ‚Ä…czony.' : 'Onboarding wyĹ‚Ä…czony.');
+      alert(nextEnabled ? 'Onboarding wlaczony.' : 'Onboarding wylaczony.');
     } catch (error) {
       alert(
-        'BĹ‚Ä…d zmiany statusu onboardingu: ' +
+        'Blad zmiany statusu onboardingu: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -16898,7 +16250,7 @@ export default function HomeScreen() {
         });
       } catch (error) {
         alert(
-          'BĹ‚Ä…d zapisu akcji kalendarza: ' +
+          'Blad zapisu akcji kalendarza: ' +
             (error instanceof Error ? error.message : '')
         );
       } finally {
@@ -17141,7 +16493,7 @@ export default function HomeScreen() {
 
       if (Number(tank?.liters) < minLiters) {
         addWarnings.push(
-          'Uwaga: minimalny litraĹĽ tej ryby jest wiÄ™kszy niĹĽ litraĹĽ wybranego akwarium.'
+          'Uwaga: minimalny litraz tej ryby jest wiekszy niz litraz wybranego akwarium.'
         );
       }
 
@@ -17152,7 +16504,7 @@ export default function HomeScreen() {
       }
     } catch (error) {
       alert(
-        'BĹ‚Ä…d dodawania ryby do akwarium: ' +
+        'Blad dodawania ryby do akwarium: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -17202,7 +16554,7 @@ export default function HomeScreen() {
       return true;
     } catch (error) {
       alert(
-        'BĹ‚Ä…d aktualizacji ilosci: ' +
+        'Blad aktualizacji ilosci: ' +
           (error instanceof Error ? error.message : '')
       );
       return false;
@@ -17301,7 +16653,7 @@ export default function HomeScreen() {
       const addWarnings = [];
       if (Number(tank?.liters) < minLiters) {
         addWarnings.push(
-          'Uwaga: minimalny litraĹĽ tej rosliny jest wiÄ™kszy niĹĽ litraĹĽ wybranego akwarium.'
+          'Uwaga: minimalny litraz tej rosliny jest wiekszy niz litraz wybranego akwarium.'
         );
       }
 
@@ -17312,7 +16664,7 @@ export default function HomeScreen() {
       }
     } catch (error) {
       alert(
-        'BĹ‚Ä…d dodawania rosliny do akwarium: ' +
+        'Blad dodawania rosliny do akwarium: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -17392,276 +16744,6 @@ export default function HomeScreen() {
     setIsIssueTankPickerVisible(true);
   };
 
-  const resolveCatalogAiContextTank = () => {
-    const preferredTankId = String(
-      catalogAiContextTankId || selectedTank?.id || tanks[0]?.id || ''
-    ).trim();
-    if (!preferredTankId) {
-      return null;
-    }
-    return tanks.find((tankItem) => String(tankItem?.id ?? '') === preferredTankId) ?? null;
-  };
-
-  const buildCatalogAiContextSummary = async (tankOverride = null) => {
-    if (!user?.uid) {
-      return '';
-    }
-    const tank = tankOverride ?? resolveCatalogAiContextTank();
-    if (!tank?.id) {
-      return '';
-    }
-
-    const snapshot = await getDocs(
-      query(collection(db, 'measurements'), where('userId', '==', user.uid))
-    );
-    const latestMeasurement = normalizeArray(snapshot?.docs)
-      .map((item) => ({
-        id: normalizeString(item?.id),
-        ...normalizeMeasurementRuntime(normalizeObject(item?.data?.())),
-      }))
-      .filter(
-        (item) =>
-          Boolean(item?.id) && String(item?.tankId ?? '') === String(tank.id)
-      )
-      .sort((left, right) => getMeasurementRecordedAtMs(right) - getMeasurementRecordedAtMs(left))[0];
-
-    const summaryParts = [
-      `Akwarium: ${String(tank?.name ?? 'Akwarium').trim()}`,
-      Number.isFinite(Number(tank?.liters)) ? `LitraĹĽ: ${Math.round(Number(tank.liters))} l` : '',
-      String(tank?.waterProfile ?? '').trim()
-        ? `Profil: ${String(tank.waterProfile).trim()}`
-        : '',
-      latestMeasurement
-        ? `Ostatni pomiar: pH ${latestMeasurement.ph ?? '-'}, NO2 ${latestMeasurement.no2 ?? '-'}, NO3 ${latestMeasurement.no3 ?? '-'}, temp ${latestMeasurement.temperature ?? '-'}`
-        : 'Brak pomiarĂłw dla tego akwarium.',
-    ].filter(Boolean);
-
-    return summaryParts.join('. ');
-  };
-
-  const handleHydrateCatalogAiContextFromTank = async (tankId) => {
-    const normalizedTankId = String(tankId ?? '').trim();
-    const tank =
-      tanks.find((tankItem) => String(tankItem?.id ?? '') === normalizedTankId) ?? null;
-    if (!tank?.id) {
-      setCatalogAiError('Wybierz akwarium, aby pobrac parametry do kontekstu AI.');
-      return;
-    }
-
-    setCatalogAiBusy(true);
-    setCatalogAiError('');
-    try {
-      const contextSummary = await buildCatalogAiContextSummary(tank);
-      setCatalogAiContextTankId(tank.id);
-      setCatalogAiContextSummary(contextSummary);
-      if (!contextSummary) {
-        setCatalogAiError('Nie udalo sie zbudowac kontekstu. Sprawdz dane akwarium.');
-      }
-    } catch (error) {
-      setCatalogAiError(
-        'BĹ‚Ä…d pobierania parametrĂłw z akwarium: ' +
-          (error instanceof Error ? error.message : '')
-      );
-    } finally {
-      setCatalogAiBusy(false);
-    }
-  };
-
-  const runCatalogAiChat = async ({
-    resultKey,
-    question,
-    contextDetails = '',
-    tankId = null,
-  }) => {
-    if (!hasAiAssistantAccess) {
-      setCatalogAiError('Asystent AI jest dost?pny w planie Pro.');
-      return;
-    }
-    if (!appSettings.aiConsentDataProcessing) {
-      setCatalogAiError('WĹ‚Ä…cz zgode na przetwarzanie danych AI, aby uruchomic analizÄ™.');
-      return;
-    }
-    if (!user?.getIdToken) {
-      setCatalogAiError('Brak aktywnej sesji. Zaloguj siÄ™ ponownie.');
-      return;
-    }
-
-    setCatalogAiBusy(true);
-    setCatalogAiError('');
-    try {
-      const contextTank = resolveCatalogAiContextTank();
-      const fallbackContext = await buildCatalogAiContextSummary(contextTank);
-      const contextFromTank = catalogAiContextSummary || fallbackContext;
-      const userProblem = String(catalogAiProblemInput ?? '').trim().slice(0, 500);
-      const effectiveQuestion = userProblem
-        ? `${String(question ?? '').trim()}\nUwzglednij dodatkowy problem uĹĽytkownika: ${userProblem}`
-        : String(question ?? '').trim();
-      const additionalInfo = [contextFromTank, contextDetails]
-        .map((value) => String(value ?? '').trim())
-        .filter(Boolean)
-        .join('\n');
-      const idToken = await user.getIdToken();
-      const response = await requestAiChat({
-        idToken: String(idToken ?? ''),
-        question: effectiveQuestion,
-        additionalInfo,
-        tankId: String(tankId || contextTank?.id || '').trim() || null,
-      });
-
-      setCatalogAiResultByKey((prev) => ({
-        ...prev,
-        [resultKey]: {
-          mode: 'chat',
-          answer: String(response?.answer ?? '').trim(),
-          recommendations: Array.isArray(response?.recommendations)
-            ? response.recommendations.slice(0, 4)
-            : [],
-          warnings: Array.isArray(response?.warnings) ? response.warnings.slice(0, 3) : [],
-          atLabel: new Date().toLocaleString(),
-        },
-      }));
-    } catch (rawError) {
-      const mappedError =
-        rawError instanceof AiChatRequestError
-          ? rawError
-          : new AiChatRequestError(
-              'BĹ‚Ä…d analizy AI w katalogu. SprĂłbuj ponownie.',
-              'AIW_INTERNAL',
-              true
-            );
-      setCatalogAiError(mappedError.message);
-    } finally {
-      setCatalogAiBusy(false);
-    }
-  };
-
-  const handlePickCatalogAiImage = async (source) => {
-    if (!hasAiAssistantAccess) {
-      setCatalogAiError('Asystent AI jest dost?pny w planie Pro.');
-      return;
-    }
-    if (!appSettings.aiConsentDataProcessing || !appSettings.aiConsentImageAnalysis) {
-      setCatalogAiError(
-        'Aby analizowac zdjÄ™cia, wĹ‚Ä…cz zgody: przetwarzanie danych AI i analiza obrazow.'
-      );
-      return;
-    }
-
-    setCatalogAiBusy(true);
-    setCatalogAiError('');
-    try {
-      const picked = await pickVisionImage(source);
-      if (!picked?.uri) {
-        return;
-      }
-      setCatalogAiSelectedImage({
-        uri: String(picked.uri),
-        width: Number(picked.width) || 0,
-        height: Number(picked.height) || 0,
-        mimeType: String(picked.mimeType || 'image/jpeg'),
-      });
-    } catch (rawError) {
-      const mappedError =
-        rawError instanceof AiChatRequestError
-          ? rawError
-          : new AiChatRequestError(
-              'Nie udalo sie wybrac zdjÄ™cia. SprĂłbuj ponownie.',
-              'AIW_INTERNAL',
-              true
-            );
-      setCatalogAiError(mappedError.message);
-    } finally {
-      setCatalogAiBusy(false);
-    }
-  };
-
-  const runCatalogAiVision = async ({
-    resultKey,
-    question,
-    contextDetails = '',
-    tankId = null,
-  }) => {
-    if (!hasAiAssistantAccess) {
-      setCatalogAiError('Asystent AI jest dost?pny w planie Pro.');
-      return;
-    }
-    if (!appSettings.aiConsentDataProcessing || !appSettings.aiConsentImageAnalysis) {
-      setCatalogAiError(
-        'Aby analizowac zdjÄ™cia, wĹ‚Ä…cz zgody: przetwarzanie danych AI i analiza obrazow.'
-      );
-      return;
-    }
-    if (!user?.uid || !user?.getIdToken) {
-      setCatalogAiError('Brak aktywnej sesji. Zaloguj siÄ™ ponownie.');
-      return;
-    }
-    if (!catalogAiSelectedImage?.uri) {
-      setCatalogAiError('Dodaj zdjÄ™cie z aparatu lub galerii przed analiza.');
-      return;
-    }
-
-    setCatalogAiBusy(true);
-    setCatalogAiError('');
-    try {
-      const contextTank = resolveCatalogAiContextTank();
-      const fallbackContext = await buildCatalogAiContextSummary(contextTank);
-      const contextFromTank = catalogAiContextSummary || fallbackContext;
-      const userProblem = String(catalogAiProblemInput ?? '').trim().slice(0, 500);
-      const effectiveQuestion = userProblem
-        ? `${String(question ?? '').trim()}\nUwzglednij dodatkowy problem uĹĽytkownika: ${userProblem}`
-        : String(question ?? '').trim();
-      const additionalInfo = [contextFromTank, contextDetails]
-        .map((value) => String(value ?? '').trim())
-        .filter(Boolean)
-        .join('\n');
-      const idToken = await user.getIdToken();
-      const uploaded = await uploadVisionImageForUser(String(user.uid), catalogAiSelectedImage);
-      const response = await requestAiVisionAnalyzeWithRetry(
-        {
-          idToken: String(idToken ?? ''),
-          imageUrl: uploaded.downloadUrl,
-          question: effectiveQuestion,
-          additionalInfo,
-          tankId: String(tankId || contextTank?.id || '').trim() || null,
-        },
-        { maxAttempts: 2, retryDelayMs: 450 }
-      );
-
-      setCatalogAiResultByKey((prev) => ({
-        ...prev,
-        [resultKey]: {
-          mode: 'vision',
-          answer: String(response?.summary ?? '').trim(),
-          summary: String(response?.summary ?? '').trim(),
-          recommendations: Array.isArray(response?.recommendations)
-            ? response.recommendations.slice(0, 4)
-            : [],
-          warnings: Array.isArray(response?.warnings) ? response.warnings.slice(0, 3) : [],
-          hypotheses: Array.isArray(response?.hypotheses) ? response.hypotheses.slice(0, 3) : [],
-          verificationSteps: Array.isArray(response?.verificationSteps)
-            ? response.verificationSteps.slice(0, 3)
-            : [],
-          actionPlan: Array.isArray(response?.actionPlan) ? response.actionPlan.slice(0, 4) : [],
-          unreadableImageFallback: Boolean(response?.unreadableImageFallback),
-          imageUri: String(catalogAiSelectedImage?.uri ?? ''),
-          atLabel: new Date().toLocaleString(),
-        },
-      }));
-    } catch (rawError) {
-      const mappedError =
-        rawError instanceof AiChatRequestError
-          ? rawError
-          : new AiChatRequestError(
-              'BĹ‚Ä…d analizy AI w katalogu. SprĂłbuj ponownie.',
-              'AIW_INTERNAL',
-              true
-            );
-      setCatalogAiError(mappedError.message);
-    } finally {
-      setCatalogAiBusy(false);
-    }
-  };
-
   const handleAssignDiseaseToTank = async (disease, tank) => {
     if (!user?.uid || !tank || diseaseCaseBusy) {
       return;
@@ -17722,7 +16804,7 @@ export default function HomeScreen() {
       );
       if (!diseaseCaseValidation.ok) {
         throw new Error(
-          `Nieprawidlowy payload przypadku chorĂłby: ${diseaseCaseValidation.issues.join(', ')}`
+          `Nieprawidlowy payload przypadku choroby: ${diseaseCaseValidation.issues.join(', ')}`
         );
       }
       await addDocWithTelemetry(
@@ -17740,10 +16822,10 @@ export default function HomeScreen() {
         await fetchTankDiseaseCases(user.uid, tank.id);
       }
 
-      alert(`Dodano do akwarium "${tank.name}". SzczegĂłĹ‚y pojawily sie w sekcji akwarium.`);
+      alert(`Dodano do akwarium "${tank.name}". Szczegoly pojawily sie w sekcji akwarium.`);
     } catch (error) {
       alert(
-        'BĹ‚Ä…d dodawania chorĂłby do akwarium: ' +
+        'Blad dodawania choroby do akwarium: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -17815,7 +16897,7 @@ export default function HomeScreen() {
       );
       if (!plantDiseaseCaseValidation.ok) {
         throw new Error(
-          `Nieprawidlowy payload przypadku chorĂłby roslin: ${plantDiseaseCaseValidation.issues.join(', ')}`
+          `Nieprawidlowy payload przypadku choroby roslin: ${plantDiseaseCaseValidation.issues.join(', ')}`
         );
       }
       await addDocWithTelemetry(
@@ -17833,10 +16915,10 @@ export default function HomeScreen() {
         await fetchTankDiseaseCases(user.uid, tank.id);
       }
 
-      alert(`Dodano chorĂłbe roslin do akwarium "${tank.name}". SzczegĂłĹ‚y pojawily sie w sekcji akwarium.`);
+      alert(`Dodano chorobe roslin do akwarium "${tank.name}". Szczegoly pojawily sie w sekcji akwarium.`);
     } catch (error) {
       alert(
-        'BĹ‚Ä…d dodawania chorĂłby roslin do akwarium: ' +
+        'Blad dodawania choroby roslin do akwarium: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -17929,10 +17011,10 @@ export default function HomeScreen() {
         await fetchTankDiseaseCases(user.uid, tank.id);
       }
 
-      alert(`Dodano glony do akwarium "${tank.name}". SzczegĂłĹ‚y pojawily sie w sekcji akwarium.`);
+      alert(`Dodano glony do akwarium "${tank.name}". Szczegoly pojawily sie w sekcji akwarium.`);
     } catch (error) {
       alert(
-        'BĹ‚Ä…d dodawania glonow do akwarium: ' +
+        'Blad dodawania glonow do akwarium: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -17984,7 +17066,7 @@ export default function HomeScreen() {
 
       if (errorMessage && stage >= 1) {
         console.warn(
-          `Nie udalo sie zaladowac miniatury chorĂłby (${diseaseId}, etap ${stage + 1}):`,
+          `Nie udalo sie zaladowac miniatury choroby (${diseaseId}, etap ${stage + 1}):`,
           errorMessage
         );
       }
@@ -18014,7 +17096,7 @@ export default function HomeScreen() {
       const nextStage = Math.min(2, prevStage + 1);
       if (errorMessage && prevStage >= 1) {
         console.warn(
-          `Nie udalo sie zaladowac zdjÄ™cia chorĂłby (etap ${prevStage + 1}):`,
+          `Nie udalo sie zaladowac zdjecia choroby (etap ${prevStage + 1}):`,
           errorMessage
         );
       }
@@ -18062,14 +17144,14 @@ export default function HomeScreen() {
       if (!tier || tier === subscription.tier) {
         const refreshed = await refreshSubscriptionFromBilling();
         if (!refreshed) {
-          alert('Nie udalo sie odĹ›wieĹĽyc statusu subskrypcji.');
+          alert('Nie udalo sie odswiezyc statusu subskrypcji.');
         }
         return;
       }
 
       if (tier === 'free') {
         alert(
-          'PowrĂłt do planu Free oraz anulowanie odnowienia wykonujesz w ustawieĹ„iach subskrypcji sklepu (Google Play / App Store).'
+          'Powrot do planu Free oraz anulowanie odnowienia wykonujesz w ustawieniach subskrypcji sklepu (Google Play / App Store).'
         );
         return;
       }
@@ -18101,7 +17183,7 @@ export default function HomeScreen() {
 
     try {
       await restoreSubscriptionPurchases();
-      alert('Zakupy zostaĹ‚y przywrĂłone.');
+      alert('Zakupy zostaly przywrocone.');
     } catch (error) {
       alert(mapBillingErrorToUserMessage(error, 'restore'));
     }
@@ -18137,7 +17219,8 @@ export default function HomeScreen() {
             ? t('settingsSubscriptionTierPro')
             : t('settingsSubscriptionTierFree');
       const parameterLabel =
-        TEST_PARAMETER_OPTIONS.find((item) => item.key === testKey)?.label ?? testKey;
+        TEST_PARAMETER_OPTIONS.find((item) => item.key === testKey)?.label ??
+        testKey;
 
       alert(
         t('subscriptionParameterLocked', {
@@ -18380,8 +17463,8 @@ export default function HomeScreen() {
     const successLabel = isAlgaeCase
       ? 'Problem z glonami oznaczono jako usuniety.'
       : isPlantDiseaseCase
-        ? 'Chorob? roslin oznaczono jako wyleczona.'
-        : 'Chorob? oznaczono jako wyleczona.';
+        ? 'Chorobe roslin oznaczono jako wyleczona.'
+        : 'Chorobe oznaczono jako wyleczona.';
 
     Alert.alert(
       confirmLabel,
@@ -18434,7 +17517,7 @@ export default function HomeScreen() {
               alert(successLabel);
             } catch (error) {
               alert(
-                'BĹ‚Ä…d aktualizacji statusu: ' +
+                'Blad aktualizacji statusu: ' +
                   (error instanceof Error ? error.message : '')
               );
             } finally {
@@ -18455,7 +17538,6 @@ export default function HomeScreen() {
     isEquipmentSection,
     isFishSection,
     isPlantSection,
-    isAiSection,
     isIssuesSection,
     isDiseaseSection,
     isPlantDiseaseSection,
@@ -18763,10 +17845,10 @@ export default function HomeScreen() {
     () =>
       buildWaterTestingScheduleLogic(
         measurements,
-        activeEnabledTests,
+        availableMeasurementTests,
         selectedTankWaterAnalysisOptions
       ),
-    [activeEnabledTests, measurements, selectedTankWaterAnalysisOptions]
+    [availableMeasurementTests, measurements, selectedTankWaterAnalysisOptions]
   );
   const tankOnboardingPlan = useMemo(
     () =>
@@ -19111,9 +18193,7 @@ export default function HomeScreen() {
       );
     }
 
-    const selectedTankFishItems = normalizeArray(stockItems).filter(
-      (entry) => entry?.type === 'fish'
-    );
+    const selectedTankFishItems = stockItems.filter((entry) => entry.type === 'fish');
     const issueCountById = new Map(
       filtered.map((item) => [
         item.id,
@@ -19224,9 +18304,7 @@ export default function HomeScreen() {
       return map;
     }
 
-    const selectedTankFishItems = normalizeArray(stockItems).filter(
-      (entry) => entry?.type === 'fish'
-    );
+    const selectedTankFishItems = stockItems.filter((entry) => entry.type === 'fish');
     for (const plant of visibleFilteredPlantCatalog) {
       map.set(
         plant.id,
@@ -19412,7 +18490,7 @@ export default function HomeScreen() {
       const cacheKey = getFishImageCacheKey(fish);
 
       const directPreview = String(
-        fish.imagePreviewUrl ?? fish.imageUrl ?? fish.imageLink ?? ''
+        fish.imageUrl ?? fish.imagePreviewUrl ?? fish.imageLink ?? ''
       ).trim();
       if (directPreview) {
         return directPreview;
@@ -19426,9 +18504,10 @@ export default function HomeScreen() {
         (fish.catalogFishId && fishCatalogById.get(fish.catalogFishId)) ||
         fishCatalogByLatinName.get(normalizeLatinCatalogKey(fish.latinName));
       const catalogPreview = String(
-        catalogEntry?.imagePreviewUrl ??
-          catalogEntry?.imageUrl ??
-          catalogEntry?.imageLink ?? ''
+        catalogEntry?.imageUrl ??
+          catalogEntry?.imagePreviewUrl ??
+          catalogEntry?.imageLink ??
+          ''
       ).trim();
       if (catalogPreview) {
         return catalogPreview;
@@ -19616,7 +18695,8 @@ export default function HomeScreen() {
           plant.imageLink ??
           catalogEntry?.imagePreviewUrl ??
           catalogEntry?.imageUrl ??
-          catalogEntry?.imageLink ?? ''
+          catalogEntry?.imageLink ??
+          ''
       ).trim();
       if (directPreview) {
         return directPreview;
@@ -19891,6 +18971,7 @@ export default function HomeScreen() {
     stockingCompatibility,
     fishAggressionConflicts,
     hasFishCompatibilityIssues,
+    fishWarningsByItemId,
     plantCompatibilityResults,
     incompatiblePlantCount,
     incompatiblePlantMajorCount,
@@ -19980,7 +19061,7 @@ export default function HomeScreen() {
 
       const schedule = buildWaterTestingScheduleLogic(
         visibleTankMeasurements,
-        activeEnabledTests,
+        availableMeasurementTests,
         getWaterAnalysisOptionsForTank(tank)
       );
       const scheduleActionsToday = (schedule.parameters ?? []).filter(
@@ -20082,42 +19163,12 @@ export default function HomeScreen() {
           fishCompatibilityResults: tankFishCompatibilityResults,
           plantCompatibilityResults: tankPlantCompatibilityResults,
           fishAggressionConflictsCount: tankFishAggressionConflictsCount,
-          fishAggressionConflicts: (tankDynamicCompatibility?.conflicts ?? []).filter((item) =>
-            ['aggression', 'territoriality', 'predation', 'finNipping'].includes(
-              String(item?.category ?? '')
-            )
-          ),
           fishSchoolingWarningsCount: tankFishSchoolingWarningsCount,
-          fishSchoolingWarnings: tankFishItems
-            .map((item) => {
-              const profile = resolveFishSchoolingProfile(item);
-              const quantity = getFishQuantity(item);
-              if (!profile?.isSchooling || quantity >= profile.minGroupSize) {
-                return null;
-              }
-              return {
-                id: item?.id,
-                label: `${item?.commonName ?? item?.name ?? item?.latinName ?? 'Ryba'}`,
-                quantity,
-                minGroupSize: profile.minGroupSize,
-              };
-            })
-            .filter(Boolean),
           fishStockingSummary: tankStockingSummary,
           activeDiseaseCasesCount: tankActiveDiseaseCasesCount,
-          activeDiseaseCases: issueCases.filter(
-            (item) => String(item.caseType ?? 'disease').toLowerCase() === 'disease'
-          ),
           activePlantDiseaseCasesCount: tankActivePlantDiseaseCasesCount,
-          activePlantDiseaseCases: issueCases.filter(
-            (item) => String(item.caseType ?? '').toLowerCase() === 'plant_disease'
-          ),
           activeAlgaeCasesCount: tankActiveAlgaeCasesCount,
-          activeAlgaeCases: issueCases.filter(
-            (item) => String(item.caseType ?? '').toLowerCase() === 'algae'
-          ),
           selectedTankHealthAssessment: healthAssessment,
-          measurementAnalysis: latestAnalysis,
         },
         {
           summarizeCompatibilityResults,
@@ -20128,10 +19179,6 @@ export default function HomeScreen() {
           getIssueCaseDisplayName,
         }
       );
-      const homeImportantAttentionCount = homeAttentionItems.filter((item) => {
-        const severity = String(item?.severity ?? 'info').toLowerCase();
-        return severity === 'critical' || severity === 'warning';
-      }).length;
       const sectionCounts = buildHomeSectionCounts(
         {
           tank,
@@ -20212,13 +19259,12 @@ export default function HomeScreen() {
             : getHomeStatusSeverityFromScore(healthAssessment.score),
         healthAssessment,
         emergencyState: tankEmergencyState,
-        attentionAlerts: homeAttentionItems,
         adaptiveTaskSchedule,
         todayActionPlan,
         actionsTodayCount,
         reminderActionsTodayCount,
         issueCount: Math.max(
-          homeImportantAttentionCount,
+          homeAttentionItems.length,
           issueCases.length + (tankEmergencyState?.isEmergency ? 1 : 0)
         ),
       };
@@ -20227,7 +19273,6 @@ export default function HomeScreen() {
     tanks,
     homeStockItemsByTankId,
     homeMeasurements,
-    activeEnabledTests,
     availableMeasurementTests,
     homeActiveIssueCases,
     hasEquipmentSaveAccess,
@@ -20236,144 +19281,153 @@ export default function HomeScreen() {
     todayDayBucketMs,
     currentPlan,
   ]);
-  const firstRunStatusSummary = useMemo(() => {
-    if (!isFirstRunStatusModalVisible) {
-      return null;
-    }
-
-    const byTankId = homeTankSummaries.find(
-      (item) => String(item?.tank?.id ?? '') === String(firstRunStatusTankId ?? '')
-    );
-    return byTankId ?? homeTankSummaries[0] ?? null;
-  }, [firstRunStatusTankId, homeTankSummaries, isFirstRunStatusModalVisible]);
-  const firstRunRecommendedActions = useMemo(() => {
-    const items = normalizeArray(firstRunStatusSummary?.todayActionPlan?.items)
-      .map((item) => ({
-        id: normalizeString(item?.id),
-        title: normalizeString(item?.title) || normalizeString(item?.categoryLabel),
-        categoryLabel: normalizeString(item?.categoryLabel),
-      }))
-      .filter((item) => Boolean(item.title));
-    return items.slice(0, 3);
-  }, [firstRunStatusSummary]);
-  const firstRunMonitoringItems = useMemo(() => {
-    const measurementLabel = availableMeasurementTests.temperature
-      ? 'Parametry wody i temperature'
-      : 'Parametry wody';
-    return [
-      measurementLabel,
-      'Plan zadan i harmonogram kontroli',
-      'Obsade i zgodnosc gatunkow',
-      'Sprzet oraz ryzyko awarii',
-    ];
-  }, [availableMeasurementTests.temperature]);
-
-  useEffect(() => {
-    firstRunStartTrackedRef.current = false;
-    firstRunStatusTrackedTankIdRef.current = '';
-    firstRunRecommendationTrackedTankIdRef.current = '';
-  }, [user?.uid]);
-
-  useEffect(() => {
-    if (!user?.uid || !shouldShowFirstRunEntry || firstRunStartTrackedRef.current) {
-      return;
-    }
-    firstRunStartTrackedRef.current = true;
-    logTelemetryEvent('FIRST_RUN_STARTED', {
-      userId: user.uid,
-    });
-  }, [shouldShowFirstRunEntry, user?.uid]);
-
-  useEffect(() => {
-    if (!user?.uid || hasNoTanks) {
-      return;
-    }
-    if (appSettings.firstTankCreated && appSettings.firstRunCompleted) {
-      return;
-    }
-    updateAppSettings({
-      firstTankCreated: true,
-      firstRunCompleted: true,
-    });
-  }, [
-    appSettings.firstRunCompleted,
-    appSettings.firstTankCreated,
-    hasNoTanks,
-    updateAppSettings,
-    user?.uid,
-  ]);
-
-  useEffect(() => {
-    if (!isFirstRunStatusModalVisible || !firstRunStatusSummary || !user?.uid) {
-      return;
-    }
-
-    const tankId = String(firstRunStatusSummary?.tank?.id ?? '').trim();
-    if (!tankId || firstRunStatusTrackedTankIdRef.current === tankId) {
-      return;
-    }
-
-    firstRunStatusTrackedTankIdRef.current = tankId;
-    logTelemetryEvent('FIRST_STATUS_SHOWN', {
-      userId: user.uid,
-      tankId,
-      statusSeverity: String(firstRunStatusSummary?.statusSeverity ?? 'no_data'),
-    });
-  }, [firstRunStatusSummary, isFirstRunStatusModalVisible, user?.uid]);
-
-  useEffect(() => {
-    if (
-      !isFirstRunStatusModalVisible ||
-      !firstRunStatusSummary ||
-      firstRunRecommendedActions.length === 0 ||
-      !user?.uid
-    ) {
-      return;
-    }
-
-    const tankId = String(firstRunStatusSummary?.tank?.id ?? '').trim();
-    if (!tankId || firstRunRecommendationTrackedTankIdRef.current === tankId) {
-      return;
-    }
-
-    firstRunRecommendationTrackedTankIdRef.current = tankId;
-    logTelemetryEvent('FIRST_RECOMMENDATION_SHOWN', {
-      userId: user.uid,
-      tankId,
-      recommendationCount: firstRunRecommendedActions.length,
-    });
-  }, [
-    firstRunRecommendedActions.length,
-    firstRunStatusSummary,
-    isFirstRunStatusModalVisible,
-    user?.uid,
-  ]);
-
   const selectedHomeScoreAssessment = selectedHomeScoreSummary?.healthAssessment ?? null;
-  const selectedHomeScoreDetails = useMemo(
-    () => selectedHomeScoreAssessment?.penalties ?? [],
-    [selectedHomeScoreAssessment]
-  );
-  const selectedHomeScoreAcceptedProblemAcks = useMemo(
-    () => {
-      const tank = selectedHomeScoreSummary?.tank;
-      const tankId = String(tank?.id ?? '').trim();
-      const overlay = tankId ? acceptedProblemAcksOverlayByTankId[tankId] : null;
-      return mergeAcceptedProblemAcks(getActiveAcceptedProblemAcksFromTank(tank), overlay);
+  const selectedHomeEmergencyState = selectedHomeScoreSummary?.emergencyState ?? null;
+  const selectedHomeAdaptiveTaskSchedule =
+    selectedHomeScoreSummary?.adaptiveTaskSchedule ?? null;
+  const selectedHomeTodayActionPlan = selectedHomeScoreSummary?.todayActionPlan ?? null;
+  const selectedHomeTankId = String(selectedHomeScoreSummary?.tank?.id ?? '').trim();
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    const loadAdaptiveTaskChecks = async () => {
+      if (!user?.uid || !selectedHomeTankId) {
+        if (!isCancelled) {
+          setAdaptiveTaskChecks({});
+        }
+        return;
+      }
+
+      const storageKey = getAdaptiveTaskChecksStorageKey(user.uid, selectedHomeTankId);
+      try {
+        const rawValue = await AsyncStorage.getItem(storageKey);
+        if (isCancelled) {
+          return;
+        }
+        const parsedValue = rawValue ? JSON.parse(rawValue) : {};
+        setAdaptiveTaskChecks(normalizeAdaptiveTaskChecks(parsedValue));
+      } catch {
+        if (!isCancelled) {
+          setAdaptiveTaskChecks({});
+        }
+      }
+    };
+
+    loadAdaptiveTaskChecks();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [selectedHomeTankId, user?.uid]);
+
+  useEffect(() => {
+    setAdaptiveTaskExpandedBuckets({
+      today: false,
+      week: false,
+      month: false,
+    });
+  }, [selectedHomeTankId]);
+
+  const selectedHomeAdaptiveTasksByWindow = useMemo(() => {
+    const tasks = Array.isArray(selectedHomeAdaptiveTaskSchedule?.tasks)
+      ? selectedHomeAdaptiveTaskSchedule.tasks
+      : [];
+    const windows = {
+      today: [],
+      week: [],
+      month: [],
+    };
+    const dayMs = 24 * 60 * 60 * 1000;
+    tasks.forEach((task) => {
+      const taskBucket = Number(task?.dayBucketMs);
+      const completionKey = getAdaptiveTaskOccurrenceKey(task);
+      if (!Number.isFinite(taskBucket) || taskBucket <= 0 || !completionKey) {
+        return;
+      }
+      const taskWithCompletion = {
+        ...task,
+        completionKey,
+      };
+      const diffDays = Math.round((taskBucket - todayDayBucketMs) / dayMs);
+      if (diffDays <= 0) {
+        windows.today.push(taskWithCompletion);
+      } else if (diffDays <= 7) {
+        windows.week.push(taskWithCompletion);
+      } else if (diffDays <= 30) {
+        windows.month.push(taskWithCompletion);
+      }
+    });
+    const sortByPriority = (a, b) => {
+      const rank = (value) =>
+        String(value ?? '').toLowerCase() === 'critical'
+          ? 3
+          : String(value ?? '').toLowerCase() === 'important'
+            ? 2
+            : 1;
+      const byRank = rank(b?.priority) - rank(a?.priority);
+      if (byRank !== 0) {
+        return byRank;
+      }
+      return Number(a?.dayBucketMs ?? 0) - Number(b?.dayBucketMs ?? 0);
+    };
+    const mapBucket = (bucketItems) => {
+      const allItems = bucketItems.sort(sortByPriority);
+      const pending = allItems.filter(
+        (task) => !adaptiveTaskChecks[String(task?.completionKey ?? '').trim()]
+      );
+      return {
+        all: allItems,
+        pending,
+        completedCount: Math.max(0, allItems.length - pending.length),
+      };
+    };
+    return {
+      today: mapBucket(windows.today),
+      week: mapBucket(windows.week),
+      month: mapBucket(windows.month),
+    };
+  }, [adaptiveTaskChecks, selectedHomeAdaptiveTaskSchedule, todayDayBucketMs]);
+
+  const handleToggleAdaptiveTaskBucketExpanded = useCallback((bucketKey) => {
+    const normalizedKey = String(bucketKey ?? '').trim().toLowerCase();
+    if (!normalizedKey) {
+      return;
+    }
+    setAdaptiveTaskExpandedBuckets((previous) => ({
+      ...previous,
+      [normalizedKey]: !previous[normalizedKey],
+    }));
+  }, []);
+
+  const handleCompleteAdaptiveTask = useCallback(
+    async (task) => {
+      const completionKey = getAdaptiveTaskOccurrenceKey(task);
+      if (!completionKey || !user?.uid || !selectedHomeTankId) {
+        return;
+      }
+
+      const previousChecks = adaptiveTaskChecks;
+      const nextChecks = {
+        ...previousChecks,
+        [completionKey]: true,
+      };
+      setAdaptiveTaskChecks(nextChecks);
+
+      try {
+        const storageKey = getAdaptiveTaskChecksStorageKey(user.uid, selectedHomeTankId);
+        await AsyncStorage.setItem(storageKey, JSON.stringify(nextChecks));
+      } catch (error) {
+        setAdaptiveTaskChecks(previousChecks);
+        alert(
+          'Blad zapisu statusu zadania: ' +
+            (error instanceof Error ? error.message : '')
+        );
+      }
     },
-    [acceptedProblemAcksOverlayByTankId, selectedHomeScoreSummary?.tank]
+    [adaptiveTaskChecks, selectedHomeTankId, user?.uid]
   );
-  const selectedHomeScoreDetailsWithAcceptance = useMemo(
-    () =>
-      selectedHomeScoreDetails.map((item) => ({
-        ...item,
-        acceptedProblem: findAcceptedProblemForPenalty(
-          item,
-          selectedHomeScoreAcceptedProblemAcks
-        ),
-      })),
-    [selectedHomeScoreAcceptedProblemAcks, selectedHomeScoreDetails]
-  );
+  const selectedHomeScoreDetails = selectedHomeScoreAssessment?.penalties ?? [];
   const selectedHomeScoreLabel = selectedHomeScoreAssessment
     ? selectedHomeScoreAssessment.score >= 85
       ? t('homeScoreIdeal')
@@ -20396,10 +19450,8 @@ export default function HomeScreen() {
           ? t('sectionInfo')
         : activeSection === 'equipment'
           ? t('sectionEquipment')
-      : activeSection === 'plant'
+        : activeSection === 'plant'
           ? t('sectionPlants')
-          : activeSection === 'ai'
-            ? 'Asystent AI'
           : activeSection === 'issues'
             ? t('sectionIssues')
           : activeSection === 'disease'
@@ -20419,11 +19471,11 @@ export default function HomeScreen() {
     ? sectionTitle
     : selectedTank?.name ?? t('noTank');
   const fishInTank = useMemo(
-    () => normalizeArray(stockItems).filter((item) => item?.type === 'fish'),
+    () => stockItems.filter((item) => item.type === 'fish'),
     [stockItems]
   );
   const plantsInTank = useMemo(
-    () => normalizeArray(stockItems).filter((item) => item?.type === 'plant'),
+    () => stockItems.filter((item) => item.type === 'plant'),
     [stockItems]
   );
   const { colors, isLightTheme } = useAppTheme();
@@ -20500,9 +19552,6 @@ export default function HomeScreen() {
     [currentPlan, selectedTankIndex]
   );
   const currentTankCount = tanks.length;
-  const hasNoTanks = currentTankCount === 0;
-  const shouldShowFirstRunEntry =
-    Boolean(user?.uid) && hasNoTanks && !Boolean(appSettings.firstRunCompleted);
   const tankLimit = planLimits?.maxTanks ?? getSubscriptionLimit('maxTanks');
   const canAddTank = canCreateTank(currentTankCount);
   const isOverTankLimit = tankLimit !== null && currentTankCount > tankLimit;
@@ -20530,6 +19579,9 @@ export default function HomeScreen() {
   const hasChartAccess = subscriptionEntitlements?.chartAccess !== 'none';
   const hasAdvancedChartAccess =
     subscriptionEntitlements?.chartAccess === 'advanced';
+  const hasExtendedAlertAccess =
+    subscriptionEntitlements?.alertAccess === 'extended' ||
+    subscriptionEntitlements?.alertAccess === 'smart';
   const hasEquipmentSaveAccess =
     subscriptionEntitlements?.equipmentAccess === 'save' ||
     subscriptionEntitlements?.equipmentAccess === 'analysis_and_recommendations';
@@ -20554,972 +19606,6 @@ export default function HomeScreen() {
   const aiAssistantLockMessage = aiAssistantGate.lockMessage;
   const aiAssistantUpgradePromptMessage = aiAssistantGate.upgradePromptMessage;
   const showAiAssistantUpgradePrompt = aiAssistantGate.showUpgradePrompt;
-  const catalogAiSelectedTank = useMemo(() => {
-    const preferredId = String(
-      catalogAiContextTankId || selectedTank?.id || tanks[0]?.id || ''
-    ).trim();
-    if (!preferredId) {
-      return null;
-    }
-    return tanks.find((item) => String(item?.id ?? '') === preferredId) ?? null;
-  }, [catalogAiContextTankId, selectedTank?.id, tanks]);
-
-  const renderCatalogAiResultCard = (resultKey) => {
-    const result = catalogAiResultByKey[resultKey];
-    if (!result) {
-      return null;
-    }
-
-    return (
-      <View
-        style={{
-          borderWidth: 1,
-          borderColor: themeBorder,
-          borderRadius: 8,
-          padding: 8,
-          marginTop: 8,
-          backgroundColor: themeCardBgAlt,
-        }}>
-        <Text style={{ color: themeTextSecondary, fontSize: 11 }}>
-          AI ({String(result?.atLabel ?? '')})
-        </Text>
-        {result?.mode === 'vision' && String(result?.imageUri ?? '').trim() ? (
-          <Image
-            source={{ uri: String(result.imageUri) }}
-            resizeMode="cover"
-            style={{
-              width: '100%',
-              height: 120,
-              borderRadius: 8,
-              marginTop: 6,
-              backgroundColor: themeCardBg,
-            }}
-          />
-        ) : null}
-        <Text style={{ color: themeTextPrimary, marginTop: 4, fontSize: 12 }}>
-          {String(result?.summary ?? result?.answer ?? '').trim()}
-        </Text>
-        {Array.isArray(result?.hypotheses) && result.hypotheses.length > 0
-          ? result.hypotheses.slice(0, 3).map((entry, index) => (
-              <Text
-                key={`${resultKey}-hyp-${index}`}
-                style={{ color: themeTextSecondary, marginTop: 3, fontSize: 12 }}>
-                - {String(entry?.label ?? 'Hipoteza')} ({Math.round(Number(entry?.confidence) * 100 || 0)}%)
-              </Text>
-            ))
-          : null}
-        {Array.isArray(result?.recommendations) && result.recommendations.length > 0
-          ? result.recommendations.slice(0, 3).map((entry, index) => (
-              <Text
-                key={`${resultKey}-rec-${index}`}
-                style={{ color: themeTextSecondary, marginTop: 3, fontSize: 12 }}>
-                - {entry}
-              </Text>
-            ))
-          : null}
-        {Array.isArray(result?.verificationSteps) && result.verificationSteps.length > 0
-          ? result.verificationSteps.slice(0, 2).map((entry, index) => (
-              <Text
-                key={`${resultKey}-ver-${index}`}
-                style={{ color: themeTextSecondary, marginTop: 3, fontSize: 12 }}>
-                Sprawdz: {entry}
-              </Text>
-            ))
-          : null}
-        {result?.unreadableImageFallback ? (
-          <Text style={{ color: themeWarningText, fontSize: 12, marginTop: 6 }}>
-            ZdjÄ™cie moĹĽe byc nieczytelne. Dodaj wyrazniejsze ujecie.
-          </Text>
-        ) : null}
-      </View>
-    );
-  };
-
-  const handleOpenEditTankSection = useCallback(
-    (sectionKey) => {
-      if (sectionKey === 'name') {
-        setActiveEditTankSectionDraft({
-          tankName: tankName ?? '',
-        });
-      } else if (sectionKey === 'liters') {
-        setActiveEditTankSectionDraft({
-          tankLiters: tankLiters ?? '',
-        });
-      } else if (sectionKey === 'substrate') {
-        setActiveEditTankSectionDraft({
-          tankSubstrateTypes: [...normalizeSubstrateTypes(tankSubstrateTypes)],
-        });
-      } else if (sectionKey === 'profile') {
-        setActiveEditTankSectionDraft({
-          tankWaterProfile: normalizeWaterProfile(tankWaterProfile),
-          tankSingleSpeciesFishId: String(tankSingleSpeciesFishId ?? ''),
-        });
-      } else if (sectionKey === 'ranges') {
-        setActiveEditTankSectionDraft({
-          tankTargetRangeDraft: {
-            ...(tankTargetRangeDraft ?? {}),
-          },
-        });
-      } else if (sectionKey === 'temperature') {
-        setActiveEditTankSectionDraft({
-          tankTargetTemperatureC: String(tankTargetTemperatureC ?? ''),
-          tankAmbientTemperatureC: String(tankAmbientTemperatureC ?? ''),
-          tankRoomTemperatureMode: normalizeRoomTemperatureMode(tankRoomTemperatureMode),
-        });
-      } else {
-        setActiveEditTankSectionDraft(null);
-      }
-      setActiveEditTankSection(sectionKey);
-    },
-    [
-      tankAmbientTemperatureC,
-      tankLiters,
-      tankName,
-      tankRoomTemperatureMode,
-      tankSingleSpeciesFishId,
-      tankSubstrateTypes,
-      tankTargetRangeDraft,
-      tankTargetTemperatureC,
-      tankWaterProfile,
-    ]
-  );
-
-  const handleCloseEditTankSection = useCallback(() => {
-    setActiveEditTankSection(null);
-    setActiveEditTankSectionDraft(null);
-    setIsSingleSpeciesFishCatalogVisible(false);
-    setSingleSpeciesFishCatalogContext('default');
-  }, []);
-  const handleSaveEditTankSection = useCallback(() => {
-    if (activeEditTankSection === 'name') {
-      setTankName(String(activeEditTankSectionDraft?.tankName ?? ''));
-    } else if (activeEditTankSection === 'liters') {
-      setTankLiters(String(activeEditTankSectionDraft?.tankLiters ?? ''));
-    } else if (activeEditTankSection === 'substrate') {
-      const nextTypes = normalizeSubstrateTypes(activeEditTankSectionDraft?.tankSubstrateTypes);
-      setTankSubstrateTypes(nextTypes);
-      setTankSubstrateType(nextTypes[0] ?? '');
-    } else if (activeEditTankSection === 'profile') {
-      const nextProfile = normalizeWaterProfile(
-        activeEditTankSectionDraft?.tankWaterProfile || tankWaterProfile
-      );
-      const nextFishId = String(activeEditTankSectionDraft?.tankSingleSpeciesFishId ?? '').trim();
-      const nextFish =
-        nextProfile === 'single_species'
-          ? fishCatalog.find((item) => item.id === nextFishId) ?? null
-          : null;
-      setTankWaterProfileCustomized(true);
-      setTankWaterProfile(nextProfile);
-      setTankSingleSpeciesFishSearch('');
-      if (nextProfile !== 'single_species') {
-        setTankSingleSpeciesFishId('');
-        setTankTargetRangeDraft(
-          buildTargetRangeInputDraftFromRanges(
-            getWaterTargetDefaults(nextProfile),
-            nextProfile
-          )
-        );
-      } else {
-        setTankSingleSpeciesFishId(nextFishId);
-        setTankTargetRangeDraft(
-          buildTargetRangeInputDraftFromRanges(
-            buildSingleSpeciesTargetRangesFromFish(nextFish, DEFAULT_WATER_PROFILE),
-            'single_species'
-          )
-        );
-      }
-    } else if (activeEditTankSection === 'ranges') {
-      setTankWaterProfileCustomized(true);
-      setTankTargetRangeDraft({
-        ...(activeEditTankSectionDraft?.tankTargetRangeDraft ?? {}),
-      });
-    } else if (activeEditTankSection === 'temperature') {
-      setTankTargetTemperatureC(String(activeEditTankSectionDraft?.tankTargetTemperatureC ?? ''));
-      setTankAmbientTemperatureC(String(activeEditTankSectionDraft?.tankAmbientTemperatureC ?? ''));
-      setTankRoomTemperatureMode(
-        normalizeRoomTemperatureMode(activeEditTankSectionDraft?.tankRoomTemperatureMode)
-      );
-    }
-    setActiveEditTankSection(null);
-    setActiveEditTankSectionDraft(null);
-    setIsSingleSpeciesFishCatalogVisible(false);
-    setSingleSpeciesFishCatalogContext('default');
-  }, [
-    activeEditTankSection,
-    activeEditTankSectionDraft,
-    fishCatalog,
-    tankWaterProfile,
-  ]);
-
-  const editTankWaterProfileLabel = useMemo(
-    () =>
-      WATER_PROFILE_OPTIONS.find((item) => item.value === tankWaterProfile)?.label ?? 'Brak',
-    [tankWaterProfile]
-  );
-
-  const editTankRangesSummary = useMemo(() => {
-    const filledCount = WATER_TARGET_FIELDS.reduce((acc, field) => {
-      const hasMin = Boolean(String(tankTargetRangeDraft?.[`${field.key}Min`] ?? '').trim());
-      const hasMax = Boolean(String(tankTargetRangeDraft?.[`${field.key}Max`] ?? '').trim());
-      return hasMin || hasMax ? acc + 1 : acc;
-    }, 0);
-    return `${filledCount}/${WATER_TARGET_FIELDS.length} uzupelnionych`;
-  }, [tankTargetRangeDraft]);
-
-  const editTankTemperatureSummary = useMemo(() => {
-    const targetLabel = String(tankTargetTemperatureC ?? '').trim()
-      ? `${tankTargetTemperatureC} C`
-      : '-';
-    const modeLabel =
-      ROOM_TEMPERATURE_MODE_OPTIONS.find(
-        (item) => item.value === normalizeRoomTemperatureMode(tankRoomTemperatureMode)
-      )?.label ?? 'normalny';
-    return `${targetLabel}, pomieszczenie: ${modeLabel}`;
-  }, [tankRoomTemperatureMode, tankTargetTemperatureC]);
-
-  const editTankSections = useMemo(
-    () => [
-      { key: 'name', title: 'Nazwa', summary: tankName || '-' },
-      {
-        key: 'liters',
-        title: 'LitraĹĽ',
-        summary: String(tankLiters ?? '').trim() ? `${tankLiters} l` : '-',
-      },
-      {
-        key: 'substrate',
-        title: 'PodĹ‚oĹĽe',
-        summary: getSubstrateLabels(tankSubstrateTypes),
-      },
-      {
-        key: 'profile',
-        title: 'Profil',
-        summary: editTankWaterProfileLabel,
-      },
-      {
-        key: 'ranges',
-        title: 'Zakres parametrĂłw',
-        summary: editTankRangesSummary,
-      },
-      {
-        key: 'temperature',
-        title: 'Temperatura',
-        summary: editTankTemperatureSummary,
-      },
-    ],
-    [
-      editTankRangesSummary,
-      editTankTemperatureSummary,
-      editTankWaterProfileLabel,
-      tankLiters,
-      tankName,
-      tankSubstrateTypes,
-    ]
-  );
-
-  const renderEditTankSectionModal = () => {
-    if (!activeEditTankSection) {
-      return null;
-    }
-
-    const sectionTitle =
-      editTankSections.find((item) => item.key === activeEditTankSection)?.title ?? 'Edycja';
-    const renderSectionContent = () => {
-      if (activeEditTankSection === 'name') {
-        return (
-          <TextInput
-            placeholder={t('newTankNamePlaceholder')}
-            placeholderTextColor={themePlaceholder}
-            value={String(activeEditTankSectionDraft?.tankName ?? '')}
-            onChangeText={(value) =>
-              setActiveEditTankSectionDraft((prev) => ({
-                ...(prev ?? {}),
-                tankName: value,
-              }))
-            }
-            style={{
-              borderWidth: 1,
-              borderColor: themeInputBorder,
-              color: themeInputText,
-              padding: 10,
-              borderRadius: 8,
-              backgroundColor: themeInputBg,
-            }}
-          />
-        );
-      }
-
-      if (activeEditTankSection === 'liters') {
-        return (
-          <TextInput
-            placeholder={t('newTankLitersPlaceholder')}
-            placeholderTextColor={themePlaceholder}
-            value={String(activeEditTankSectionDraft?.tankLiters ?? '')}
-            onChangeText={(value) =>
-              setActiveEditTankSectionDraft((prev) => ({
-                ...(prev ?? {}),
-                tankLiters: value,
-              }))
-            }
-            keyboardType="numeric"
-            style={{
-              borderWidth: 1,
-              borderColor: themeInputBorder,
-              color: themeInputText,
-              padding: 10,
-              borderRadius: 8,
-              backgroundColor: themeInputBg,
-            }}
-          />
-        );
-      }
-
-      if (activeEditTankSection === 'substrate') {
-        const draftSubstrateTypes = normalizeSubstrateTypes(
-          activeEditTankSectionDraft?.tankSubstrateTypes
-        );
-        return (
-          <>
-            <Text style={{ color: themeTextSecondary, marginBottom: 8, fontSize: 12 }}>
-              MoĹĽesz zaznaczyc wiÄ™cej niĹĽ jedno podĹ‚oĹĽe.
-            </Text>
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-              {SUBSTRATE_OPTIONS.map((option) => (
-                <Pressable
-                  key={`edit-substrate-sheet-${option.value}`}
-                  onPress={() => {
-                    const normalized = normalizeSubstrateType(option.value);
-                    if (!normalized) {
-                      return;
-                    }
-                    setActiveEditTankSectionDraft((prev) => {
-                      const current = normalizeSubstrateTypes(prev?.tankSubstrateTypes);
-                      const next = current.includes(normalized)
-                        ? current.filter((item) => item !== normalized)
-                        : [...current, normalized];
-                      return {
-                        ...(prev ?? {}),
-                        tankSubstrateTypes: next,
-                      };
-                    });
-                  }}
-                  style={{
-                    borderWidth: 1,
-                    borderColor: draftSubstrateTypes.includes(option.value)
-                      ? themeAccent
-                      : themeBorderStrong,
-                    backgroundColor: draftSubstrateTypes.includes(option.value)
-                      ? '#102235'
-                      : isLightTheme
-                        ? '#ffffff'
-                        : '#111',
-                    borderRadius: 999,
-                    paddingVertical: 6,
-                    paddingHorizontal: 10,
-                  }}>
-                  <Text
-                    style={{
-                      color: draftSubstrateTypes.includes(option.value)
-                        ? 'white'
-                        : themeTextPrimary,
-                      fontSize: 12,
-                    }}>
-                    {option.labelKey ? t(option.labelKey) : option.label}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-          </>
-        );
-      }
-
-      if (activeEditTankSection === 'profile') {
-        const draftWaterProfile = normalizeWaterProfile(
-          activeEditTankSectionDraft?.tankWaterProfile || tankWaterProfile
-        );
-        const draftSingleSpeciesFishId = String(
-          activeEditTankSectionDraft?.tankSingleSpeciesFishId ?? ''
-        );
-        const draftSingleSpeciesFish =
-          draftSingleSpeciesFishId
-            ? fishCatalog.find((item) => item.id === draftSingleSpeciesFishId) ?? null
-            : null;
-        return (
-          <>
-            <Text style={{ color: themeTextSecondary, marginBottom: 8, fontSize: 12 }}>
-              Wybierz profil, ktory najlepiej opisuje docelowe warunki akwarium.
-            </Text>
-            <View
-              style={{
-                flexDirection: 'row',
-                flexWrap: 'wrap',
-                gap: 8,
-                marginBottom: 10,
-              }}>
-              {WATER_PROFILE_OPTIONS.map((option) => (
-                <Pressable
-                  key={`modal-edit-profile-water-profile-${option.value}`}
-                  onPress={() =>
-                    setActiveEditTankSectionDraft((prev) => ({
-                      ...(prev ?? {}),
-                      tankWaterProfile: option.value,
-                      ...(option.value === 'single_species'
-                        ? null
-                        : { tankSingleSpeciesFishId: '' }),
-                    }))
-                  }
-                  style={{
-                    borderWidth: 1,
-                    borderColor:
-                      draftWaterProfile === option.value
-                        ? themeAccent
-                        : themeBorderStrong,
-                    backgroundColor:
-                      draftWaterProfile === option.value
-                        ? '#102235'
-                        : isLightTheme
-                          ? '#ffffff'
-                          : '#111',
-                    borderRadius: 999,
-                    paddingVertical: 6,
-                    paddingHorizontal: 10,
-                  }}>
-                  <Text
-                    style={{
-                      color: draftWaterProfile === option.value ? 'white' : themeTextPrimary,
-                      fontSize: 12,
-                    }}>
-                    {option.label}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-            {draftWaterProfile === 'single_species' ? (
-              <View
-                style={{
-                  borderWidth: 1,
-                  borderColor: themeBorder,
-                  borderRadius: 10,
-                  padding: 8,
-                  marginBottom: 10,
-                  backgroundColor: themeCardBg,
-                }}>
-                <Text
-                  style={{
-                    color: themeTextPrimary,
-                    fontSize: 12,
-                    fontWeight: '700',
-                    marginBottom: 6,
-                  }}>
-                  Gatunek ryby (jednogatunkowe)
-                </Text>
-                <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
-                  {draftSingleSpeciesFish
-                    ? `Wybrano: ${getFishCatalogDisplayLabel(draftSingleSpeciesFish)}`
-                    : 'Wybierz gatunek z katalogu.'}
-                </Text>
-                <Pressable
-                  onPress={handleOpenSingleSpeciesFishCatalogForEditProfile}
-                  style={{
-                    borderWidth: 1,
-                    borderColor: themeInputBorder,
-                    borderRadius: 8,
-                    paddingVertical: 9,
-                    paddingHorizontal: 10,
-                    backgroundColor: themeInputBg,
-                  }}>
-                  <Text style={{ color: themeInputText, fontSize: 12, fontWeight: '700' }}>
-                    Wyszukaj gatunek
-                  </Text>
-                </Pressable>
-              </View>
-            ) : null}
-          </>
-        );
-      }
-
-      if (activeEditTankSection === 'ranges') {
-        const draftRanges = {
-          ...(activeEditTankSectionDraft?.tankTargetRangeDraft ?? {}),
-        };
-        return (
-          <>
-            <Text style={{ color: themeTextSecondary, marginBottom: 8, fontSize: 12 }}>
-              Uzupelnij minimalne i maksymalne zakresy dla parametrĂłw.
-            </Text>
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -4 }}>
-              {WATER_TARGET_FIELDS.map((field) => (
-                <View
-                  key={`modal-edit-ranges-target-${field.key}`}
-                  style={{
-                    width:
-                      windowWidth >= 980
-                        ? '33.3333%'
-                        : windowWidth >= 640
-                          ? '50%'
-                          : '100%',
-                    paddingHorizontal: 4,
-                    marginBottom: 8,
-                  }}>
-                  <View
-                    style={{
-                      borderWidth: 1,
-                      borderColor: themeBorder,
-                      borderRadius: 10,
-                      padding: 8,
-                      backgroundColor: themeCardBg,
-                    }}>
-                    <Text
-                      style={{
-                        color: themeTextPrimary,
-                        fontSize: 12,
-                        fontWeight: '700',
-                        marginBottom: 6,
-                      }}>
-                      {field.label} {field.unit ? `(${field.unit})` : ''}
-                    </Text>
-                    <View style={{ flexDirection: 'row', gap: 6 }}>
-                      <TextInput
-                        placeholder="min"
-                        placeholderTextColor={themePlaceholder}
-                        value={draftRanges[`${field.key}Min`] ?? ''}
-                        onChangeText={(value) =>
-                          setActiveEditTankSectionDraft((prev) => ({
-                            ...(prev ?? {}),
-                            tankTargetRangeDraft: {
-                              ...(prev?.tankTargetRangeDraft ?? {}),
-                              [`${field.key}Min`]: value,
-                            },
-                          }))
-                        }
-                        keyboardType="numeric"
-                        style={{
-                          flex: 1,
-                          borderWidth: 1,
-                          borderColor: themeInputBorder,
-                          color: themeInputText,
-                          paddingHorizontal: 8,
-                          paddingVertical: 8,
-                          borderRadius: 8,
-                          backgroundColor: themeInputBg,
-                        }}
-                      />
-                      <TextInput
-                        placeholder="max"
-                        placeholderTextColor={themePlaceholder}
-                        value={draftRanges[`${field.key}Max`] ?? ''}
-                        onChangeText={(value) =>
-                          setActiveEditTankSectionDraft((prev) => ({
-                            ...(prev ?? {}),
-                            tankTargetRangeDraft: {
-                              ...(prev?.tankTargetRangeDraft ?? {}),
-                              [`${field.key}Max`]: value,
-                            },
-                          }))
-                        }
-                        keyboardType="numeric"
-                        style={{
-                          flex: 1,
-                          borderWidth: 1,
-                          borderColor: themeInputBorder,
-                          color: themeInputText,
-                          paddingHorizontal: 8,
-                          paddingVertical: 8,
-                          borderRadius: 8,
-                          backgroundColor: themeInputBg,
-                        }}
-                      />
-                    </View>
-                  </View>
-                </View>
-              ))}
-            </View>
-          </>
-        );
-      }
-
-      if (activeEditTankSection === 'temperature') {
-        const draftRoomMode = normalizeRoomTemperatureMode(
-          activeEditTankSectionDraft?.tankRoomTemperatureMode
-        );
-        const modeHint =
-          draftRoomMode === 'cold'
-            ? '18 C'
-            : draftRoomMode === 'warm'
-              ? '22 C'
-              : draftRoomMode === 'very_warm'
-                ? '24 C'
-                : draftRoomMode === 'custom'
-                  ? 'Wlasna'
-                  : '20 C';
-
-        return (
-          <View
-            style={{
-              borderWidth: 1,
-              borderColor: themeBorder,
-              borderRadius: 12,
-              padding: 10,
-              marginBottom: 10,
-              backgroundColor: themeCardBgAlt,
-            }}>
-            <Text
-              style={{
-                color: themeTextPrimary,
-                marginBottom: 6,
-                fontSize: 13,
-                fontWeight: '700',
-              }}>
-              Temperatura i grzalka (zaawansowane)
-            </Text>
-            <Text
-              style={{
-                color: themeTextSecondary,
-                marginBottom: 8,
-                fontSize: 12,
-                lineHeight: 17,
-              }}>
-              Temperatura pomieszczenia jest opcjonalna. Jesli jej nie podasz, aplikacja przyjmie 20 C.
-            </Text>
-            <TextInput
-              placeholder="Temperatura docelowa wody (C), np. 25"
-              placeholderTextColor={themePlaceholder}
-              value={String(activeEditTankSectionDraft?.tankTargetTemperatureC ?? '')}
-              onChangeText={(value) =>
-                setActiveEditTankSectionDraft((prev) => ({
-                  ...(prev ?? {}),
-                  tankTargetTemperatureC: value,
-                }))
-              }
-              keyboardType="numeric"
-              style={{
-                borderWidth: 1,
-                borderColor: themeInputBorder,
-                color: themeInputText,
-                paddingHorizontal: 10,
-                paddingVertical: 9,
-                borderRadius: 8,
-                backgroundColor: themeInputBg,
-                marginBottom: 8,
-              }}
-            />
-            <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 6 }}>
-              Tryb temperatury pomieszczenia ({modeHint})
-            </Text>
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
-              {ROOM_TEMPERATURE_MODE_OPTIONS.map((option) => (
-                <Pressable
-                  key={`modal-edit-temperature-room-mode-${option.value}`}
-                  onPress={() =>
-                    setActiveEditTankSectionDraft((prev) => ({
-                      ...(prev ?? {}),
-                      tankRoomTemperatureMode: option.value,
-                    }))
-                  }
-                  style={{
-                    borderWidth: 1,
-                    borderColor:
-                      draftRoomMode === option.value
-                        ? themeAccent
-                        : themeBorderStrong,
-                    backgroundColor:
-                      draftRoomMode === option.value
-                        ? '#102235'
-                        : isLightTheme
-                          ? '#ffffff'
-                          : '#111',
-                    borderRadius: 999,
-                    paddingVertical: 6,
-                    paddingHorizontal: 10,
-                  }}>
-                  <Text
-                    style={{
-                      color: draftRoomMode === option.value ? 'white' : themeTextPrimary,
-                      fontSize: 11,
-                    }}>
-                    {option.label}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-            {draftRoomMode === 'custom' ? (
-              <TextInput
-                placeholder="Temperatura pomieszczenia (C), np. 20"
-                placeholderTextColor={themePlaceholder}
-                value={String(activeEditTankSectionDraft?.tankAmbientTemperatureC ?? '')}
-                onChangeText={(value) =>
-                  setActiveEditTankSectionDraft((prev) => ({
-                    ...(prev ?? {}),
-                    tankAmbientTemperatureC: value,
-                  }))
-                }
-                keyboardType="numeric"
-                style={{
-                  borderWidth: 1,
-                  borderColor: themeInputBorder,
-                  color: themeInputText,
-                  paddingHorizontal: 10,
-                  paddingVertical: 9,
-                  borderRadius: 8,
-                  backgroundColor: themeInputBg,
-                }}
-              />
-            ) : null}
-          </View>
-        );
-      }
-
-      return null;
-    };
-
-    return (
-      <View
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          zIndex: 120,
-          elevation: 24,
-          justifyContent: 'center',
-          backgroundColor: themeOverlay,
-        }}>
-        <Pressable onPress={handleCloseEditTankSection} style={{ flex: 1, width: '100%' }} />
-        <View
-          style={{
-            width: '100%',
-            maxWidth: 620,
-            alignSelf: 'center',
-            height: '86%',
-            marginBottom: Math.max(insets.bottom + 8, 16),
-            borderRadius: 18,
-            borderWidth: 1,
-            borderColor: themeBorder,
-            backgroundColor: themeCardBg,
-            overflow: 'hidden',
-          }}>
-          <View
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              borderBottomWidth: 1,
-              borderBottomColor: themeBorder,
-              paddingHorizontal: 14,
-              paddingVertical: 12,
-              backgroundColor: themeCardBgAlt,
-            }}>
-            <Text style={{ color: themeTextPrimary, fontSize: 16, fontWeight: '700', flex: 1 }}>
-              {sectionTitle}
-            </Text>
-            <Pressable
-              onPress={handleCloseEditTankSection}
-              style={{
-                width: 30,
-                height: 30,
-                borderRadius: 8,
-                borderWidth: 1,
-                borderColor: themeBorderStrong,
-                alignItems: 'center',
-                justifyContent: 'center',
-                backgroundColor: themeCardBg,
-              }}>
-              <Text style={{ color: themeTextPrimary, fontSize: 14, fontWeight: '700' }}>X</Text>
-            </Pressable>
-          </View>
-
-          <ScrollView
-            style={{ flex: 1 }}
-            keyboardShouldPersistTaps="handled"
-            keyboardDismissMode="on-drag"
-            contentContainerStyle={{
-              paddingHorizontal: 14,
-              paddingTop: 14,
-              paddingBottom: 14,
-              flexGrow: 1,
-            }}>
-            <View style={{ minHeight: 220 }}>
-              {renderSectionContent()}
-            </View>
-          </ScrollView>
-          <View
-            style={{
-              borderTopWidth: 1,
-              borderTopColor: themeBorder,
-              paddingHorizontal: 14,
-              paddingTop: 10,
-              paddingBottom: Math.max(insets.bottom + 12, 12),
-              backgroundColor: themeCardBg,
-            }}>
-            <Pressable
-              onPress={handleSaveEditTankSection}
-              style={{
-                borderWidth: 1,
-                borderColor: themeAccent,
-                borderRadius: 10,
-                paddingVertical: 11,
-                alignItems: 'center',
-                justifyContent: 'center',
-                backgroundColor: themeAccent,
-              }}>
-              <Text style={{ color: themeAccentOnStrong, fontWeight: '700' }}>
-                Zapisz
-              </Text>
-            </Pressable>
-          </View>
-        </View>
-      </View>
-    );
-  };
-
-  const renderCatalogAiContextCard = (scopeKey) => (
-    <View
-      style={{
-        borderWidth: 1,
-        borderColor: themeBorder,
-        borderRadius: 10,
-        padding: 12,
-        marginBottom: 10,
-        backgroundColor: themeCardBgAlt,
-      }}>
-      <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 13 }}>
-        AI - kontekst akwarium
-      </Text>
-      <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
-        Wybierz akwarium, opisz problem i opcjonalnie dodaj zdjÄ™cie do analizy.
-      </Text>
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
-        {tanks.map((tankItem) => {
-          const isSelected = String(catalogAiSelectedTank?.id ?? '') === String(tankItem?.id ?? '');
-          return (
-            <Pressable
-              key={`${scopeKey}-catalog-ai-tank-${tankItem.id}`}
-              onPress={() => setCatalogAiContextTankId(String(tankItem.id))}
-              style={{
-                borderWidth: 1,
-                borderColor: isSelected ? themeAccent : themeBorderStrong,
-                borderRadius: 999,
-                paddingVertical: 6,
-                paddingHorizontal: 10,
-                backgroundColor: isSelected ? themeAccentStrongBg : themeCardBg,
-              }}>
-              <Text style={{ color: isSelected ? themeAccentOnStrong : themeTextPrimary, fontSize: 12 }}>
-                {tankItem?.name ?? 'Akwarium'}
-              </Text>
-            </Pressable>
-          );
-        })}
-      </View>
-      <Pressable
-        onPress={() => handleHydrateCatalogAiContextFromTank(catalogAiSelectedTank?.id)}
-        disabled={catalogAiBusy}
-        style={{
-          marginTop: 8,
-          borderWidth: 1,
-          borderColor: themeAccent,
-          borderRadius: 8,
-          paddingVertical: 8,
-          backgroundColor: themeAccent,
-          opacity: catalogAiBusy ? 0.7 : 1,
-        }}>
-        <Text style={{ color: themeAccentOnStrong, textAlign: 'center', fontWeight: '700', fontSize: 12 }}>
-          {catalogAiBusy ? 'Pobieranie kontekstu...' : 'Pobierz parametry z wybranego akwarium'}
-        </Text>
-      </Pressable>
-      <TextInput
-        placeholder="Opisz problem/objawy (opcjonalnie)"
-        placeholderTextColor={themePlaceholder}
-        value={catalogAiProblemInput}
-        onChangeText={setCatalogAiProblemInput}
-        multiline
-        style={{
-          marginTop: 8,
-          borderWidth: 1,
-          borderColor: themeInputBorder,
-          borderRadius: 8,
-          padding: 10,
-          color: themeInputText,
-          backgroundColor: themeInputBg,
-          minHeight: 64,
-          textAlignVertical: 'top',
-        }}
-      />
-      <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
-        <Pressable
-          onPress={() => handlePickCatalogAiImage('gallery')}
-          disabled={catalogAiBusy}
-          style={{
-            flex: 1,
-            borderWidth: 1,
-            borderColor: themeBorderStrong,
-            borderRadius: 8,
-            paddingVertical: 8,
-            backgroundColor: themeCardBg,
-            opacity: catalogAiBusy ? 0.7 : 1,
-          }}>
-          <Text style={{ color: themeTextPrimary, textAlign: 'center', fontWeight: '700', fontSize: 12 }}>
-            Dodaj zdjÄ™cie (galeria)
-          </Text>
-        </Pressable>
-        <Pressable
-          onPress={() => handlePickCatalogAiImage('camera')}
-          disabled={catalogAiBusy}
-          style={{
-            flex: 1,
-            borderWidth: 1,
-            borderColor: themeBorderStrong,
-            borderRadius: 8,
-            paddingVertical: 8,
-            backgroundColor: themeCardBg,
-            opacity: catalogAiBusy ? 0.7 : 1,
-          }}>
-          <Text style={{ color: themeTextPrimary, textAlign: 'center', fontWeight: '700', fontSize: 12 }}>
-            ZrĂłb zdjÄ™cie (aparat)
-          </Text>
-        </Pressable>
-      </View>
-      {catalogAiSelectedImage?.uri ? (
-        <View style={{ marginTop: 8 }}>
-          <Image
-            source={{ uri: String(catalogAiSelectedImage.uri) }}
-            resizeMode="cover"
-            style={{
-              width: '100%',
-              height: 120,
-              borderRadius: 8,
-              borderWidth: 1,
-              borderColor: themeBorder,
-              backgroundColor: themeCardBg,
-            }}
-          />
-          <Pressable
-            onPress={() => setCatalogAiSelectedImage(null)}
-            style={{
-              marginTop: 6,
-              borderWidth: 1,
-              borderColor: themeBorderStrong,
-              borderRadius: 8,
-              paddingVertical: 7,
-              backgroundColor: themeCardBg,
-            }}>
-            <Text style={{ color: themeTextSecondary, textAlign: 'center', fontSize: 12 }}>
-              Usun zdjÄ™cie
-            </Text>
-          </Pressable>
-        </View>
-      ) : null}
-      {catalogAiContextSummary ? (
-        <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 8 }}>
-          {catalogAiContextSummary}
-        </Text>
-      ) : null}
-      {catalogAiError ? (
-        <Text style={{ color: themeWarningText, fontSize: 12, marginTop: 8 }}>
-          {catalogAiError}
-        </Text>
-      ) : null}
-    </View>
-  );
   const onboardingPanelModel = useMemo(
     () =>
       buildOnboardingPanelModel({
@@ -21605,6 +19691,28 @@ export default function HomeScreen() {
           .join(', ')
       : t('noDataCaps');
   const selectedTankLighting = getTankLightingSummary(selectedTank);
+  const selectedTankLightValue = normalizeLightIntensity(
+    selectedTankLighting.lightIntensity
+  );
+  const selectedTankLightOption = LIGHT_INTENSITY_OPTIONS.find(
+    (item) => item.value === selectedTankLightValue
+  );
+  const selectedTankLightLabel = selectedTankLighting.isDaylightOnly
+    ? t('lightDaylightOnly')
+    : selectedTankLighting.lightModelName ||
+      (selectedTankLightOption ? t(selectedTankLightOption.labelKey) : t('noDataCaps'));
+  const selectedTankLightLumensLabel =
+    Number.isFinite(Number(selectedTankLighting.lightLumens)) &&
+    Number(selectedTankLighting.lightLumens) > 0
+      ? `${Math.round(Number(selectedTankLighting.lightLumens))} lm${
+          Number.isFinite(Number(selectedTankLighting.lumensPerLiter)) &&
+          Number(selectedTankLighting.lumensPerLiter) > 0
+            ? ` (${Math.round(Number(selectedTankLighting.lumensPerLiter))} lm/l)`
+            : ''
+        }`
+      : selectedTankLighting.isDaylightOnly
+        ? t('lightDaylightOnly')
+        : t('noDataCaps');
   useEffect(() => {
     if (!selectedTankLockedByPlan) {
       return;
@@ -21626,39 +19734,12 @@ export default function HomeScreen() {
         : String(selectedTankLighting.lightHours)
     );
   }, [selectedTank?.id, selectedTankLighting.lightHours, setEquipmentLightHoursDraft]);
-  const selectedTankAquariumTypeValue = normalizeAquariumType(selectedTank?.aquariumType);
-  const selectedTankAquariumTypeLabel = (() => {
-    const option = AQUARIUM_TYPE_OPTIONS.find(
-      (item) => item.value === selectedTankAquariumTypeValue
-    );
-    return option ? (option.labelKey ? t(option.labelKey) : option.label) : t('noDataCaps');
-  })();
-  const selectedTankTemperatureLabel = (() => {
-    const targetValue = Number(selectedTank?.targetTemperatureC);
-    if (!Number.isFinite(targetValue)) {
-      return t('noDataCaps');
-    }
-    const roundedTarget = Math.round(targetValue * 10) / 10;
-    return `${roundedTarget} C`;
-  })();
-  const selectedTankHomeSummary = useMemo(
-    () =>
-      homeTankSummaries.find(
-        (item) => String(item?.tank?.id ?? '') === String(selectedTank?.id ?? '')
-      ) ?? null,
-    [homeTankSummaries, selectedTank?.id]
+  const selectedTankWaterProfileOption = WATER_PROFILE_OPTIONS.find(
+    (item) => item.value === selectedTankWaterProfile
   );
-  const selectedTankScoreValue = Math.round(
-    Number(selectedTankHomeSummary?.healthAssessment?.score ?? 0)
-  );
-  const selectedTankScoreLabel =
-    selectedTankScoreValue >= 85
-      ? t('homeScoreIdeal')
-      : selectedTankScoreValue >= 65
-        ? t('homeScoreStable')
-        : selectedTankScoreValue >= 50
-          ? t('homeScoreSurvivable')
-          : t('homeScoreCritical');
+  const selectedTankWaterProfileLabel = selectedTankWaterProfileOption
+    ? selectedTankWaterProfileOption.label
+    : t('noDataCaps');
   const selectedTankPlantFertilizationSummary = useMemo(
     () => summarizePlantFertilization(selectedTank?.plantFertilizationEntries),
     [selectedTank]
@@ -21890,8 +19971,8 @@ export default function HomeScreen() {
         let fitBadgeLabel = fitsTank ? 'Pasuje' : 'Sprawdz';
         let fitBadgeTone = fitsTank ? 'ok' : 'neutral';
         let fitMessage = fitsTank
-          ? 'Zakres litraĹĽu wyglada sensownie dla Twojego akwarium.'
-          : 'Model jest poza zalecanym zakresem litraĹĽu dla tego zbiornika.';
+          ? 'Zakres litrazu wyglada sensownie dla Twojego akwarium.'
+          : 'Model jest poza zalecanym zakresem litrazu dla tego zbiornika.';
 
         if (item.type === 'filter') {
           if (!Number.isFinite(selectedTankLiters) || selectedTankLiters <= 0) {
@@ -21899,23 +19980,23 @@ export default function HomeScreen() {
             fitBadgeLabel = 'Sprawdz';
             fitBadgeTone = 'neutral';
             fitMessage =
-              'Ustaw litraĹĽ akwarium, aby ocenic filtr na bazie realnego przepĹ‚ywu.';
+              'Ustaw litraz akwarium, aby ocenic filtr na bazie realnego przeplywu.';
           } else if (!Number.isFinite(Number(flowRatio))) {
             fitsTank = false;
             fitBadgeLabel = 'Sprawdz';
             fitBadgeTone = 'neutral';
             fitMessage =
-              'Brak danych o przepĹ‚ywie filtra. Uzupelnij model lub wydajnosc.';
+              'Brak danych o przeplywie filtra. Uzupelnij model lub wydajnosc.';
           } else if (Number(flowRatio) < 5) {
             fitsTank = false;
-            fitBadgeLabel = 'Za sĹ‚aby';
+            fitBadgeLabel = 'Za slaby';
             fitBadgeTone = Number(flowRatio) < 3 ? 'danger' : 'warning';
-            fitMessage = `Realny obrot ${flowRatio}x/h jest niski dla tego litraĹĽu (cel zwykle 5-10x/h).`;
+            fitMessage = `Realny obrot ${flowRatio}x/h jest niski dla tego litrazu (cel zwykle 5-10x/h).`;
           } else if (Number(flowRatio) > 10) {
             fitsTank = false;
             fitBadgeLabel = 'Za mocny';
             fitBadgeTone = Number(flowRatio) > 14 ? 'danger' : 'warning';
-            fitMessage = `Realny obrot ${flowRatio}x/h jest wysoki dla tego litraĹĽu (cel zwykle 5-10x/h).`;
+            fitMessage = `Realny obrot ${flowRatio}x/h jest wysoki dla tego litrazu (cel zwykle 5-10x/h).`;
           } else {
             fitsTank = true;
             fitBadgeLabel = 'Pasuje';
@@ -21936,19 +20017,19 @@ export default function HomeScreen() {
             fitsTank = false;
             fitBadgeLabel = 'Sprawdz';
             fitBadgeTone = 'neutral';
-            fitMessage = 'Ustaw litraĹĽ akwarium, aby ocenic grzalke na bazie wymaganej mocy.';
+            fitMessage = 'Ustaw litraz akwarium, aby ocenic grzalke na bazie wymaganej mocy.';
           } else if (heaterStatus === 'no_heater_needed') {
             fitsTank = true;
             fitBadgeLabel = 'Opcjonalna';
             fitBadgeTone = 'neutral';
             fitMessage =
-              'Przy obecnych zalozeniach grzalka nie jest konieczna do osiagniecia celu temperatury, ale moĹĽe stabilizowac wahania.';
+              'Przy obecnych zalozeniach grzalka nie jest konieczna do osiagniecia celu temperatury, ale moze stabilizowac wahania.';
           } else if (!Number.isFinite(heaterRequiredPowerW) || heaterRequiredPowerW <= 0) {
             fitsTank = false;
             fitBadgeLabel = 'Sprawdz';
             fitBadgeTone = 'neutral';
             fitMessage =
-              'Brak danych o wymaganej mocy. Uzupelnij temperature docelowa i litraĹĽ, aby ocenic grzalke.';
+              'Brak danych o wymaganej mocy. Uzupelnij temperature docelowa i litraz, aby ocenic grzalke.';
           } else if (!Number.isFinite(heaterPowerW) || heaterPowerW <= 0) {
             fitsTank = false;
             fitBadgeLabel = 'Sprawdz';
@@ -21967,7 +20048,7 @@ export default function HomeScreen() {
               fitsTank = false;
               fitBadgeLabel = 'Raczej slaba';
               fitBadgeTone = 'warning';
-              fitMessage = `Moc ${Math.round(heaterPowerW)} W moĹĽe byc za slaba wzgledem wymaganych ~${Math.round(
+              fitMessage = `Moc ${Math.round(heaterPowerW)} W moze byc za slaba wzgledem wymaganych ~${Math.round(
                 heaterRequiredPowerW
               )} W${heaterContextLabel}.`;
             } else if (heaterRatio <= 1.5) {
@@ -22188,9 +20269,14 @@ export default function HomeScreen() {
     activeAlgaeCases,
     historyIssueTimeline,
     parameterSuggestionItems,
+    fishSuggestionItems,
+    plantSuggestionItems,
+    equipmentSuggestionItems,
     hasPlantMeasurements,
     plantCareTips,
     currentParametersSectionSeverity,
+    fishTabSeverity,
+    plantTabSeverity,
     issuesTabSeverity,
   } = useReviewSectionInsights({
     tankDiseaseCases,
@@ -22218,7 +20304,6 @@ export default function HomeScreen() {
     incompatiblePlantCount,
     incompatiblePlantMajorCount,
     currentMeasurementDisplay,
-    currentAnalysis,
     currentMeasurementValueSourceMsByKey,
     selectedTankTargetRanges,
     measurements,
@@ -22239,377 +20324,46 @@ export default function HomeScreen() {
     getIssueCaseDisplayName,
     diseaseSeverityPriority: DISEASE_SEVERITY_PRIORITY,
   });
-  const selectedTankAcceptedProblemAcksOverlay = useMemo(() => {
-    const tankId = String(selectedTank?.id ?? '').trim();
-    if (!tankId) {
-      return {};
-    }
-    return normalizeAcceptedProblemAcks(acceptedProblemAcksOverlayByTankId[tankId]);
-  }, [acceptedProblemAcksOverlayByTankId, selectedTank?.id]);
-  const getAcceptedProblemScopeFingerprint = useCallback(
-    (scopeKey) => {
-      const normalizedScope = normalizeProblemTextForMatch(scopeKey);
-      if (!normalizedScope) {
-        return '';
-      }
-      if (!selectedTank) {
-        return '';
-      }
-
-      const stableList = (value, pickFields) =>
-        normalizeArray(value)
-          .map((item) => {
-            const source = normalizeObject(item);
-            const next = {};
-            pickFields.forEach((field) => {
-              next[field] = source[field] ?? null;
-            });
-            return next;
-          })
-          .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
-
-      if (normalizedScope === 'equipment') {
-        return JSON.stringify({
-          liters: selectedTank?.liters ?? null,
-          targetTemperatureC: selectedTank?.targetTemperatureC ?? null,
-          ambientTemperatureC: selectedTank?.ambientTemperatureC ?? null,
-          roomTemperatureMode: selectedTank?.roomTemperatureMode ?? null,
-          lightModelId: selectedTank?.lightModelId ?? null,
-          lightModelName: selectedTank?.lightModelName ?? null,
-          lightLumens: selectedTank?.lightLumens ?? null,
-          lightHours: selectedTank?.lightHours ?? null,
-          heaterEquipments: stableList(selectedTank?.heaterEquipments, [
-            'equipmentId',
-            'customName',
-            'type',
-            'powerW',
-          ]),
-          filterEquipments: stableList(selectedTank?.filterEquipments, [
-            'equipmentId',
-            'customName',
-            'type',
-            'flowLh',
-            'realFlowLh',
-          ]),
-        });
-      }
-
-      if (normalizedScope === 'parameters') {
-        return JSON.stringify({
-          currentMeasurementAtMs: toSafeTimestampMs(currentMeasurement?.createdAt),
-          temperature: currentMeasurement?.temperature ?? null,
-          ph: currentMeasurement?.ph ?? null,
-          kh: currentMeasurement?.kh ?? null,
-          gh: currentMeasurement?.gh ?? null,
-          no2: currentMeasurement?.no2 ?? null,
-          no3: currentMeasurement?.no3 ?? null,
-          nh3nh4: currentMeasurement?.nh3nh4 ?? null,
-          po4: currentMeasurement?.po4 ?? null,
-          fe: currentMeasurement?.fe ?? null,
-          targetRanges: normalizeObject(selectedTank?.targetRanges),
-        });
-      }
-
-      if (normalizedScope === 'fish') {
-        return JSON.stringify({
-          liters: selectedTank?.liters ?? null,
-          aquariumType: selectedTank?.aquariumType ?? null,
-          fishInTank: stableList(fishInTank, [
-            'id',
-            'name',
-            'commonName',
-            'quantity',
-            'source',
-            'sexRatio',
-          ]),
-        });
-      }
-
-      if (normalizedScope === 'plants') {
-        return JSON.stringify({
-          liters: selectedTank?.liters ?? null,
-          substrateTypes: normalizeArray(selectedTank?.substrateTypes).slice(0, 20),
-          lightHours: selectedTank?.lightHours ?? null,
-          lightLumens: selectedTank?.lightLumens ?? null,
-          plantsInTank: stableList(plantsInTank, [
-            'id',
-            'name',
-            'commonName',
-            'quantity',
-            'source',
-          ]),
-        });
-      }
-
-      if (normalizedScope === 'issues') {
-        return JSON.stringify({
-          activeCases: normalizeArray(tankDiseaseCases)
-            .filter((item) => String(item?.status ?? 'active').toLowerCase() !== 'resolved')
-            .map((item) => ({
-              id: item?.id ?? null,
-              caseType: item?.caseType ?? null,
-              severity: item?.severity ?? null,
-              status: item?.status ?? null,
-              updatedAtMs: toSafeTimestampMs(item?.updatedAt),
-            }))
-            .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
-        });
-      }
-
-      return JSON.stringify({
-        name: selectedTank?.name ?? null,
-        liters: selectedTank?.liters ?? null,
-      });
-    },
-    [currentMeasurement, fishInTank, plantsInTank, selectedTank, tankDiseaseCases]
-  );
-  const selectedTankAcceptedProblemAcks = useMemo(
-    () =>
-      mergeAcceptedProblemAcks(
-        getActiveAcceptedProblemAcksFromTank(selectedTank),
-        selectedTankAcceptedProblemAcksOverlay
-      ),
-    [selectedTank, selectedTankAcceptedProblemAcksOverlay]
-  );
-  const isSuggestionAccepted = useCallback(
-    (item) => {
-      const ackKey = normalizeProblemTextForMatch(buildProblemAcceptanceKeyFromAlert(item));
-      if (!ackKey) {
-        return false;
-      }
-      const acceptedEntry = selectedTankAcceptedProblemAcks[ackKey];
-      if (!acceptedEntry) {
-        return false;
-      }
-      return isAcceptedProblemEntryStillActiveForItem(
-        acceptedEntry,
-        item,
-        getAcceptedProblemScopeFingerprint
-      );
-    },
-    [getAcceptedProblemScopeFingerprint, selectedTankAcceptedProblemAcks]
-  );
-  const visibleParameterSuggestionItems = useMemo(
-    () => parameterSuggestionItems.filter((item) => !isSuggestionAccepted(item)),
-    [isSuggestionAccepted, parameterSuggestionItems]
-  );
-  const handleAcceptSuggestionProblem = useCallback(
-    async (item) => {
-      if (!selectedTank?.id || !user?.uid) {
-        return;
-      }
-      const acceptanceKey = normalizeProblemTextForMatch(buildProblemAcceptanceKeyFromAlert(item));
-      if (!acceptanceKey) {
-        return;
-      }
-      const existingAcceptedEntry = selectedTankAcceptedProblemAcks[acceptanceKey];
-      if (
-        existingAcceptedEntry &&
-        isAcceptedProblemEntryStillActiveForItem(
-          existingAcceptedEntry,
-          item,
-          getAcceptedProblemScopeFingerprint
-        )
-      ) {
-        return;
-      }
-
-      const writeNow = new Date();
-      const acceptedAtIso = writeNow.toISOString();
-      const scopeKey = resolveAcceptedProblemScopeKey(item);
-      const scopeFingerprint = getAcceptedProblemScopeFingerprint(scopeKey);
-      const nextAcks = {
-        ...selectedTankAcceptedProblemAcks,
-        [acceptanceKey]: buildAcceptedProblemEntry(
-          item,
-          acceptedAtIso,
-          acceptedAtIso,
-          scopeKey,
-          scopeFingerprint
-        ),
-      };
-
-      const payload = buildTankUpdatePayload(selectedTank, {
-        acceptedProblemAcks: nextAcks,
-      }, {
-        now: writeNow,
-      });
-
-      try {
-        setAcceptedProblemBusyKey(acceptanceKey);
-        await updateDocWithTelemetry(
-          'tanks',
-          doc(db, 'tanks', selectedTank.id),
-          payload,
-          {
-            userId: user.uid,
-            tankId: selectedTank.id,
-            source: 'tank_accept_problem',
-          }
-        );
-        setTanks((prev) =>
-          prev.map((tank) =>
-            tank.id === selectedTank.id ? { ...tank, acceptedProblemAcks: nextAcks } : tank
-          )
-        );
-        setAcceptedProblemAcksOverlayByTankId((prev) => ({
-          ...prev,
-          [selectedTank.id]: nextAcks,
-        }));
-      } catch (error) {
-        if (isFirestorePermissionDeniedError(error)) {
-          const legacyMaintenanceActionState = buildMaintenanceStateWithAcceptedProblemAcks(
-            selectedTank,
-            nextAcks
-          );
-          const legacyPayload = buildTankUpdatePayload(selectedTank, {
-            maintenanceActionState: legacyMaintenanceActionState,
-          }, {
-            now: writeNow,
-          });
-          try {
-            await updateDocWithTelemetry(
-              'tanks',
-              doc(db, 'tanks', selectedTank.id),
-              legacyPayload,
-              {
-                userId: user.uid,
-                tankId: selectedTank.id,
-                source: 'tank_accept_problem_legacy',
-              }
-            );
-            setTanks((prev) =>
-              prev.map((tank) =>
-                tank.id === selectedTank.id
-                  ? {
-                      ...tank,
-                      acceptedProblemAcks: nextAcks,
-                      maintenanceActionState: legacyMaintenanceActionState,
-                    }
-                  : tank
-              )
-            );
-            setAcceptedProblemAcksOverlayByTankId((prev) => ({
-              ...prev,
-              [selectedTank.id]: nextAcks,
-            }));
-            return;
-          } catch (legacyError) {
-            logTelemetryError(legacyError, {
-              source: 'tank_accept_problem_legacy',
-              diagnosticCode: 'TANK_ACCEPT_PROBLEM_LEGACY_FAILED',
-              userId: user.uid,
-              tankId: selectedTank.id,
-              acceptanceKey,
-            });
-          }
-        }
-        logTelemetryError(error, {
-          source: 'tank_accept_problem',
-          diagnosticCode: 'TANK_ACCEPT_PROBLEM_FAILED',
-          userId: user.uid,
-          tankId: selectedTank.id,
-          acceptanceKey,
-        });
-        alert('Nie udalo sie zapisac akceptacji problemu. Sprobuj ponownie.');
-      } finally {
-        setAcceptedProblemBusyKey('');
-      }
-    },
-    [
-      getAcceptedProblemScopeFingerprint,
-      selectedTank,
-      selectedTankAcceptedProblemAcks,
-      setTanks,
-      user?.uid,
-    ]
-  );
-  const handleConfirmAcceptSuggestionProblem = useCallback(
-    (item) => {
-      Alert.alert(
-        'Ukryć ten problem?',
-        'Ta akcja ukrywa problem tylko na tej liście. Nie rozwiązuje go i nie zmienia scoringu. Problem wróci po zmianach w tej samej sekcji, jeśli nadal występuje.',
-        [
-          {
-            text: 'Anuluj',
-            style: 'cancel',
-          },
-          {
-            text: 'Ukryj problem',
-            style: 'default',
-            onPress: () => {
-              handleAcceptSuggestionProblem(item);
-            },
-          },
-        ]
-      );
-    },
-    [handleAcceptSuggestionProblem]
-  );
-  const renderSuggestionItem = useCallback(
-    (item, idx, sectionKey) => {
-      const acceptanceKey = normalizeProblemTextForMatch(buildProblemAcceptanceKeyFromAlert(item));
-      const isBusy = acceptanceKey && acceptedProblemBusyKey === acceptanceKey;
-      const canAccept = Boolean(selectedTank?.id) && Boolean(acceptanceKey);
-      return (
-        <View
-          key={`suggestion-inline-${sectionKey}-${item.id ?? idx}`}
-          style={{
-            marginTop: 6,
-            borderWidth: 1,
-            borderColor: themeBorder,
-            borderRadius: 10,
-            padding: 8,
-            backgroundColor: themeCardBg,
-          }}>
-          <Text
-            style={{
-              color: item.severity === 'critical' ? themeDangerText : themeWarningText,
-              fontSize: 12,
-              lineHeight: 17,
-            }}>
-            - {item.text}
-          </Text>
-          {canAccept ? (
-            <Pressable
-              onPress={() => handleConfirmAcceptSuggestionProblem(item)}
-              disabled={Boolean(isBusy)}
-              style={{
-                marginTop: 6,
-                alignSelf: 'flex-start',
-                borderWidth: 1,
-                borderColor: themeBorderStrong,
-                borderRadius: 999,
-                paddingVertical: 5,
-                paddingHorizontal: 10,
-                backgroundColor: themeChipBg,
-                opacity: isBusy ? 0.7 : 1,
-              }}>
-              <Text style={{ color: themeChipText, fontSize: 11, fontWeight: '700' }}>
-                {isBusy ? 'Zapisywanie...' : 'Akceptuj problem'}
-              </Text>
-            </Pressable>
-          ) : null}
-        </View>
-      );
-    },
-    [
-      acceptedProblemBusyKey,
-      handleConfirmAcceptSuggestionProblem,
-      selectedTank?.id,
-      themeBorder,
-      themeBorderStrong,
-      themeCardBg,
-      themeChipBg,
-      themeChipText,
-      themeDangerText,
-      themeWarningText,
-    ]
-  );
   const onboardingSectionSeverity = onboardingPanelModel.sectionSeverity;
   const reviewTabSeverity = 'none';
-  const aiTabSeverity = hasAiAssistantAccess ? 'none' : 'warning';
-  const equipmentTabSeverity = 'none';
+  const equipmentTabSeverity = useMemo(() => {
+    if (!selectedTank || !hasEquipmentSaveAccess) {
+      return 'none';
+    }
+
+    const equipmentEntries = [
+      tankEquipmentAssessment.heater,
+      tankEquipmentAssessment.filter,
+    ];
+
+    if (
+      safeSome(
+        equipmentEntries,
+        (entry) => String(entry?.status ?? '').toLowerCase() === 'critical'
+      )
+    ) {
+      return 'critical';
+    }
+
+    if (
+      safeSome(
+        equipmentEntries,
+        (entry) => {
+          const status = String(entry?.status ?? '').toLowerCase();
+          return status === 'warning' || status === 'none';
+        }
+      )
+    ) {
+      return 'warning';
+    }
+
+    return 'none';
+  }, [
+    hasEquipmentSaveAccess,
+    selectedTank,
+    tankEquipmentAssessment.filter,
+    tankEquipmentAssessment.heater,
+  ]);
   const renderReviewSectionTitle = (title, severity = 'none') => (
     <View
       style={{
@@ -22624,7 +20378,7 @@ export default function HomeScreen() {
             fontSize: 16,
             fontWeight: '700',
           }}>
-          !
+          âš 
         </Text>
       ) : severity === 'critical' ? (
         <View
@@ -22671,7 +20425,7 @@ export default function HomeScreen() {
             fontSize: 13,
             fontWeight: '700',
           }}>
-          {'!'}
+          {'âš '}
         </Text>
       ) : severity === 'critical' ? (
         <View
@@ -23510,7 +21264,7 @@ export default function HomeScreen() {
                 }}>
                 {renderNavigationChipLabel(
                   t('sectionFish'),
-                  'none',
+                  fishTabSeverity,
                   activeSection === 'fish'
                 )}
               </Pressable>
@@ -23530,28 +21284,8 @@ export default function HomeScreen() {
                 }}>
                 {renderNavigationChipLabel(
                   t('sectionPlants'),
-                  'none',
+                  plantTabSeverity,
                   activeSection === 'plant'
-                )}
-              </Pressable>
-              <Pressable
-                onPress={() => setActiveSection('ai')}
-                style={{
-                  borderWidth: 1,
-                  borderColor:
-                    activeSection === 'ai' ? themeAccent : themeBorderStrong,
-                  backgroundColor:
-                    activeSection === 'ai'
-                      ? themeAccentStrongBg
-                      : themeChipBg,
-                  borderRadius: 999,
-                  paddingVertical: 8,
-                  paddingHorizontal: 12,
-                }}>
-                {renderNavigationChipLabel(
-                  'AI',
-                  aiTabSeverity,
-                  activeSection === 'ai'
                 )}
               </Pressable>
               {activeDiseaseCases.length +
@@ -23592,52 +21326,7 @@ export default function HomeScreen() {
               {homeLoading ? (
                 <Text style={{ color: themeTextSecondary, marginBottom: 14 }}>{t('loading')}</Text>
               ) : tanks.length === 0 ? (
-                <View
-                  style={{
-                    borderWidth: 1,
-                    borderColor: themeBorder,
-                    borderRadius: 10,
-                    padding: 12,
-                    marginBottom: 14,
-                    backgroundColor: themeCardBgAlt,
-                  }}>
-                  <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 16 }}>
-                    Dodaj pierwsze akwarium
-                  </Text>
-                  <Text style={{ color: themeTextSecondary, marginTop: 6, fontSize: 12 }}>
-                    W 2-3 minuty ustawisz podstawy, dostaniesz pierwszy status zbiornika i
-                    pierwsze konkretne zalecenia.
-                  </Text>
-                  {shouldShowFirstRunEntry ? (
-                    <Text style={{ color: themeTextSecondary, marginTop: 8, fontSize: 12 }}>
-                      Start obejmuje tylko minimum potrzebne na poczatek: nazwa, litraĹĽ, typ
-                      akwarium, start i temperature.
-                    </Text>
-                  ) : null}
-                  <Pressable
-                    onPress={handleStartAddTank}
-                    disabled={!canAddTank}
-                    style={{
-                      marginTop: 10,
-                      borderWidth: 1,
-                      borderColor: canAddTank ? themeAccent : themeWarningBg,
-                      borderRadius: 8,
-                      paddingVertical: 10,
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      backgroundColor: canAddTank ? themeAccentStrongBg : themeWarningSoftBg,
-                      opacity: canAddTank ? 1 : 0.7,
-                    }}>
-                    <Text style={{ color: themeTextPrimary, fontWeight: '700' }}>
-                      Dodaj pierwsze akwarium
-                    </Text>
-                  </Pressable>
-                  {!canAddTank ? (
-                    <Text style={{ color: themeWarningText, marginTop: 8, fontSize: 12 }}>
-                      {t('subscriptionTankLimitUpgradeHint')}
-                    </Text>
-                  ) : null}
-                </View>
+                <Text style={{ color: themeTextSecondary, marginBottom: 14 }}>{t('noTankAddFirst')}</Text>
               ) : (
                 homeTankSummaries.map((summary) => {
                   const scoreValue = summary.healthAssessment?.score ?? 0;
@@ -23781,9 +21470,15 @@ export default function HomeScreen() {
                           {criticalActionPlanLockMessage}
                         </Text>
                       ) : null}
-                      <Text style={{ color: themeTextSecondary, marginTop: 2, fontSize: 12 }}>
-                        {t('homeProblemsCount', { count: summary.issueCount })}
-                      </Text>
+                      {hasExtendedAlertAccess ? (
+                        <Text style={{ color: themeTextSecondary, marginTop: 2, fontSize: 12 }}>
+                          {t('homeProblemsCount', { count: summary.issueCount })}
+                        </Text>
+                      ) : (
+                        <Text style={{ color: themeTextSecondary, marginTop: 2, fontSize: 12 }}>
+                          {t('subscriptionAlertsSimple')}
+                        </Text>
+                      )}
                     </Pressable>
                   );
                 })
@@ -23867,7 +21562,7 @@ export default function HomeScreen() {
                     backgroundColor: themeCardBgAlt,
                   }}>
                   <Text style={{ color: themeTextPrimary, fontSize: 12 }}>
-                    W planie Free moĹĽesz aktywnie prowadzic 1 akwarium. PozostaĹ‚e akwaria sa bezpiecznie zapisane i odblokujÄ… sie po powrĂłie do Premium.
+                    W planie Free mozesz aktywnie prowadzic 1 akwarium. Pozostale akwaria sa bezpiecznie zapisane i odblokuja sie po powrocie do Premium.
                   </Text>
                 </View>
               ) : null}
@@ -23959,7 +21654,7 @@ export default function HomeScreen() {
                       lineHeight: 21,
                     }}>
                     Wybierz aktywne akwarium, a tutaj pokazemy jego profil
-                    oraz ustawieĹ„ia w bardziej czytelnym widoku.
+                    oraz ustawienia w bardziej czytelnym widoku.
                   </Text>
                 </View>
               ) : (
@@ -24021,7 +21716,7 @@ export default function HomeScreen() {
                           fontSize: 14,
                           lineHeight: 21,
                         }}>
-                        Szybki profil zbiornika i jego ustawieĹ„ w jednym miejscu.
+                        Szybki profil zbiornika i jego ustawien w jednym miejscu.
                       </Text>
                     </View>
 
@@ -24037,14 +21732,14 @@ export default function HomeScreen() {
                         alignItems: 'center',
                         justifyContent: 'center',
                       }}>
-                        <Text
-                          style={{
-                            color: themeAccentText,
-                            fontSize: 28,
-                            fontWeight: '800',
-                            lineHeight: 30,
-                          }}>
-                        {Math.max(0, selectedTankScoreValue)}
+                      <Text
+                        style={{
+                          color: themeAccentText,
+                          fontSize: 28,
+                          fontWeight: '800',
+                          lineHeight: 30,
+                        }}>
+                        {Math.max(0, Math.round(Number(selectedTank.liters) || 0))}
                       </Text>
                       <Text
                         style={{
@@ -24053,16 +21748,7 @@ export default function HomeScreen() {
                           fontWeight: '700',
                           marginTop: 4,
                         }}>
-                        scoring
-                      </Text>
-                      <Text
-                        style={{
-                          color: themeTextMuted,
-                          fontSize: 10,
-                          marginTop: 2,
-                          textAlign: 'center',
-                        }}>
-                        {selectedTankScoreLabel}
+                        litrow
                       </Text>
                     </View>
                   </View>
@@ -24076,20 +21762,12 @@ export default function HomeScreen() {
                     }}>
                     {[
                       {
-                        label: 'LitraĹĽ',
-                        value: formatLiters(selectedTank.liters),
-                      },
-                      {
                         label: t('aquariumTypeLabel'),
-                        value: selectedTankAquariumTypeLabel,
+                        value: selectedTankWaterProfileLabel,
                       },
                       {
                         label: t('substrate'),
                         value: selectedTankSubstrateLabel,
-                      },
-                      {
-                        label: 'Temperatura',
-                        value: selectedTankTemperatureLabel,
                       },
                     ].map((item) => (
                       <View
@@ -24153,20 +21831,86 @@ export default function HomeScreen() {
                   </Pressable>
                   {selectedTankLockedByPlan ? (
                     <Text style={{ color: themeWarningText, marginTop: 8, fontSize: 12 }}>
-                      To akwarium jest zablokowane przez plan i jest dostÄ™pne tylko do odczytu.
+                      To akwarium jest zablokowane przez plan i jest dostepne tylko do odczytu.
                     </Text>
                   ) : null}
                 </View>
               ))}
 
               {isEquipmentSection && (selectedTank ? (
-                <>
+                <View
+                  style={{
+                    borderWidth: 1,
+                    borderColor: themeBorder,
+                    borderRadius: 22,
+                    padding: 16,
+                    marginBottom: 18,
+                    backgroundColor: themeCardBg,
+                    shadowColor: '#000',
+                    shadowOpacity: isLightTheme ? 0.05 : 0,
+                    shadowRadius: 16,
+                    shadowOffset: { width: 0, height: 8 },
+                    elevation: isLightTheme ? 1 : 0,
+                  }}>
+                  <View
+                    style={{
+                      marginBottom: 4,
+                    }}>
+                    <Text
+                      style={{
+                        color: themeTextPrimary,
+                        fontWeight: '800',
+                        fontSize: 20,
+                        lineHeight: 24,
+                      }}>
+                      Sprzet i gotowosc
+                    </Text>
+                    <Text
+                      style={{
+                        color: themeTextSecondary,
+                        marginTop: 6,
+                        fontSize: 13,
+                        lineHeight: 19,
+                      }}>
+                      Szybko sprawdzisz, czy filtr, grzalka i oswietlenie sa przypisane oraz
+                      czy wymagaja poprawy.
+                    </Text>
+                  </View>
+                  {equipmentSuggestionItems.length > 0 ? (
+                    <View
+                      style={{
+                        borderWidth: 1,
+                        borderColor: themeBorder,
+                        borderRadius: 12,
+                        padding: 10,
+                        marginTop: 8,
+                        backgroundColor: themeCardBgAlt,
+                      }}>
+                      <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+                        Wymaga uwagi (Sprzet)
+                      </Text>
+                      {equipmentSuggestionItems.slice(0, 4).map((item, idx) => (
+                        <Text
+                          key={`equipment-suggestion-inline-${item.id ?? idx}`}
+                          style={{
+                            color:
+                              item.severity === 'critical'
+                                ? themeDangerText
+                                : themeWarningText,
+                            fontSize: 12,
+                            marginTop: 4,
+                          }}>
+                          - {item.text}
+                        </Text>
+                      ))}
+                    </View>
+                  ) : null}
                   {[
                     {
                       key: 'heater',
-                      title: 'Grza?ka',
+                      title: 'Grzalka',
                       data: tankEquipmentAssessment.heater,
-                      actionLabel: 'Dodaj grza?k?? z katalogu',
+                      actionLabel: 'Dodaj grzalke z katalogu',
                     },
                     {
                       key: 'filter',
@@ -24181,64 +21925,6 @@ export default function HomeScreen() {
                         ? [entry.data.equipment]
                         : [];
                     const assessmentStatus = entry.data.status;
-                    let summaryDetails = '';
-                    if (entry.key === 'heater') {
-                      const requiredPowerW = toFiniteNumber(entry.data?.analysis?.requiredHeaterPowerW);
-                      const totalPowerWFromAnalysis = toFiniteNumber(entry.data?.analysis?.totalHeaterPowerW);
-                      const totalPowerWFromEntries = equipmentItems.reduce((sum, item) => {
-                        const value = toFiniteNumber(item?.powerW);
-                        return value !== null && value > 0 ? sum + value : sum;
-                      }, 0);
-                      const totalPowerW =
-                        totalPowerWFromAnalysis !== null
-                          ? totalPowerWFromAnalysis
-                          : totalPowerWFromEntries > 0
-                            ? totalPowerWFromEntries
-                            : null;
-                      const requiredLabel =
-                        requiredPowerW !== null && requiredPowerW > 0
-                          ? `~${Math.round(requiredPowerW)} W`
-                          : '-';
-                      const actualLabel =
-                        totalPowerW !== null && totalPowerW > 0
-                          ? `${Math.round(totalPowerW)} W`
-                          : '-';
-                      summaryDetails = `Wymagane: ${requiredLabel} | Realnie: ${actualLabel}`;
-                    } else if (entry.key === 'filter') {
-                      const requiredFlowLh =
-                        Number.isFinite(selectedTankLiters) && selectedTankLiters > 0
-                          ? selectedTankLiters * 7
-                          : null;
-                      const totalRealFlowLh = equipmentItems.reduce((sum, item) => {
-                        const declaredFlowLh = toFiniteNumber(item?.flowLh);
-                        if (declaredFlowLh === null || declaredFlowLh <= 0) {
-                          return sum;
-                        }
-                        const effectiveFlowFactor = getFilterRealFlowFactor(
-                          normalizeFilterType(item?.filterType),
-                          item?.filterEfficiencyFactor
-                        );
-                        return sum + declaredFlowLh * effectiveFlowFactor;
-                      }, 0);
-                      const requiredLabel =
-                        requiredFlowLh !== null && requiredFlowLh > 0
-                          ? `~${Math.round(requiredFlowLh)} l/h`
-                          : '-';
-                      const actualLabel =
-                        totalRealFlowLh > 0
-                          ? `${Math.round(totalRealFlowLh)} l/h`
-                          : '-';
-                      summaryDetails = `Wymagane: ${requiredLabel} | Realnie: ${actualLabel}`;
-                    } else {
-                      summaryDetails = String(entry.data.details ?? '').trim();
-                    }
-                    const adviceText =
-                      String((entry.data.actions ?? [])[0] ?? '').trim() ||
-                      (assessmentStatus === 'ok'
-                        ? 'Wszystko wyglada dobrze, nic nie trzeba zmieniac.'
-                        : 'Sprawdz dobor sprzetu i ustawienia dla tej sekcji.');
-                    const adviceColor =
-                      assessmentStatus === 'ok' ? themeSuccessText : themeWarningText;
                     const statusColor =
                       assessmentStatus === 'ok'
                         ? isLightTheme
@@ -24269,6 +21955,24 @@ export default function HomeScreen() {
                         : assessmentStatus === 'none'
                           ? 'Brak'
                           : 'Do poprawy';
+                    const heaterAnalysis =
+                      entry.key === 'heater' &&
+                      entry?.data?.analysis &&
+                      typeof entry.data.analysis === 'object'
+                        ? entry.data.analysis
+                        : null;
+                    const heaterStatusLabelMap = {
+                      no_heater_needed: 'Brak potrzeby grzania',
+                      underpowered: 'Za slaba',
+                      slightly_underpowered: 'Lekko za slaba',
+                      adequate: 'Wystarczajaca',
+                      strong: 'Mocna',
+                      oversized: 'Przewymiarowana',
+                    };
+                    const heaterStatusLabel = heaterAnalysis
+                      ? heaterStatusLabelMap[String(heaterAnalysis.heaterStatus ?? '')] ??
+                        String(heaterAnalysis.heaterStatus ?? '')
+                      : '';
 
                     return (
                       <View
@@ -24278,7 +21982,7 @@ export default function HomeScreen() {
                           borderColor: themeBorder,
                           borderRadius: 18,
                           padding: 14,
-                          marginTop: entry.key === 'heater' ? 0 : 12,
+                          marginTop: 12,
                           backgroundColor: themeCardBgAlt,
                         }}>
                         <View
@@ -24325,16 +22029,71 @@ export default function HomeScreen() {
                                 fontSize: 13,
                                 lineHeight: 19,
                               }}>
-                              Szczegoly: {summaryDetails || 'Brak dodatkowych szczegolow.'}
+                              {entry.data.details}
+                            </Text>
+                            {heaterAnalysis ? (
+                              <View style={{ marginTop: 8 }}>
+                                <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
+                                  Suma mocy: {Math.round(Number(heaterAnalysis.totalHeaterPowerW) || 0)} W
+                                </Text>
+                                <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
+                                  Temperatura docelowa: {Math.round((Number(heaterAnalysis.targetTemperatureC) || 0) * 10) / 10} C
+                                </Text>
+                                <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
+                                  Przyjeta temperatura otoczenia: {Math.round((Number(heaterAnalysis.ambientTemperatureC) || 0) * 10) / 10} C
+                                </Text>
+                                <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
+                                  Roznica temperatur: {Math.round((Number(heaterAnalysis.temperatureDeltaC) || 0) * 10) / 10} C
+                                </Text>
+                                <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
+                                  Wymagana moc: ~{Math.round(Number(heaterAnalysis.requiredHeaterPowerW) || 0)} W
+                                </Text>
+                                <Text style={{ color: themeTextPrimary, fontSize: 12, fontWeight: '700' }}>
+                                  Status grzalki: {heaterStatusLabel || '-'}
+                                </Text>
+                                {Boolean(heaterAnalysis.usedDefaultAmbientTemperature) ? (
+                                  <Text style={{ color: themeWarningText, fontSize: 11, marginTop: 4 }}>
+                                    Przyjeto domyslna temperature pomieszczenia 20 C. W cieplejszym pomieszczeniu slabsza grzalka moze wystarczyc, a w chlodniejszym moze byc za slaba.
+                                  </Text>
+                                ) : null}
+                              </View>
+                            ) : null}
+                            {(entry.data.actions ?? []).slice(0, 2).map((actionText, idx) => (
+                              <Text
+                                key={`equipment-action-preview-${entry.key}-${idx}`}
+                                style={{ color: themeTextMuted, fontSize: 11, marginTop: 4 }}>
+                                - {actionText}
+                              </Text>
+                            ))}
+                          </View>
+                          <View
+                            style={{
+                              minWidth: 72,
+                              borderWidth: 1,
+                              borderColor: themeBorder,
+                              borderRadius: 14,
+                              paddingVertical: 10,
+                              paddingHorizontal: 10,
+                              backgroundColor: themeCardBg,
+                              alignItems: 'center',
+                            }}>
+                            <Text
+                              style={{
+                                color: themeTextPrimary,
+                                fontSize: 22,
+                                fontWeight: '800',
+                                lineHeight: 24,
+                              }}>
+                              {equipmentItems.length}
                             </Text>
                             <Text
                               style={{
-                                color: adviceColor,
-                                marginTop: 6,
-                                fontSize: 12,
-                                lineHeight: 18,
+                                color: themeTextMuted,
+                                fontSize: 11,
+                                fontWeight: '700',
+                                marginTop: 3,
                               }}>
-                              Porada: {adviceText}
+                              szt.
                             </Text>
                           </View>
                         </View>
@@ -24348,16 +22107,16 @@ export default function HomeScreen() {
                               padding: 12,
                               backgroundColor: themeCardBg,
                             }}>
-                              <Text
-                                style={{
-                                  color: themeTextSecondary,
-                                  fontSize: 13,
-                                  lineHeight: 19,
-                                }}>
-                                Brak przypisanego sprz?tu. Dodaj model z katalogu,
-                                aby aplikacja mog?a lepiej ocenia?? gotowo?? zbiornika.
-                              </Text>
-                            </View>
+                            <Text
+                              style={{
+                                color: themeTextSecondary,
+                                fontSize: 13,
+                                lineHeight: 19,
+                              }}>
+                              Brak przypisanego sprzetu. Dodaj model z katalogu,
+                              aby aplikacja mogla lepiej oceniac gotowosc zbiornika.
+                            </Text>
+                          </View>
                         ) : (
                           <View style={{ marginTop: 12, gap: 8 }}>
                             {equipmentItems.map((equipmentItem, itemIndex) => {
@@ -24370,16 +22129,38 @@ export default function HomeScreen() {
                               const resolvedFilterType =
                                 normalizeFilterType(equipmentItem?.filterType) ||
                                 normalizeFilterType(catalogEquipment?.filterType);
+                              const resolvedFilterFactor = getFilterRealFlowFactor(
+                                resolvedFilterType,
+                                equipmentItem?.effectiveFlowFactor ??
+                                  equipmentItem?.filterEfficiencyFactor ??
+                                  catalogEquipment?.effectiveFlowFactor ??
+                                  catalogEquipment?.filterEfficiencyFactor
+                              );
                               const equipmentDetails =
                                 entry.key === 'heater'
                                   ? Number.isFinite(Number(equipmentItem?.powerW))
                                     ? `${Math.round(Number(equipmentItem.powerW))} W`
                                     : ''
                                   : Number.isFinite(Number(equipmentItem?.flowLh))
-                                    ? `${Math.round(Number(equipmentItem.flowLh))} l/h`
-                                    : resolvedFilterType
-                                      ? getFilterTypeLabel(resolvedFilterType)
-                                      : '';
+                                  ? `${Math.round(Number(equipmentItem.flowLh))} l/h nominalnie${
+                                      resolvedFilterType
+                                        ? ` \u2022 ${getFilterTypeLabel(
+                                            resolvedFilterType
+                                          )} (${Math.round(
+                                            resolvedFilterFactor * 100
+                                          )}%) \u2022 ${Math.round(
+                                            Number(equipmentItem.flowLh) *
+                                              resolvedFilterFactor
+                                          )} l/h realnie`
+                                        : ''
+                                    }`
+                                  : resolvedFilterType
+                                  ? `${getFilterTypeLabel(
+                                      resolvedFilterType
+                                    )} (${Math.round(
+                                      resolvedFilterFactor * 100
+                                    )}%)`
+                                  : '';
 
                               return (
                                 <View
@@ -24439,7 +22220,7 @@ export default function HomeScreen() {
                                           fontSize: 11,
                                           fontWeight: '700',
                                         }}>
-                                        UsuĹ„
+                                        Usun
                                       </Text>
                                     </Pressable>
                                   ) : null}
@@ -24507,15 +22288,15 @@ export default function HomeScreen() {
                               : (isLightTheme ? '#e8f8eb' : '#143220'),
                             marginBottom: 10,
                           }}>
-                            <Text
-                              style={{
-                                color: selectedTankLighting.isDaylightOnly
-                                  ? themeChipText
-                                  : (isLightTheme ? '#1f7a3a' : '#9be7a3'),
-                                fontSize: 11,
-                                fontWeight: '700',
-                              }}>
-                            {selectedTankLighting.isDaylightOnly ? 'Brak' : 'Gotowe'}
+                          <Text
+                            style={{
+                              color: selectedTankLighting.isDaylightOnly
+                                ? themeChipText
+                                : (isLightTheme ? '#1f7a3a' : '#9be7a3'),
+                              fontSize: 11,
+                              fontWeight: '700',
+                            }}>
+                            {selectedTankLighting.isDaylightOnly ? 'Dzien' : 'Gotowe'}
                           </Text>
                         </View>
                         <Text
@@ -24525,7 +22306,7 @@ export default function HomeScreen() {
                             fontSize: 18,
                             lineHeight: 22,
                           }}>
-                          OĹ›wietlenie
+                          Oswietlenie
                         </Text>
                         <Text
                           style={{
@@ -24534,52 +22315,39 @@ export default function HomeScreen() {
                             fontSize: 13,
                             lineHeight: 19,
                           }}>
-                          Szczegoly:{' '}
-                          {(() => {
-                            const preferredMinLmL = toFiniteNumber(
-                              selectedTankPlantLightingRange?.min
-                            );
-                            const preferredMaxLmL = toFiniteNumber(
-                              selectedTankPlantLightingRange?.max
-                            );
-                            const requiredLabel =
-                              preferredMinLmL !== null &&
-                              preferredMaxLmL !== null &&
-                              preferredMinLmL > 0 &&
-                              preferredMaxLmL >= preferredMinLmL
-                                ? `${Math.round(preferredMinLmL)}-${Math.round(preferredMaxLmL)} lm/l`
-                                : '-';
-                            const currentLmL = toFiniteNumber(selectedTankLighting.lumensPerLiter);
-                            const currentLumens = toFiniteNumber(selectedTankLighting.lightLumens);
-                            const actualLabel = selectedTankLighting.isDaylightOnly
-                              ? 'brak lampy'
-                              : currentLmL !== null && currentLmL > 0
-                                ? `${Math.round(currentLmL * 10) / 10} lm/l${
-                                    currentLumens !== null && currentLumens > 0
-                                      ? ` (${Math.round(currentLumens)} lm)`
-                                      : ''
-                                  }`
-                                : '-';
-                            return `Wymagane: ${requiredLabel} | Realnie: ${actualLabel}`;
-                          })()}
+                          {selectedTankLighting.isDaylightOnly
+                            ? 'Brak lampy - przyjeto oswietlenie dzienne.'
+                            : `${selectedTankLightLabel}. ${selectedTankLightLumensLabel}.`}
+                        </Text>
+                      </View>
+                      <View
+                        style={{
+                          minWidth: 72,
+                          borderWidth: 1,
+                          borderColor: themeBorder,
+                          borderRadius: 14,
+                          paddingVertical: 10,
+                          paddingHorizontal: 10,
+                          backgroundColor: themeCardBg,
+                          alignItems: 'center',
+                        }}>
+                        <Text
+                          style={{
+                            color: themeTextPrimary,
+                            fontSize: 22,
+                            fontWeight: '800',
+                            lineHeight: 24,
+                          }}>
+                          {selectedTankLighting.isDaylightOnly ? 0 : 1}
                         </Text>
                         <Text
                           style={{
-                            color:
-                              selectedTankLighting.isDaylightOnly ||
-                              !Number.isFinite(Number(selectedTank?.lightHours))
-                                ? themeWarningText
-                                : themeSuccessText,
-                            marginTop: 6,
-                            fontSize: 12,
-                            lineHeight: 18,
+                            color: themeTextMuted,
+                            fontSize: 11,
+                            fontWeight: '700',
+                            marginTop: 3,
                           }}>
-                          Porada:{' '}
-                          {selectedTankLighting.isDaylightOnly
-                            ? 'Dodaj lampe z katalogu, aby poprawic kontrole oswietlenia.'
-                            : !Number.isFinite(Number(selectedTank?.lightHours))
-                              ? 'Ustaw liczbe godzin swiecenia i zapisz.'
-                              : 'Wszystko wyglada dobrze, nic nie trzeba zmieniac.'}
+                          szt.
                         </Text>
                       </View>
                     </View>
@@ -24664,8 +22432,8 @@ export default function HomeScreen() {
                               fontSize: 13,
                             }}>
                             {selectedTankLighting.isDaylightOnly
-                              ? 'Dodaj lamp?? z katalogu'
-                              : 'Zmie?? lamp?'}
+                              ? 'Dodaj lampe z katalogu'
+                              : 'Zmien lampe'}
                           </Text>
                         </Pressable>
                         {!selectedTankLighting.isDaylightOnly ? (
@@ -24688,14 +22456,14 @@ export default function HomeScreen() {
                                 fontWeight: '700',
                                 fontSize: 13,
                               }}>
-                              Ustaw tylko ?wiat?o dzienne
+                              Ustaw tylko swiatlo dzienne
                             </Text>
                           </Pressable>
                         ) : null}
                       </View>
                     ) : null}
                   </View>
-                </>
+                </View>
               ) : (
                 <View
                   style={{
@@ -24747,7 +22515,7 @@ export default function HomeScreen() {
                     fontSize: 14,
                     lineHeight: 21,
                   }}>
-                  Wybierz aktywne akwarium, aby zobaczy?? przypisany sprz?t.
+                  Wybierz aktywne akwarium, aby zobaczyc przypisany sprzet.
                 </Text>
               </View>
               ))}
@@ -24914,7 +22682,6 @@ export default function HomeScreen() {
               style={{
                 marginBottom: 18,
               }}>
-              {renderCatalogAiContextCard('plant-catalog')}
               <View
                 style={{
                   borderWidth: 1,
@@ -24947,7 +22714,6 @@ export default function HomeScreen() {
                 ) : (
                   menuVisiblePlantCatalog.map((plant) => {
                     const isExpanded = expandedPlantCatalogId === plant.id;
-                    const plantCatalogAiResultKey = `plant_catalog_${plant.id}`;
 
                     return (
                       <View
@@ -25036,89 +22802,13 @@ export default function HomeScreen() {
                               {formatRange(plant.tempMin, plant.tempMax, 'C')}
                             </Text>
                             <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
-                              Minimalny litraĹĽ: {Math.max(0, Math.round(Number(plant.minLiters) || 0))} l
+                              Minimalny litraz: {Math.max(0, Math.round(Number(plant.minLiters) || 0))} l
                             </Text>
                             {!plant.notes ? null : (
                               <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 6 }}>
                                 {plant.notes}
                               </Text>
                             )}
-                            <Pressable
-                              onPress={() =>
-                                runCatalogAiChat({
-                                  resultKey: plantCatalogAiResultKey,
-                                  question: `Ocen, czy roslina "${plant.commonName ?? plant.name ?? 'Roslina'}" pasuje do wybranego akwarium i podaj plan wdrozenia.`,
-                                  contextDetails: [
-                                    `Roslina: ${plant.commonName ?? plant.name ?? ''} (${plant.latinName ?? ''})`,
-                                    `Zakres pH: ${formatRange(plant.phMin, plant.phMax)}`,
-                                    `Zakres GH: ${formatRange(plant.ghMin, plant.ghMax)}`,
-                                    `Zakres temperatury: ${formatRange(plant.tempMin, plant.tempMax, 'C')}`,
-                                    `Minimalny litraĹĽ: ${Math.max(0, Math.round(Number(plant.minLiters) || 0))} l`,
-                                  ]
-                                    .filter(Boolean)
-                                    .join('. '),
-                                  tankId: catalogAiSelectedTank?.id ?? null,
-                                })
-                              }
-                              disabled={catalogAiBusy}
-                              style={{
-                                borderWidth: 1,
-                                borderColor: themeBorderStrong,
-                                borderRadius: 8,
-                                paddingVertical: 8,
-                                paddingHorizontal: 10,
-                                marginTop: 10,
-                                backgroundColor: themeCardBg,
-                                opacity: catalogAiBusy ? 0.7 : 1,
-                              }}>
-                              <Text
-                                style={{
-                                  color: themeTextPrimary,
-                                  textAlign: 'center',
-                                  fontWeight: '700',
-                                  fontSize: 12,
-                                }}>
-                                {catalogAiBusy ? 'AI analizuje...' : 'Zapytaj AI o te rosline'}
-                              </Text>
-                            </Pressable>
-                            <Pressable
-                              onPress={() =>
-                                runCatalogAiVision({
-                                  resultKey: plantCatalogAiResultKey,
-                                  question: `Przeanalizuj zdjÄ™cie pod katem rosliny "${plant.commonName ?? plant.name ?? 'Roslina'}" i wskaz ryzyka oraz plan dziaĹ‚ania.`,
-                                  contextDetails: [
-                                    `Roslina: ${plant.commonName ?? plant.name ?? ''} (${plant.latinName ?? ''})`,
-                                    `Zakres pH: ${formatRange(plant.phMin, plant.phMax)}`,
-                                    `Zakres GH: ${formatRange(plant.ghMin, plant.ghMax)}`,
-                                    `Zakres temperatury: ${formatRange(plant.tempMin, plant.tempMax, 'C')}`,
-                                  ]
-                                    .filter(Boolean)
-                                    .join('. '),
-                                  tankId: catalogAiSelectedTank?.id ?? null,
-                                })
-                              }
-                              disabled={catalogAiBusy}
-                              style={{
-                                borderWidth: 1,
-                                borderColor: themeBorderStrong,
-                                borderRadius: 8,
-                                paddingVertical: 8,
-                                paddingHorizontal: 10,
-                                marginTop: 8,
-                                backgroundColor: themeCardBg,
-                                opacity: catalogAiBusy ? 0.7 : 1,
-                              }}>
-                              <Text
-                                style={{
-                                  color: themeTextPrimary,
-                                  textAlign: 'center',
-                                  fontWeight: '700',
-                                  fontSize: 12,
-                                }}>
-                                {catalogAiBusy ? 'AI analizuje...' : 'Analizuj zdjÄ™cie dla tej rosliny'}
-                              </Text>
-                            </Pressable>
-                            {renderCatalogAiResultCard(plantCatalogAiResultKey)}
                             <Pressable
                               onPress={() => handleAddCatalogPlantToAquarium(plant)}
                               disabled={stockBusy}
@@ -25210,8 +22900,6 @@ export default function HomeScreen() {
                                   ? themeSuccessText
                                   : stockingCompatibility.overallStatus === 'caution'
                                     ? themeWarningText
-                                    : stockingCompatibility.overallStatus === 'unknown'
-                                      ? themeTextSecondary
                                     : themeDangerText,
                               fontSize: 12,
                               fontWeight: '700',
@@ -25220,25 +22908,7 @@ export default function HomeScreen() {
                             Status: {stockingCompatibility.overallUiStatus}
                           </Text>
                         </View>
-                        <Pressable
-                          onPress={() => {
-                            const scoreValue = Number(stockingCompatibility?.score);
-                            const label = getStockingScoreScaleLabel(scoreValue);
-                            Alert.alert(
-                              'Skala oceny obsady',
-                              [
-                                Number.isFinite(scoreValue)
-                                  ? `Aktualnie: ${Math.round(scoreValue)}/100 - ${label}`
-                                  : `Aktualnie: Brak danych`,
-                                '',
-                                '85-100: bardzo dobra obsada',
-                                '70-84: dobra, drobne uwagi',
-                                '55-69: srednia, wymaga korekt',
-                                '40-54: problematyczna',
-                                '0-39: niezalecana / niezgodna',
-                              ].join('\n')
-                            );
-                          }}
+                        <View
                           style={{
                             borderWidth: 1,
                             borderColor: themeBorder,
@@ -25253,7 +22923,40 @@ export default function HomeScreen() {
                           <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 18 }}>
                             {stockingCompatibility.score}/100
                           </Text>
-                        </Pressable>
+                        </View>
+                      </View>
+
+                      <View
+                        style={{
+                          marginTop: 10,
+                          borderWidth: 1,
+                          borderColor: themeBorder,
+                          borderRadius: 10,
+                          padding: 10,
+                          backgroundColor: themeCardBg,
+                        }}>
+                        {(stockingCompatibility.warnings ?? []).length === 0 ? (
+                          <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
+                            Brak istotnych sygnalow ryzyka. Nadal obserwuj zachowanie ryb po zmianach obsady.
+                          </Text>
+                        ) : (
+                          <>
+                            {(stockingCompatibility.warnings ?? []).slice(0, 2).map((warning, idx) => (
+                              <Text
+                                key={`stocking-warning-${idx}`}
+                                style={{ color: themeTextSecondary, fontSize: 12, marginTop: idx === 0 ? 0 : 6 }}>
+                                - {warning}
+                              </Text>
+                            ))}
+                            {(stockingCompatibility.recommendations ?? []).slice(0, 1).map((recommendation, idx) => (
+                              <Text
+                                key={`stocking-recommendation-${idx}`}
+                                style={{ color: themeTextPrimary, fontSize: 12, marginTop: 8, fontWeight: '700' }}>
+                                Rekomendacja: {recommendation}
+                              </Text>
+                            ))}
+                          </>
+                        )}
                       </View>
 
                     </View>
@@ -25267,7 +22970,7 @@ export default function HomeScreen() {
                         backgroundColor: themeCardBgAlt,
                       }}>
                       <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 14 }}>
-                        Ocena szczegĂłĹ‚owa obsady
+                        Ocena szczegolowa obsady
                       </Text>
                       <View style={{ marginTop: 8 }}>
                         {stockingCompatibilitySections.map((section) => (
@@ -25291,20 +22994,7 @@ export default function HomeScreen() {
                                 justifyContent: 'space-between',
                                 gap: 8,
                               }}>
-                              <Text
-                                style={{
-                                  color:
-                                    String(section?.data?.uiStatus ?? '').toLowerCase() ===
-                                      'niezgodne'
-                                      ? themeDangerText
-                                      : ['ryzykowne', 'uwaga'].includes(
-                                            String(section?.data?.uiStatus ?? '').toLowerCase()
-                                          )
-                                        ? themeWarningText
-                                        : themeSuccessText,
-                                  fontSize: 12,
-                                  fontWeight: '700',
-                                }}>
+                              <Text style={{ color: themeTextPrimary, fontSize: 12, fontWeight: '700' }}>
                                 {section.label}: {section.data.uiStatus}
                               </Text>
                               <Text style={{ color: themeTextSecondary, fontSize: 12, fontWeight: '700' }}>
@@ -25381,6 +23071,36 @@ export default function HomeScreen() {
                         </View>
                       </View>
 
+                      {fishSuggestionItems.length > 0 ? (
+                        <View
+                          style={{
+                            borderWidth: 1,
+                            borderColor: themeBorder,
+                            borderRadius: 8,
+                            padding: 8,
+                            marginTop: 8,
+                            backgroundColor: themeCardBg,
+                          }}>
+                          <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+                            Wymaga uwagi (Ryby)
+                          </Text>
+                          {fishSuggestionItems.slice(0, 4).map((item, idx) => (
+                            <Text
+                              key={`fish-suggestion-inline-${item.id ?? idx}`}
+                              style={{
+                                color:
+                                  item.severity === 'critical'
+                                    ? themeDangerText
+                                    : themeWarningText,
+                                fontSize: 12,
+                                marginTop: 4,
+                              }}>
+                              - {item.text}
+                            </Text>
+                          ))}
+                        </View>
+                      ) : null}
+
                       {stockLoading ? (
                         <Text style={{ color: themeTextSecondary, marginTop: 8 }}>
                           {t('loadingStock')}
@@ -25396,6 +23116,10 @@ export default function HomeScreen() {
                             const itemDraft =
                               fishQuantityDrafts[item.id] ?? String(itemQuantity);
                             const isExpanded = editingFishItemId === item.id;
+                            const itemWarnings = fishWarningsByItemId.get(item.id) ?? [];
+                            const hasCriticalWarning = safeSome(itemWarnings,
+                              (warningItem) => warningItem.severity === 'critical'
+                            );
 
                             return (
                               <View
@@ -25415,6 +23139,34 @@ export default function HomeScreen() {
                                     alignItems: 'center',
                                     gap: 8,
                                   }}>
+                                  {itemWarnings.length > 0 ? (
+                                    <View
+                                      style={{
+                                        width: 24,
+                                        height: 24,
+                                        borderRadius: 999,
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        borderWidth: 1,
+                                        borderColor: hasCriticalWarning
+                                          ? themeDanger
+                                          : themeWarningBg,
+                                        backgroundColor: hasCriticalWarning
+                                          ? themeDangerSoftBg
+                                          : themeWarningSoftBg,
+                                      }}>
+                                      <Text
+                                        style={{
+                                          color: hasCriticalWarning
+                                            ? themeDangerText
+                                            : themeWarningText,
+                                          fontWeight: '700',
+                                          fontSize: 13,
+                                        }}>
+                                        !
+                                      </Text>
+                                    </View>
+                                  ) : null}
                                   <Pressable
                                     onPress={() => {
                                       setFishQuantityDrafts((prev) => ({
@@ -25557,6 +23309,37 @@ export default function HomeScreen() {
                                       {t('setZeroToRemoveFish')}
                                     </Text>
 
+                                    {itemWarnings.length > 0 ? (
+                                      <View
+                                        style={{
+                                          marginTop: 8,
+                                          borderWidth: 1,
+                                          borderColor: hasCriticalWarning
+                                            ? themeDanger
+                                            : themeWarningBg,
+                                          borderRadius: 8,
+                                          padding: 8,
+                                          backgroundColor: hasCriticalWarning
+                                            ? themeDangerSoftBg
+                                            : themeWarningSoftBg,
+                                        }}>
+                                        {itemWarnings.map((warningItem, warningIndex) => (
+                                          <Text
+                                            key={`fish-warning-${item.id}-${warningIndex}`}
+                                            style={{
+                                              color: hasCriticalWarning
+                                                ? themeDangerText
+                                                : themeWarningText,
+                                              fontSize: 12,
+                                              lineHeight: 17,
+                                              marginTop: warningIndex === 0 ? 0 : 3,
+                                            }}>
+                                            - {warningItem.text}
+                                          </Text>
+                                        ))}
+                                      </View>
+                                    ) : null}
+
                                     <Pressable
                                       onPress={async () => {
                                         const ok = await handleUpdateFishQuantity(item.id);
@@ -25607,8 +23390,8 @@ export default function HomeScreen() {
                       {plantCareTips.length === 0 ? (
                         <Text style={{ color: themeTextSecondary, marginTop: 6, fontSize: 12 }}>
                           {hasPlantMeasurements
-                            ? 'Brak pilnych wskazowek nawozenia/CO2 na podstawie aktualnych pomiarĂłw.'
-                            : 'Brak pomiarĂłw. Dodaj pierwszy pomiar, aby uruchomic analizÄ™ skladnikow i CO2.'}
+                            ? 'Brak pilnych wskazowek nawozenia/CO2 na podstawie aktualnych pomiarow.'
+                            : 'Brak pomiarow. Dodaj pierwszy pomiar, aby uruchomic analize skladnikow i CO2.'}
                         </Text>
                       ) : (
                         plantCareTips.map((tip, tipIndex) => (
@@ -25630,7 +23413,9 @@ export default function HomeScreen() {
                         backgroundColor: themeCardBgAlt,
                       }}>
                       <Pressable
-                        onPress={() => setIsPlantFertilizationExpanded(true)}
+                        onPress={() =>
+                          setIsPlantFertilizationExpanded((prev) => !prev)
+                        }
                         style={{
                           flexDirection: 'row',
                           alignItems: 'center',
@@ -25641,85 +23426,11 @@ export default function HomeScreen() {
                           {t('plantFertilizationSectionTitle')}
                         </Text>
                         <Text style={{ color: themeTextSecondary, fontWeight: '700' }}>
-                          {t('expandSection')}
+                          {isPlantFertilizationExpanded ? t('collapseSection') : t('expandSection')}
                         </Text>
                       </Pressable>
 
-                      <View
-                        style={{
-                          flexDirection: 'row',
-                          flexWrap: 'wrap',
-                          gap: 8,
-                          marginTop: 8,
-                        }}>
-                        <View
-                          style={{
-                            borderWidth: 1,
-                            borderColor: themeBorder,
-                            borderRadius: 999,
-                            paddingVertical: 5,
-                            paddingHorizontal: 10,
-                            backgroundColor: themeCardBg,
-                          }}>
-                          <Text style={{ color: themeTextPrimary, fontSize: 12, fontWeight: '700' }}>
-                            {t('plantFertilizationRootTabsActive', {
-                              count: selectedTankPlantFertilizationSummary.rootTabsActiveCount,
-                            })}
-                          </Text>
-                        </View>
-                        <View
-                          style={{
-                            borderWidth: 1,
-                            borderColor:
-                              selectedTankPlantFertilizationSummary.rootTabsDueSoonCount > 0
-                                ? themeWarningBg
-                                : themeBorder,
-                            borderRadius: 999,
-                            paddingVertical: 5,
-                            paddingHorizontal: 10,
-                            backgroundColor:
-                              selectedTankPlantFertilizationSummary.rootTabsDueSoonCount > 0
-                                ? themeWarningSoftBg
-                                : themeCardBg,
-                          }}>
-                          <Text
-                            style={{
-                              color:
-                                selectedTankPlantFertilizationSummary.rootTabsDueSoonCount > 0
-                                  ? themeWarningText
-                                  : themeTextPrimary,
-                              fontSize: 12,
-                              fontWeight: '700',
-                            }}>
-                            {t('plantFertilizationRootTabsDueSoon', {
-                              count: selectedTankPlantFertilizationSummary.rootTabsDueSoonCount,
-                            })}
-                          </Text>
-                        </View>
-                      </View>
-
-                      <BottomSheetModal
-                        visible={isPlantFertilizationExpanded}
-                        onClose={() => {
-                          setIsPlantFertilizationExpanded(false);
-                          setIsPlantFertilizationAddFormVisible(false);
-                          setEditingPlantFertilizationEntryId(null);
-                        }}
-                        title={t('plantFertilizationSectionTitle')}
-                        themeCardBg={themeCardBg}
-                        themeBorder={themeBorder}
-                        themeTextPrimary={themeTextPrimary}
-                        themeCardBgAlt={themeCardBgAlt}
-                        themeOverlay={themeOverlay}
-                        themeDragHandle={themeDragHandle}
-                        isLightTheme={isLightTheme}
-                        maxWidth={isLargeScreen ? 980 : 760}
-                        keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}>
-                        <ScrollView
-                          style={{ flex: 1 }}
-                          keyboardShouldPersistTaps="handled"
-                          keyboardDismissMode="on-drag"
-                          contentContainerStyle={{ padding: 16, paddingBottom: 24 }}>
+                      {!isPlantFertilizationExpanded ? null : (
                         <>
                           <Text
                             style={{
@@ -26168,8 +23879,7 @@ export default function HomeScreen() {
                             </View>
                           ) : null}
                         </>
-                        </ScrollView>
-                      </BottomSheetModal>
+                      )}
                     </View>
 
                     <View
@@ -26221,6 +23931,36 @@ export default function HomeScreen() {
                           </Pressable>
                         </View>
                       </View>
+
+                      {plantSuggestionItems.length > 0 ? (
+                        <View
+                          style={{
+                            borderWidth: 1,
+                            borderColor: themeBorder,
+                            borderRadius: 8,
+                            padding: 8,
+                            marginTop: 8,
+                            backgroundColor: themeCardBg,
+                          }}>
+                          <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+                            Wymaga uwagi (Rosliny)
+                          </Text>
+                          {plantSuggestionItems.slice(0, 4).map((item, idx) => (
+                            <Text
+                              key={`plant-suggestion-inline-${item.id ?? idx}`}
+                              style={{
+                                color:
+                                  item.severity === 'critical'
+                                    ? themeDangerText
+                                    : themeWarningText,
+                                fontSize: 12,
+                                marginTop: 4,
+                              }}>
+                              - {item.text}
+                            </Text>
+                          ))}
+                        </View>
+                      ) : null}
 
                       {!isPlantStockExpanded ? null : (
                         <>
@@ -26664,7 +24404,7 @@ export default function HomeScreen() {
                               </Text>
                               {String(stockFishSearch ?? '').trim().length > 0 ? (
                                 <Text style={{ color: themeTextSecondary, marginBottom: 10 }}>
-                                  Nie ma takiej ryby w katalogu. MoĹĽesz dodac wpis recznie tym samym
+                                  Nie ma takiej ryby w katalogu. Mozesz dodac wpis recznie tym samym
                                   przyciskiem powyzej.
                                 </Text>
                               ) : null}
@@ -26688,7 +24428,7 @@ export default function HomeScreen() {
                                     fontSize: 12,
                                     marginBottom: 10,
                                   }}>
-                                  Dla szybszego dziaĹ‚ania na iPhonie w Expo Go pokazuje teraz
+                                  Dla szybszego dzialania na iPhonie w Expo Go pokazuje teraz
                                   pierwsze {visibleFilteredFishCatalog.length} pozycji. Wpisz nazwe,
                                   aby zawezic wyniki.
                                 </Text>
@@ -27020,7 +24760,7 @@ export default function HomeScreen() {
                               fontSize: 12,
                               marginBottom: 10,
                             }}>
-                            Dla szybszego dziaĹ‚ania na iPhonie w Expo Go pokazuje teraz pierwsze{' '}
+                            Dla szybszego dzialania na iPhonie w Expo Go pokazuje teraz pierwsze{' '}
                             {visibleFilteredPlantCatalog.length} pozycji. Wpisz nazwe, aby zawezic
                             wyniki.
                           </Text>
@@ -27226,7 +24966,7 @@ export default function HomeScreen() {
                     fontSize: 16,
                     marginBottom: 8,
                   }}>
-                  Rybie chorĂłby i objawy
+                  Rybie choroby i objawy
                 </Text>
                 <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
                   Sekcja edukacyjna. Pokazuje mozliwe scenariusze, ale nie daje
@@ -27238,7 +24978,6 @@ export default function HomeScreen() {
                   (weterynarz/ichtiopatolog).
                 </Text>
               </View>
-              {renderCatalogAiContextCard('disease-catalog')}
 
               <View
                 style={{
@@ -27271,7 +25010,7 @@ export default function HomeScreen() {
                       textAlign: 'center',
                       fontWeight: diseaseMode === 'catalog' ? '700' : '400',
                     }}>
-                    Katalog rybich chorĂłb
+                    Katalog rybich chorob
                   </Text>
                 </Pressable>
                 <Pressable
@@ -27315,14 +25054,14 @@ export default function HomeScreen() {
                   }}>
                   {diseaseCatalog.map((disease) => {
                     const isExpanded = expandedDiseaseCatalogId === disease.id;
-                    const diseaseCatalogAiResultKey = `disease_catalog_${disease.id}`;
                     const diseasePreviewImagePrimaryUri = String(
                       disease.imagePreviewUrl ?? disease.imageUrl ?? ''
                     ).trim();
                     const diseasePreviewImageFallbackUri = String(
                       disease.imageFallbackPreviewUrl ??
                         disease.imageFallbackUrl ??
-                        disease.imageUrl ?? ''
+                        disease.imageUrl ??
+                        ''
                     ).trim();
                     const previewLoadStage = Number(
                       diseasePreviewLoadStageById[disease.id] ?? 0
@@ -27342,7 +25081,8 @@ export default function HomeScreen() {
                     const symptomSummary = disease.symptoms
                       .map(
                         (symptomId) =>
-                          DISEASE_SYMPTOMS.find((item) => item.id === symptomId)?.label ?? symptomId
+                          DISEASE_SYMPTOMS.find((item) => item.id === symptomId)?.label ??
+                          symptomId
                       )
                       .join(', ');
 
@@ -27440,7 +25180,7 @@ export default function HomeScreen() {
                                   marginTop: 4,
                                   fontSize: 11,
                                 }}>
-                                ZdjÄ™cie pogladowe: {disease.imageSourceLabel}
+                                Zdjecie pogladowe: {disease.imageSourceLabel}
                               </Text>
                             )}
                             <Text style={{ color: themeSuccessText, marginTop: 8, fontSize: 12 }}>
@@ -27459,81 +25199,6 @@ export default function HomeScreen() {
                             <Text style={{ color: themeWarningText, marginTop: 6, fontSize: 12 }}>
                               Uwaga: {disease.caution}
                             </Text>
-                            <Pressable
-                              onPress={() =>
-                                runCatalogAiChat({
-                                  resultKey: diseaseCatalogAiResultKey,
-                                  question: `Przeanalizuj chorĂłbe "${disease.name}" w kontekscie wybranego akwarium i podaj kroki dziaĹ‚ania.`,
-                                  contextDetails: [
-                                    `Objawy katalogowe: ${symptomSummary}`,
-                                    `Podsumowanie: ${disease.summary ?? ''}`,
-                                    `Proponowany srodek: ${disease.suggestedRemedy ?? ''}`,
-                                    `Uwagi: ${disease.caution ?? ''}`,
-                                  ]
-                                    .filter(Boolean)
-                                    .join('. '),
-                                  tankId: catalogAiSelectedTank?.id ?? null,
-                                })
-                              }
-                              disabled={catalogAiBusy}
-                              style={{
-                                borderWidth: 1,
-                                borderColor: themeBorderStrong,
-                                borderRadius: 8,
-                                paddingVertical: 8,
-                                paddingHorizontal: 10,
-                                marginTop: 8,
-                                backgroundColor: themeCardBg,
-                                opacity: catalogAiBusy ? 0.7 : 1,
-                              }}>
-                              <Text
-                                style={{
-                                  color: themeTextPrimary,
-                                  textAlign: 'center',
-                                  fontWeight: '700',
-                                  fontSize: 12,
-                                }}>
-                                {catalogAiBusy ? 'AI analizuje...' : 'Zapytaj AI o te chorĂłbe'}
-                              </Text>
-                            </Pressable>
-                            <Pressable
-                              onPress={() =>
-                                runCatalogAiVision({
-                                  resultKey: diseaseCatalogAiResultKey,
-                                  question: `Przeanalizuj zdjÄ™cie pod katem chorĂłby "${disease.name}" i zaproponuj plan weryfikacji oraz dziaĹ‚ania.`,
-                                  contextDetails: [
-                                    `Objawy katalogowe: ${symptomSummary}`,
-                                    `Podsumowanie: ${disease.summary ?? ''}`,
-                                    `Proponowany srodek: ${disease.suggestedRemedy ?? ''}`,
-                                    `Uwagi: ${disease.caution ?? ''}`,
-                                  ]
-                                    .filter(Boolean)
-                                    .join('. '),
-                                  tankId: catalogAiSelectedTank?.id ?? null,
-                                })
-                              }
-                              disabled={catalogAiBusy}
-                              style={{
-                                borderWidth: 1,
-                                borderColor: themeBorderStrong,
-                                borderRadius: 8,
-                                paddingVertical: 8,
-                                paddingHorizontal: 10,
-                                marginTop: 8,
-                                backgroundColor: themeCardBg,
-                                opacity: catalogAiBusy ? 0.7 : 1,
-                              }}>
-                              <Text
-                                style={{
-                                  color: themeTextPrimary,
-                                  textAlign: 'center',
-                                  fontWeight: '700',
-                                  fontSize: 12,
-                                }}>
-                                {catalogAiBusy ? 'AI analizuje...' : 'Analizuj zdjÄ™cie dla tej chorĂłby'}
-                              </Text>
-                            </Pressable>
-                            {renderCatalogAiResultCard(diseaseCatalogAiResultKey)}
                             <Pressable
                               onPress={() => handleAddDiseaseToAquarium(disease)}
                               style={{
@@ -27576,7 +25241,7 @@ export default function HomeScreen() {
                     Zaznacz objawy
                   </Text>
                   <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 10 }}>
-                    Im wiÄ™cej trafnych objawow wybierzesz, tym sensowniejsza bedzie
+                    Im wiecej trafnych objawow wybierzesz, tym sensowniejsza bedzie
                     podpowiedz.
                   </Text>
 
@@ -27765,7 +25430,7 @@ export default function HomeScreen() {
                       </Text>
                       <Text style={{ color: themeDangerText, marginTop: 4, fontSize: 12 }}>
                         {selectedEmergencyState?.summary ||
-                          'Wykonaj natychmiastowa podmianÄ™ wody, mocne napowietrzanie i pilna konsultacje.'}
+                          'Wykonaj natychmiastowa podmiane wody, mocne napowietrzanie i pilna konsultacje.'}
                       </Text>
                       {(selectedEmergencyState?.steps ?? []).slice(0, 3).map((step, index) => (
                         <Text
@@ -27786,12 +25451,12 @@ export default function HomeScreen() {
 
                   {!diseaseSafetyConfirmed ? (
                     <Text style={{ color: themeWarningText, fontSize: 12 }}>
-                      Najpierw zaznacz potwierdzenie bezpieczenstwa, aby zobaczy??
+                      Najpierw zaznacz potwierdzenie bezpieczenstwa, aby zobaczyc
                       sugestie.
                     </Text>
                   ) : selectedDiseaseSymptomIds.length < 2 ? (
                     <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
-                      Zaznacz minimum 2 objawy, aby uruchomic analizÄ™.
+                      Zaznacz minimum 2 objawy, aby uruchomic analize.
                     </Text>
                   ) : diseaseSuggestions.length === 0 ? (
                     <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
@@ -27876,7 +25541,7 @@ export default function HomeScreen() {
                               marginTop: 6,
                               fontSize: 12,
                             }}>
-                            Plan dziaĹ‚aĹ„ 24h:
+                            Plan dzialan 24h:
                           </Text>
                           {(item.timelinePlan?.h24 ?? item.treatment ?? []).slice(0, 3).map((step, index) => (
                             <Text
@@ -28002,12 +25667,10 @@ export default function HomeScreen() {
                   Sekcja edukacyjna. Pomaga rozpoznac najczestsze problemy roslin.
                 </Text>
                 <Text style={{ color: themeWarningText, fontSize: 12 }}>
-                  Zabezpieczenie: to nie jest pewna diagnoza. WprowadĹşaj zmiany
+                  Zabezpieczenie: to nie jest pewna diagnoza. Wprowadzaj zmiany
                   stopniowo i obserwuj reakcje zbiornika.
                 </Text>
               </View>
-
-              {renderCatalogAiContextCard('plant-disease-catalog')}
 
               <View
                 style={{
@@ -28044,7 +25707,7 @@ export default function HomeScreen() {
                       textAlign: 'center',
                       fontWeight: plantDiseaseMode === 'catalog' ? '700' : '400',
                     }}>
-                    Katalog chorĂłb roslin
+                    Katalog chorob roslin
                   </Text>
                 </Pressable>
                 <Pressable
@@ -28093,14 +25756,14 @@ export default function HomeScreen() {
                   }}>
                   {plantDiseaseCatalog.map((disease) => {
                     const isExpanded = expandedPlantDiseaseCatalogId === disease.id;
-                    const plantDiseaseCatalogAiResultKey = `plant_disease_catalog_${disease.id}`;
                     const diseasePreviewImagePrimaryUri = String(
                       disease.imagePreviewUrl ?? disease.imageUrl ?? ''
                     ).trim();
                     const diseasePreviewImageFallbackUri = String(
                       disease.imageFallbackPreviewUrl ??
                         disease.imageFallbackUrl ??
-                        disease.imageUrl ?? ''
+                        disease.imageUrl ??
+                        ''
                     ).trim();
                     const previewLoadStage = Number(
                       diseasePreviewLoadStageById[disease.id] ?? 0
@@ -28219,7 +25882,7 @@ export default function HomeScreen() {
                                   marginTop: 4,
                                   fontSize: 11,
                                 }}>
-                                ZdjÄ™cie pogladowe: {disease.imageSourceLabel}
+                                Zdjecie pogladowe: {disease.imageSourceLabel}
                               </Text>
                             )}
                             <Text style={{ color: themeSuccessText, marginTop: 8, fontSize: 12 }}>
@@ -28238,81 +25901,6 @@ export default function HomeScreen() {
                             <Text style={{ color: themeWarningText, marginTop: 6, fontSize: 12 }}>
                               Uwaga: {disease.caution}
                             </Text>
-                            <Pressable
-                              onPress={() =>
-                                runCatalogAiChat({
-                                  resultKey: plantDiseaseCatalogAiResultKey,
-                                  question: `Przeanalizuj chorĂłbe roslin "${disease.name}" dla wybranego akwarium i podaj plan naprawczy.`,
-                                  contextDetails: [
-                                    `Objawy katalogowe: ${symptomSummary}`,
-                                    `Podsumowanie: ${disease.summary ?? ''}`,
-                                    `Proponowany srodek: ${disease.suggestedRemedy ?? ''}`,
-                                    `Uwagi: ${disease.caution ?? ''}`,
-                                  ]
-                                    .filter(Boolean)
-                                    .join('. '),
-                                  tankId: catalogAiSelectedTank?.id ?? null,
-                                })
-                              }
-                              disabled={catalogAiBusy}
-                              style={{
-                                borderWidth: 1,
-                                borderColor: themeBorderStrong,
-                                borderRadius: 8,
-                                paddingVertical: 8,
-                                paddingHorizontal: 10,
-                                marginTop: 8,
-                                backgroundColor: themeCardBg,
-                                opacity: catalogAiBusy ? 0.7 : 1,
-                              }}>
-                              <Text
-                                style={{
-                                  color: themeTextPrimary,
-                                  textAlign: 'center',
-                                  fontWeight: '700',
-                                  fontSize: 12,
-                                }}>
-                                {catalogAiBusy ? 'AI analizuje...' : 'Zapytaj AI o te chorĂłbe'}
-                              </Text>
-                            </Pressable>
-                            <Pressable
-                              onPress={() =>
-                                runCatalogAiVision({
-                                  resultKey: plantDiseaseCatalogAiResultKey,
-                                  question: `Przeanalizuj zdjÄ™cie pod katem chorĂłby roslin "${disease.name}" i zaproponuj plan naprawczy.`,
-                                  contextDetails: [
-                                    `Objawy katalogowe: ${symptomSummary}`,
-                                    `Podsumowanie: ${disease.summary ?? ''}`,
-                                    `Proponowany srodek: ${disease.suggestedRemedy ?? ''}`,
-                                    `Uwagi: ${disease.caution ?? ''}`,
-                                  ]
-                                    .filter(Boolean)
-                                    .join('. '),
-                                  tankId: catalogAiSelectedTank?.id ?? null,
-                                })
-                              }
-                              disabled={catalogAiBusy}
-                              style={{
-                                borderWidth: 1,
-                                borderColor: themeBorderStrong,
-                                borderRadius: 8,
-                                paddingVertical: 8,
-                                paddingHorizontal: 10,
-                                marginTop: 8,
-                                backgroundColor: themeCardBg,
-                                opacity: catalogAiBusy ? 0.7 : 1,
-                              }}>
-                              <Text
-                                style={{
-                                  color: themeTextPrimary,
-                                  textAlign: 'center',
-                                  fontWeight: '700',
-                                  fontSize: 12,
-                                }}>
-                                {catalogAiBusy ? 'AI analizuje...' : 'Analizuj zdjÄ™cie dla tej chorĂłby'}
-                              </Text>
-                            </Pressable>
-                            {renderCatalogAiResultCard(plantDiseaseCatalogAiResultKey)}
                             <Pressable
                               onPress={() => handleAddPlantDiseaseToAquarium(disease)}
                               style={{
@@ -28356,7 +25944,7 @@ export default function HomeScreen() {
                   </Text>
                   <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 10 }}>
                     Zaznacz to, co obserwujesz. Otrzymasz liste najbardziej
-                    prawdopodobnych problemĂłw i sugestie.
+                    prawdopodobnych problemow i sugestie.
                   </Text>
 
                   <Pressable
@@ -28532,16 +26120,16 @@ export default function HomeScreen() {
 
                   {!plantDiseaseSafetyConfirmed ? (
                     <Text style={{ color: themeWarningText, fontSize: 12 }}>
-                      Najpierw zaznacz potwierdzenie bezpieczenstwa, aby zobaczy??
+                      Najpierw zaznacz potwierdzenie bezpieczenstwa, aby zobaczyc
                       sugestie.
                     </Text>
                   ) : selectedPlantDiseaseSymptomIds.length < 2 ? (
                     <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
-                      Zaznacz minimum 2 objawy, aby uruchomic analizÄ™.
+                      Zaznacz minimum 2 objawy, aby uruchomic analize.
                     </Text>
                   ) : plantDiseaseSuggestions.length === 0 ? (
                     <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
-                      Brak jednoznacznego dopasowania. WprowadĹşaj zmiany etapami i
+                      Brak jednoznacznego dopasowania. Wprowadzaj zmiany etapami i
                       obserwuj nowe przyrosty przez 7-14 dni.
                     </Text>
                   ) : (
@@ -28622,7 +26210,7 @@ export default function HomeScreen() {
                               marginTop: 6,
                               fontSize: 12,
                             }}>
-                            Plan dziaĹ‚aĹ„ 24h:
+                            Plan dzialan 24h:
                           </Text>
                           {(item.timelinePlan?.h24 ?? item.treatment ?? []).slice(0, 3).map((step, index) => (
                             <Text
@@ -28837,7 +26425,8 @@ export default function HomeScreen() {
                     const algaePreviewImageFallbackUri = String(
                       algae.imageFallbackPreviewUrl ??
                         algae.imageFallbackUrl ??
-                        algae.imageUrl ?? ''
+                        algae.imageUrl ??
+                        ''
                     ).trim();
                     const previewLoadStage = Number(
                       diseasePreviewLoadStageById[algae.id] ?? 0
@@ -28856,7 +26445,8 @@ export default function HomeScreen() {
                     const symptomSummary = algae.symptoms
                       .map(
                         (symptomId) =>
-                          ALGAE_SYMPTOMS.find((item) => item.id === symptomId)?.label ?? symptomId
+                          ALGAE_SYMPTOMS.find((item) => item.id === symptomId)?.label ??
+                          symptomId
                       )
                       .join(', ');
 
@@ -28954,7 +26544,7 @@ export default function HomeScreen() {
                                   marginTop: 4,
                                   fontSize: 11,
                                 }}>
-                                ZdjÄ™cie pogladowe: {algae.imageSourceLabel}
+                                Zdjecie pogladowe: {algae.imageSourceLabel}
                               </Text>
                             )}
                             <Text style={{ color: themeSuccessText, marginTop: 8, fontSize: 12 }}>
@@ -29036,7 +26626,7 @@ export default function HomeScreen() {
                   </Text>
                   <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 10 }}>
                     Zaznacz to, co widzisz w akwarium. Otrzymasz dopasowanie i plan
-                    dziaĹ‚aĹ„.
+                    dzialan.
                   </Text>
 
                   <Pressable
@@ -29209,17 +26799,17 @@ export default function HomeScreen() {
 
                   {!algaeSafetyConfirmed ? (
                     <Text style={{ color: themeWarningText, fontSize: 12 }}>
-                      Najpierw zaznacz potwierdzenie bezpieczenstwa, aby zobaczy??
+                      Najpierw zaznacz potwierdzenie bezpieczenstwa, aby zobaczyc
                       sugestie.
                     </Text>
                   ) : selectedAlgaeSymptomIds.length < 2 ? (
                     <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
-                      Zaznacz minimum 2 objawy, aby uruchomic analizÄ™.
+                      Zaznacz minimum 2 objawy, aby uruchomic analize.
                     </Text>
                   ) : algaeSuggestions.length === 0 ? (
                     <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
-                      {'Brak jednoznacznego dopasowania. Zr\u00f3b serwis, obserwuj 7 dni i'}
-                      {' kontroluj trend NO3 oraz o\u015bwietlenie.'}
+                      Brak jednoznacznego dopasowania. Zrob serwis, obserwuj 7 dni i
+                      kontroluj trend NO3 oraz oswietlenie.
                     </Text>
                   ) : (
                     <View style={{ marginTop: 4 }}>
@@ -29294,7 +26884,7 @@ export default function HomeScreen() {
                               marginTop: 6,
                               fontSize: 12,
                             }}>
-                            Plan dziaĹ‚aĹ„ 24h:
+                            Plan dzialan 24h:
                           </Text>
                           {(item.timelinePlan?.h24 ??
                             [
@@ -29484,58 +27074,37 @@ export default function HomeScreen() {
             </View>
           )}
 
-          {isAiSection && (
-            <>
-              {!selectedTank ? (
-                <View
-                  style={{
-                    borderWidth: 1,
-                    borderColor: themeBorder,
-                    borderRadius: 10,
-                    padding: 12,
-                    marginBottom: 18,
-                    backgroundColor: themeCardBgAlt,
-                  }}>
-                  <Text style={{ color: themeTextSecondary }}>
-                    Najpierw wybierz aktywne akwarium, aby uruchomic Asystenta AI w kontekscie
-                    tego zbiornika.
-                  </Text>
-                </View>
-              ) : (
-                <AiAssistantPanel
-                  user={user}
-                  selectedTankId={selectedTank?.id ?? null}
-                  selectedTankName={selectedTank?.name ?? null}
-                  forceActiveTankContext
-                  hasAiAssistantAccess={hasAiAssistantAccess}
-                  aiAssistantLockMessage={aiAssistantLockMessage}
-                  aiAssistantUpgradePromptMessage={aiAssistantUpgradePromptMessage}
-                  showAiAssistantUpgradePrompt={showAiAssistantUpgradePrompt}
-                  onPressUpgradePrompt={() => setIsSubscriptionExpanded(true)}
-                  aiConsentDataProcessing={Boolean(appSettings.aiConsentDataProcessing)}
-                  aiConsentImageAnalysis={Boolean(appSettings.aiConsentImageAnalysis)}
-                  onToggleAiConsentDataProcessing={handleToggleAiConsentDataProcessing}
-                  onToggleAiConsentImageAnalysis={handleToggleAiConsentImageAnalysis}
-                  theme={{
-                    isLightTheme,
-                    themeCardBg,
-                    themeCardBgAlt,
-                    themeBorder,
-                    themeBorderStrong,
-                    themeTextPrimary,
-                    themeTextSecondary,
-                    themeAccent,
-                    themeAccentOnStrong,
-                    themeWarningText,
-                    themeDangerText,
-                    themeInputBg,
-                    themeInputBorder,
-                    themeInputText,
-                    themePlaceholder,
-                  }}
-                />
-              )}
-            </>
+          {isSettingsSection && (
+            <AiAssistantPanel
+              user={user}
+              selectedTankId={selectedTank?.id ?? null}
+              hasAiAssistantAccess={hasAiAssistantAccess}
+              aiAssistantLockMessage={aiAssistantLockMessage}
+              aiAssistantUpgradePromptMessage={aiAssistantUpgradePromptMessage}
+              showAiAssistantUpgradePrompt={showAiAssistantUpgradePrompt}
+              onPressUpgradePrompt={() => setIsSubscriptionExpanded(true)}
+              aiConsentDataProcessing={Boolean(appSettings.aiConsentDataProcessing)}
+              aiConsentImageAnalysis={Boolean(appSettings.aiConsentImageAnalysis)}
+              onToggleAiConsentDataProcessing={handleToggleAiConsentDataProcessing}
+              onToggleAiConsentImageAnalysis={handleToggleAiConsentImageAnalysis}
+              theme={{
+                isLightTheme,
+                themeCardBg,
+                themeCardBgAlt,
+                themeBorder,
+                themeBorderStrong,
+                themeTextPrimary,
+                themeTextSecondary,
+                themeAccent,
+                themeAccentOnStrong,
+                themeWarningText,
+                themeDangerText,
+                themeInputBg,
+                themeInputBorder,
+                themeInputText,
+                themePlaceholder,
+              }}
+            />
           )}
 
           {isSettingsSection && (
@@ -29877,100 +27446,6 @@ export default function HomeScreen() {
                 )}
               </Pressable>
 
-              {billingEnabled && !canManualSwitchSubscriptionPlan ? (
-                <View
-                  style={{
-                    marginTop: 10,
-                    borderWidth: 1,
-                    borderColor: themeBorder,
-                    borderRadius: 10,
-                    padding: 10,
-                    backgroundColor: themeCardBgAlt,
-                  }}>
-                  <Text
-                    style={{
-                      color: themeTextPrimary,
-                      fontWeight: '700',
-                      fontSize: 13,
-                    }}>
-                    Zmien plan w Ustawieniach
-                  </Text>
-                  <Text
-                    style={{
-                      color: themeTextSecondary,
-                      fontSize: 12,
-                      marginTop: 6,
-                    }}>
-                    Wybor planu i zakup sa dost?pne tutaj. Zmiana aktywuje sie bez restartu aplikacji.
-                  </Text>
-
-                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
-                    {subscriptionPlans
-                      .filter((plan) => plan.tier !== 'free')
-                      .map((plan) => {
-                        const isCurrent = subscription.tier === plan.tier;
-                        const planLabel =
-                          plan.tier === 'premium'
-                            ? t('settingsSubscriptionTierPremium')
-                            : t('settingsSubscriptionTierPro');
-
-                        return (
-                          <Pressable
-                            key={`subscription-billing-quick-buy-${plan.tier}`}
-                            onPress={() => {
-                              void handleSubscriptionTierManualChange(plan.tier);
-                            }}
-                            disabled={billingBusy || billingRestoreBusy}
-                            style={{
-                              flex: 1,
-                              borderWidth: 1,
-                              borderColor: isCurrent ? themeAccent : themeBorderStrong,
-                              borderRadius: 8,
-                              paddingVertical: 9,
-                              backgroundColor: isCurrent ? themeAccentSoftBg : themeCardBg,
-                              opacity: billingBusy || billingRestoreBusy ? 0.65 : 1,
-                            }}>
-                            <Text
-                              style={{
-                                color: isCurrent ? themeAccentText : themeTextPrimary,
-                                textAlign: 'center',
-                                fontWeight: '700',
-                                fontSize: 12,
-                              }}>
-                              {isCurrent ? `${planLabel} (aktywny)` : planLabel}
-                            </Text>
-                          </Pressable>
-                        );
-                      })}
-                  </View>
-
-                  <Pressable
-                    onPress={() => {
-                      void handleRestoreSubscriptionPurchases();
-                    }}
-                    disabled={billingBusy || billingRestoreBusy}
-                    style={{
-                      marginTop: 8,
-                      borderWidth: 1,
-                      borderColor: themeBorderStrong,
-                      borderRadius: 8,
-                      paddingVertical: 9,
-                      backgroundColor: themeCardBg,
-                      opacity: billingBusy || billingRestoreBusy ? 0.65 : 1,
-                    }}>
-                    <Text
-                      style={{
-                        color: themeTextPrimary,
-                        textAlign: 'center',
-                        fontWeight: '700',
-                        fontSize: 12,
-                      }}>
-                      {billingRestoreBusy ? 'Przywracanie zakupow...' : 'PrzywrĂł zakupy'}
-                    </Text>
-                  </Pressable>
-                </View>
-              ) : null}
-
               {!canManualSwitchSubscriptionPlan ? null : (
                 <View
                   style={{
@@ -30288,7 +27763,7 @@ export default function HomeScreen() {
                           }}>
                           {billingRestoreBusy
                             ? 'Przywracanie zakupow...'
-                            : 'PrzywrĂł zakupy'}
+                            : 'Przywroc zakupy'}
                         </Text>
                       </Pressable>
                     ) : null}
@@ -30299,7 +27774,7 @@ export default function HomeScreen() {
                           fontSize: 11,
                           marginTop: 8,
                         }}>
-                        Zarzadzanie subskrypcja jest dost?pne w ustawieĹ„iach sklepu.
+                        Zarzadzanie subskrypcja jest dostepne w ustawieniach sklepu.
                       </Text>
                     ) : null}
                   </View>
@@ -31074,93 +28549,8 @@ export default function HomeScreen() {
                       {renderAddTankWizard('modal-add')}
                     </View>
                   </ScrollView>
-                  {renderEditTankSectionModal()}
-                  {isSingleSpeciesFishCatalogVisible ? renderSingleSpeciesFishCatalogModal() : null}
                 </KeyboardAvoidingView>
               </SafeAreaView>
-            </Modal>
-          )}
-
-          {isFirstRunStatusModalVisible && (
-            <Modal
-              visible
-              animationType="fade"
-              transparent
-              onRequestClose={handleCompleteFirstRun}>
-              <View
-                style={{
-                  flex: 1,
-                  backgroundColor: themeOverlay,
-                  justifyContent: 'center',
-                  padding: 16,
-                }}>
-                <View
-                  style={{
-                    borderWidth: 1,
-                    borderColor: themeBorder,
-                    borderRadius: 12,
-                    backgroundColor: themeModalBg,
-                    padding: 14,
-                    alignSelf: 'center',
-                    width: '100%',
-                    maxWidth: 520,
-                  }}>
-                  <Text style={{ color: themeTextPrimary, fontSize: 18, fontWeight: '800' }}>
-                    Pierwszy status akwarium
-                  </Text>
-                  <Text style={{ color: themeTextSecondary, marginTop: 6, fontSize: 12 }}>
-                    {firstRunStatusSummary?.tank?.name
-                      ? `${firstRunStatusSummary.tank.name}: `
-                      : ''}
-                    {getFirstRunStatusLabel(firstRunStatusSummary?.statusSeverity)}
-                  </Text>
-
-                  <Text style={{ color: themeTextPrimary, marginTop: 12, fontWeight: '700' }}>
-                    Co aplikacja bedzie monitorowac
-                  </Text>
-                  {firstRunMonitoringItems.map((item, index) => (
-                    <Text
-                      key={`first-run-monitor-${index}`}
-                      style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
-                      - {item}
-                    </Text>
-                  ))}
-
-                  <Text style={{ color: themeTextPrimary, marginTop: 12, fontWeight: '700' }}>
-                    Pierwsze zalecane akcje
-                  </Text>
-                  {firstRunRecommendedActions.length > 0 ? (
-                    firstRunRecommendedActions.map((item, index) => (
-                      <Text
-                        key={`first-run-action-${item.id || index}`}
-                        style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
-                        {index + 1}. {item.title}
-                      </Text>
-                    ))
-                  ) : (
-                    <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
-                      Brak gotowych akcji. Dodaj pierwszy pomiar, a plan zadan pojawi sie
-                      automatycznie.
-                    </Text>
-                  )}
-
-                  <Pressable
-                    onPress={handleCompleteFirstRun}
-                    style={{
-                      marginTop: 14,
-                      borderWidth: 1,
-                      borderColor: themeAccent,
-                      borderRadius: 9,
-                      paddingVertical: 10,
-                      alignItems: 'center',
-                      backgroundColor: themeAccentStrongBg,
-                    }}>
-                    <Text style={{ color: themeTextPrimary, fontWeight: '700' }}>
-                      Przejd?? dalej
-                    </Text>
-                  </Pressable>
-                </View>
-              </View>
             </Modal>
           )}
 
@@ -31206,10 +28596,10 @@ export default function HomeScreen() {
                           marginTop: 4,
                         }}>
                         {equipmentCatalogType === 'heater'
-                          ? 'Porownaj modele po mocy i zalecanym litraĹĽu.'
+                          ? 'Porownaj modele po mocy i zalecanym litrazu.'
                           : equipmentCatalogType === 'filter'
-                            ? 'Porownaj modele po wydajnosci, litraĹĽu i sile przepĹ‚ywu.'
-                            : 'Porownaj modele po lumenach i dopasowaniu lm/l do litraĹĽu.'}
+                            ? 'Porownaj modele po wydajnosci, litrazu i sile przeplywu.'
+                            : 'Porownaj modele po lumenach i dopasowaniu lm/l do litrazu.'}
                       </Text>
                     </View>
                     <Pressable
@@ -31254,11 +28644,11 @@ export default function HomeScreen() {
                           fontWeight: '700',
                           marginBottom: 4,
                         }}>
-                        Wybierz model sprz?tu
+                        Wybierz model sprzetu
                       </Text>
                       <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
-                        Karty pokazuja najwazniejsze parametry i szybkie dopasowanie do Twojego
-                        zbiornika.
+                        Karty pokazuj\u0105 najwa\u017cniejsze parametry i szybkie dopasowanie do
+                        Twojego zbiornika.
                       </Text>
                     </View>
                     <TextInput
@@ -31306,7 +28696,7 @@ export default function HomeScreen() {
                           }}>
                           {isCustomEquipmentFormVisible
                             ? 'Ukryj formularz "Inne"'
-                            : 'Nie ma na liĹ›cie?? Dodaj "Inne"'}
+                            : 'Nie ma na liscie? Dodaj "Inne"'}
                         </Text>
                       </Pressable>
 
@@ -31319,7 +28709,7 @@ export default function HomeScreen() {
                               marginBottom: 8,
                               lineHeight: 17,
                             }}>
-                            Podaj podstawowe dane sprz?? tu, a zapisze go bezposrednio do
+                            Podaj podstawowe dane sprzetu, a zapisze go bezposrednio do
                             aktywnego akwarium.
                           </Text>
                           <TextInput
@@ -31429,7 +28819,7 @@ export default function HomeScreen() {
                                 marginBottom: 10,
                               }}>
                               <TextInput
-                                placeholder="Min litraĹĽ (opcjonalnie)"
+                                placeholder="Min litraz (opcjonalnie)"
                                 placeholderTextColor={themePlaceholder}
                                 value={customEquipmentTankMinLiters}
                                 onChangeText={setCustomEquipmentTankMinLiters}
@@ -31446,7 +28836,7 @@ export default function HomeScreen() {
                                 }}
                               />
                               <TextInput
-                                placeholder="Max litraĹĽ (opcjonalnie)"
+                                placeholder="Max litraz (opcjonalnie)"
                                 placeholderTextColor={themePlaceholder}
                                 value={customEquipmentTankMaxLiters}
                                 onChangeText={setCustomEquipmentTankMaxLiters}
@@ -31483,7 +28873,7 @@ export default function HomeScreen() {
                                 fontWeight: '700',
                                 fontSize: 13,
                               }}>
-                              Dodaj inny sprz?t
+                              Dodaj inny sprzet
                             </Text>
                           </Pressable>
                         </View>
@@ -32029,60 +29419,92 @@ export default function HomeScreen() {
                       alignItems: 'center',
                     }}>
                     <View style={{ width: '100%', maxWidth: formContentMaxWidth }}>
+                    <TextInput
+                      placeholder={t('newTankNamePlaceholder')}
+                      placeholderTextColor={themePlaceholder}
+                      value={tankName}
+                      onChangeText={setTankName}
+                style={{
+                  borderWidth: 1,
+                  borderColor: themeInputBorder,
+                  color: themeInputText,
+                  padding: 10,
+                  marginBottom: 10,
+                }}
+                    />
+                    <TextInput
+                      placeholder={t('newTankLitersPlaceholder')}
+                      placeholderTextColor={themePlaceholder}
+                      value={tankLiters}
+                      onChangeText={setTankLiters}
+                      keyboardType="numeric"
+                style={{
+                  borderWidth: 1,
+                  borderColor: themeInputBorder,
+                  color: themeInputText,
+                  padding: 10,
+                  marginBottom: 10,
+                }}
+                    />
+                    <Text
+                      style={{
+                        color: '#9da3af',
+                        marginBottom: 6,
+                        fontSize: 12,
+                      }}>
+                      {t('substrate')}
+                    </Text>
+                    <Text
+                      style={{
+                        color: '#9da3af',
+                        marginBottom: 6,
+                        fontSize: 11,
+                      }}>
+                      Mozesz zaznaczyc wiecej niz jedno podloze.
+                    </Text>
                     <View
                       style={{
-                        borderWidth: 1,
-                        borderColor: themeBorder,
-                        borderRadius: 12,
-                        backgroundColor: themeCardBgAlt,
-                        padding: 10,
+                        flexDirection: 'row',
+                        flexWrap: 'wrap',
+                        gap: 8,
                         marginBottom: 10,
                       }}>
-                      <Text
-                        style={{
-                          color: themeTextSecondary,
-                          fontSize: 12,
-                          marginBottom: 8,
-                        }}>
-                        Wybierz sekcje do edycji
-                      </Text>
-                      {editTankSections.map((section, index) => (
+                      {SUBSTRATE_OPTIONS.map((option) => (
                         <Pressable
-                          key={`edit-tank-section-${section.key}`}
-                          onPress={() => handleOpenEditTankSection(section.key)}
+                          key={`edit-substrate-${option.value}`}
+                          onPress={() => handleToggleTankSubstrate(option.value)}
                           style={{
                             borderWidth: 1,
-                            borderColor: themeBorder,
-                            borderRadius: 10,
-                            paddingVertical: 10,
-                            paddingHorizontal: 12,
-                            backgroundColor: themeCardBg,
-                            marginTop: index === 0 ? 0 : 8,
+                            borderColor:
+                              isTankSubstrateSelected(option.value)
+                                ? themeAccent
+                                : themeBorderStrong,
+                            backgroundColor:
+                              isTankSubstrateSelected(option.value)
+                                ? '#102235'
+                                : isLightTheme
+                                  ? '#ffffff'
+                                  : '#111',
+                            borderRadius: 999,
+                            paddingVertical: 6,
+                            paddingHorizontal: 10,
                           }}>
-                          <View
+                          <Text
                             style={{
-                              flexDirection: 'row',
-                              alignItems: 'center',
-                              justifyContent: 'space-between',
-                              gap: 10,
+                              color:
+                                isTankSubstrateSelected(option.value)
+                                  ? 'white'
+                                  : themeTextPrimary,
+                              fontSize: 12,
                             }}>
-                            <View style={{ flex: 1 }}>
-                              <Text style={{ color: themeTextPrimary, fontWeight: '700' }}>
-                                {section.title}
-                              </Text>
-                              <Text
-                                numberOfLines={1}
-                                style={{ color: themeTextSecondary, fontSize: 12, marginTop: 3 }}>
-                                {section.summary}
-                              </Text>
-                            </View>
-                            <Text style={{ color: themeTextSecondary, fontWeight: '700' }}>
-                              {'>'}
-                            </Text>
-                          </View>
+                            {option.labelKey ? t(option.labelKey) : option.label}
+                          </Text>
                         </Pressable>
                       ))}
                     </View>
+
+                    {renderTankWaterTargetsSection('modal-edit')}
+                    {renderTankHeaterContextSection('modal-edit')}
 
                     <Pressable
                       onPress={handleSaveTank}
@@ -32139,8 +29561,6 @@ export default function HomeScreen() {
                     </Pressable>
                     </View>
                   </ScrollView>
-                  {renderEditTankSectionModal()}
-                  {isSingleSpeciesFishCatalogVisible ? renderSingleSpeciesFishCatalogModal() : null}
                 </KeyboardAvoidingView>
               </SafeAreaView>
             </Modal>
@@ -32195,6 +29615,275 @@ export default function HomeScreen() {
                   </Text>
                 </View>
 
+                {selectedHomeEmergencyState?.isEmergency ? (
+                  <View
+                    style={{
+                      borderWidth: 1,
+                      borderColor: themeDangerBg,
+                      borderRadius: 12,
+                      padding: 12,
+                      marginTop: 10,
+                      backgroundColor: themeDangerSoftBg,
+                    }}>
+                    <Text style={{ color: themeDangerText, fontWeight: '700', fontSize: 13 }}>
+                      Tryb awaryjny: {selectedHomeEmergencyState.title || 'Aktywowany'}
+                    </Text>
+                    <Text style={{ color: themeDangerText, marginTop: 4, fontSize: 12 }}>
+                      {selectedHomeEmergencyState.summary}
+                    </Text>
+
+                    <Text style={{ color: themeTextPrimary, marginTop: 8, fontWeight: '700', fontSize: 12 }}>
+                      Co zrobic teraz (krok po kroku)
+                    </Text>
+                    {(selectedHomeEmergencyState.steps ?? []).slice(0, 5).map((step, index) => (
+                      <Text
+                        key={`home-emergency-step-${index}`}
+                        style={{ color: themeTextPrimary, marginTop: 4, fontSize: 12 }}>
+                        {index + 1}. {step}
+                      </Text>
+                    ))}
+
+                    <Text style={{ color: themeTextPrimary, marginTop: 8, fontWeight: '700', fontSize: 12 }}>
+                      Czego nie robic pochopnie
+                    </Text>
+                    {(selectedHomeEmergencyState.avoid ?? []).slice(0, 4).map((item, index) => (
+                      <Text
+                        key={`home-emergency-avoid-${index}`}
+                        style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
+                        - {item}
+                      </Text>
+                    ))}
+                  </View>
+                ) : null}
+
+                <Text
+                  style={{
+                    color: themeTextPrimary,
+                    marginTop: 12,
+                    marginBottom: 8,
+                    fontWeight: '700',
+                  }}>
+                  Co zrobic dzisiaj
+                </Text>
+                {Array.isArray(selectedHomeTodayActionPlan?.items) &&
+                selectedHomeTodayActionPlan.items.length > 0 ? (
+                  selectedHomeTodayActionPlan.items.map((item, index) => (
+                    <View
+                      key={`home-today-action-${index}`}
+                      style={{
+                        borderWidth: 1,
+                        borderColor:
+                          item.categoryKey === 'critical'
+                            ? themeDanger
+                            : item.categoryKey === 'important'
+                              ? themeWarning
+                              : themeBorder,
+                        borderRadius: 10,
+                        padding: 10,
+                        marginBottom: 8,
+                        backgroundColor: themeCardBg,
+                      }}>
+                      <Text
+                        style={{
+                          color:
+                            item.categoryKey === 'critical'
+                              ? themeDangerText
+                              : item.categoryKey === 'important'
+                                ? themeWarningText
+                                : themeTextSecondary,
+                          fontSize: 11,
+                          fontWeight: '700',
+                        }}>
+                        {item.categoryLabel}
+                      </Text>
+                      <Text style={{ color: themeTextPrimary, marginTop: 4, fontWeight: '700' }}>
+                        {item.title}
+                      </Text>
+                      {item.details ? (
+                        <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
+                          {item.details}
+                        </Text>
+                      ) : null}
+                    </View>
+                  ))
+                ) : (
+                  <Text style={{ color: themeTextSecondary }}>
+                    Brak pilnych dzialan na dzis.
+                  </Text>
+                )}
+
+                <Text
+                  style={{
+                    color: themeTextPrimary,
+                    marginTop: 12,
+                    marginBottom: 8,
+                    fontWeight: '700',
+                  }}>
+                  Harmonogram adaptacyjny
+                </Text>
+                {Array.isArray(selectedHomeAdaptiveTaskSchedule?.tasks) &&
+                selectedHomeAdaptiveTaskSchedule.tasks.length > 0 ? (
+                  <View
+                    style={{
+                      borderWidth: 1,
+                      borderColor: themeBorder,
+                      borderRadius: 10,
+                      padding: 10,
+                      marginBottom: 8,
+                      backgroundColor: themeCardBg,
+                    }}>
+                    <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+                      Ryzyko: {selectedHomeAdaptiveTaskSchedule?.risk?.level ?? 'routine'} ({selectedHomeAdaptiveTaskSchedule?.risk?.score ?? 0}/100)
+                    </Text>
+                    <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
+                      {selectedHomeAdaptiveTaskSchedule?.summary ??
+                        'Zadania sa wyliczane automatycznie na podstawie ryzyka i trendow.'}
+                    </Text>
+                  </View>
+                ) : (
+                  <Text style={{ color: themeTextSecondary, marginBottom: 8 }}>
+                    Brak danych do zbudowania harmonogramu adaptacyjnego.
+                  </Text>
+                )}
+                {[
+                  {
+                    key: 'today',
+                    label: 'Dzisiaj',
+                    data: selectedHomeAdaptiveTasksByWindow.today,
+                  },
+                  {
+                    key: 'week',
+                    label: '7 dni',
+                    data: selectedHomeAdaptiveTasksByWindow.week,
+                  },
+                  {
+                    key: 'month',
+                    label: '30 dni',
+                    data: selectedHomeAdaptiveTasksByWindow.month,
+                  },
+                ].map((bucket) => {
+                  const pendingTasks = Array.isArray(bucket?.data?.pending)
+                    ? bucket.data.pending
+                    : [];
+                  const completedCount = Number(bucket?.data?.completedCount ?? 0);
+                  const shouldShowAll = Boolean(adaptiveTaskExpandedBuckets[bucket.key]);
+                  const hasMoreThanPreview =
+                    pendingTasks.length > ADAPTIVE_TASK_BUCKET_PREVIEW_LIMIT;
+                  const visibleTasks = shouldShowAll
+                    ? pendingTasks
+                    : pendingTasks.slice(0, ADAPTIVE_TASK_BUCKET_PREVIEW_LIMIT);
+
+                  return (
+                    <View
+                      key={`adaptive-bucket-${bucket.key}`}
+                      style={{
+                        borderWidth: 1,
+                        borderColor: themeBorder,
+                        borderRadius: 10,
+                        padding: 10,
+                        marginBottom: 8,
+                        backgroundColor: themeCardBg,
+                      }}>
+                      <View
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: 8,
+                        }}>
+                        <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+                          {bucket.label} ({pendingTasks.length})
+                        </Text>
+                        {hasMoreThanPreview ? (
+                          <Pressable
+                            onPress={() => handleToggleAdaptiveTaskBucketExpanded(bucket.key)}
+                            hitSlop={8}>
+                            <Text style={{ color: themeAccentText, fontSize: 12, fontWeight: '700' }}>
+                              {shouldShowAll ? 'Ukryj' : 'Pokaz wszystkie'}
+                            </Text>
+                          </Pressable>
+                        ) : null}
+                      </View>
+
+                      {completedCount > 0 ? (
+                        <Text style={{ color: themeTextMuted, marginTop: 3, fontSize: 11 }}>
+                          Wykonane i ukryte: {completedCount}
+                        </Text>
+                      ) : null}
+
+                      {pendingTasks.length === 0 ? (
+                        <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
+                          Brak zaplanowanych zadan.
+                        </Text>
+                      ) : (
+                        visibleTasks.map((task, index) => (
+                          <View
+                            key={`adaptive-task-${bucket.key}-${task?.completionKey ?? task?.id ?? index}`}
+                            style={{
+                              borderWidth: 1,
+                              borderColor:
+                                String(task?.priority ?? '').toLowerCase() === 'critical'
+                                  ? themeDangerBg
+                                  : String(task?.priority ?? '').toLowerCase() === 'important'
+                                    ? themeWarningBg
+                                    : themeBorder,
+                              borderRadius: 8,
+                              padding: 8,
+                              marginTop: 6,
+                              backgroundColor: themeCardBgAlt,
+                            }}>
+                            <Text
+                              style={{
+                                color:
+                                  String(task?.priority ?? '').toLowerCase() === 'critical'
+                                    ? themeDangerText
+                                    : String(task?.priority ?? '').toLowerCase() === 'important'
+                                      ? themeWarningText
+                                      : themeTextSecondary,
+                                fontSize: 11,
+                                fontWeight: '700',
+                              }}>
+                              {String(task?.priority ?? '').toLowerCase() === 'critical'
+                                ? 'Krytyczne'
+                                : String(task?.priority ?? '').toLowerCase() === 'important'
+                                  ? 'Wazne'
+                                  : 'Rutynowe'}
+                            </Text>
+                            <Text style={{ color: themeTextPrimary, marginTop: 2, fontWeight: '700' }}>
+                              {task?.title ?? 'Zadanie'}
+                            </Text>
+                            {task?.details ? (
+                              <Text style={{ color: themeTextSecondary, marginTop: 2, fontSize: 12 }}>
+                                {task.details}
+                              </Text>
+                            ) : null}
+                            <Text style={{ color: themeTextMuted, marginTop: 2, fontSize: 11 }}>
+                              Termin: {formatDateOnly(task?.nextDueAtMs)}
+                            </Text>
+                            <Pressable
+                              onPress={() => handleCompleteAdaptiveTask(task)}
+                              hitSlop={8}
+                              style={{
+                                marginTop: 6,
+                                alignSelf: 'flex-start',
+                                borderWidth: 1,
+                                borderColor: themeBorderStrong,
+                                borderRadius: 999,
+                                paddingVertical: 5,
+                                paddingHorizontal: 10,
+                                backgroundColor: themeCardBg,
+                              }}>
+                              <Text style={{ color: themeTextPrimary, fontSize: 11, fontWeight: '700' }}>
+                                Oznacz jako wykonane
+                              </Text>
+                            </Pressable>
+                          </View>
+                        ))
+                      )}
+                    </View>
+                  );
+                })}
+
                 <Text
                   style={{
                     color: themeTextPrimary,
@@ -32205,12 +29894,12 @@ export default function HomeScreen() {
                   {t('homeScoreLoweringFactors')}
                 </Text>
 
-                {selectedHomeScoreDetailsWithAcceptance.length === 0 ? (
+                {selectedHomeScoreDetails.length === 0 ? (
                   <Text style={{ color: themeTextSecondary }}>
                     {t('homeScoreNoMajorIssues')}
                   </Text>
                 ) : (
-                  selectedHomeScoreDetailsWithAcceptance.map((item, index) => (
+                  selectedHomeScoreDetails.map((item, index) => (
                     <View
                       key={`home-score-detail-${index}`}
                       style={{
@@ -32233,16 +29922,6 @@ export default function HomeScreen() {
                         }}>
                         -{item.points} pkt
                       </Text>
-                      {item.acceptedProblem ? (
-                        <Text
-                          style={{
-                            color: themeTextMuted,
-                            marginTop: 4,
-                            fontSize: 11,
-                          }}>
-                          {'Zaakceptowany problem przez u\u017cytkownika. Wp\u0142yw na scoring pozostaje.'}
-                        </Text>
-                      ) : null}
                     </View>
                   ))
                 )}
@@ -32326,7 +30005,7 @@ export default function HomeScreen() {
             <BottomSheetModal
               visible
               onClose={handleCloseMeasurementTileDetails}
-              title={`${selectedMeasurementTileDetails.label} - szczegĂłĹ‚y`}
+              title={`${selectedMeasurementTileDetails.label} - szczegoly`}
               themeCardBg={themeCardBg}
               themeBorder={themeBorder}
               themeTextPrimary={themeTextPrimary}
@@ -32401,7 +30080,7 @@ export default function HomeScreen() {
                     marginTop: 10,
                   }}>
                   <Text style={{ color: themeTextSecondary, fontWeight: '700', fontSize: 12 }}>
-                    Co zrĂłbic teraz
+                    Co zrobic teraz
                   </Text>
                   <Text style={{ color: themeTextPrimary, marginTop: 6 }}>
                     {selectedMeasurementTileDetails.action}
@@ -32486,7 +30165,7 @@ export default function HomeScreen() {
                         marginBottom: 12,
                         fontSize: 12,
                       }}>
-                      Widoczne pola z ustawieĹ„ (zalecane):{' '}
+                      Widoczne pola z ustawien (zalecane):{' '}
                       {visibleMeasurementOptionLabels.join(', ') || t('noData')}
                     </Text>
                     <Text
@@ -32505,7 +30184,7 @@ export default function HomeScreen() {
                           fontSize: 12,
                         }}>
                         {fullMeasurementFeatureLockMessage ||
-                          `PeĹ‚ne parametry od planu ${getPlanLabel(fullMeasurementFeatureTargetPlan)}.`}{' '}
+                          `Pelne parametry od planu ${getPlanLabel(fullMeasurementFeatureTargetPlan)}.`}{' '}
                         Zablokowane: {lockedMeasurementFields.join(', ')}.
                       </Text>
                     ) : null}
@@ -32517,7 +30196,7 @@ export default function HomeScreen() {
                           marginBottom: 10,
                           fontSize: 12,
                         }}>
-                        W ustawieĹ„iach wybierz pola, ktore chcesz widziec w formularzu pomiarĂłw.
+                        W ustawieniach wybierz pola, ktore chcesz widziec w formularzu pomiarow.
                       </Text>
                     ) : null}
 
@@ -32817,7 +30496,7 @@ export default function HomeScreen() {
                 <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
                   {historyLimitUsageText}
                 </Text>
-                {visibleParameterSuggestionItems.length > 0 ? (
+                {parameterSuggestionItems.length > 0 ? (
                   <View
                     style={{
                       borderWidth: 1,
@@ -32830,9 +30509,20 @@ export default function HomeScreen() {
                     <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
                       Wymaga uwagi (Parametry)
                     </Text>
-                    {visibleParameterSuggestionItems
-                      .slice(0, 4)
-                      .map((item, idx) => renderSuggestionItem(item, idx, 'parameter'))}
+                    {parameterSuggestionItems.slice(0, 4).map((item, idx) => (
+                      <Text
+                        key={`parameter-suggestion-inline-${item.id ?? idx}`}
+                        style={{
+                          color:
+                            item.severity === 'critical'
+                              ? themeDangerText
+                              : themeWarningText,
+                          fontSize: 12,
+                          marginTop: 4,
+                        }}>
+                        - {item.text}
+                      </Text>
+                    ))}
                   </View>
                 ) : null}
 
@@ -33077,7 +30767,7 @@ export default function HomeScreen() {
               )}
 
               <Text style={{ color: themeTextSecondary, marginBottom: 8, fontSize: 12 }}>
-                Widoczne pola z ustawieĹ„ (zalecane):{' '}
+                Widoczne pola z ustawien (zalecane):{' '}
                 {visibleMeasurementOptionLabels.join(', ') || t('noData')}
               </Text>
               <Text style={{ color: themeTextSecondary, marginBottom: 10, fontSize: 12 }}>
@@ -33086,7 +30776,7 @@ export default function HomeScreen() {
               {lockedMeasurementFields.length > 0 ? (
                 <Text style={{ color: themeTextSecondary, marginBottom: 10, fontSize: 12 }}>
                   {fullMeasurementFeatureLockMessage ||
-                    `PeĹ‚ne parametry od planu ${getPlanLabel(fullMeasurementFeatureTargetPlan)}.`}{' '}
+                    `Pelne parametry od planu ${getPlanLabel(fullMeasurementFeatureTargetPlan)}.`}{' '}
                   Zablokowane: {lockedMeasurementFields.join(', ')}.
                 </Text>
               ) : null}
@@ -33124,7 +30814,7 @@ export default function HomeScreen() {
 
               {measurementInputRows.length === 0 ? (
                 <Text style={{ color: themeWarningText, marginBottom: 10, fontSize: 12 }}>
-                  W ustawieĹ„iach wybierz pola, ktore chcesz widziec w formularzu pomiarĂłw.
+                  W ustawieniach wybierz pola, ktore chcesz widziec w formularzu pomiarow.
                 </Text>
               ) : (
                 measurementInputRows.map((field) => (
@@ -34192,13 +31882,6 @@ export default function HomeScreen() {
           </HistorySection>
           </View>
         </ScrollView>
-        {isSingleSpeciesFishCatalogVisible &&
-        !isAddingTankModalVisible &&
-        !((isReviewSection || isTankInfoSection) &&
-          selectedTank &&
-          editingTankId === selectedTank.id)
-          ? renderSingleSpeciesFishCatalogModal()
-          : null}
         {isDeleteAccountReauthModalVisible ? (
           <BottomSheetModal
             visible
@@ -34353,7 +32036,7 @@ export default function HomeScreen() {
                   flex: 1,
                   paddingRight: 10,
                 }}>
-                {diseaseImageModalTitle || 'ZdjÄ™cie chorĂłby'}
+                {diseaseImageModalTitle || 'Zdjecie choroby'}
               </Text>
               <Pressable
                 onPress={handleCloseDiseaseImageModal}
@@ -34480,10 +32163,6 @@ export default function HomeScreen() {
     </SafeAreaView>
   );
 }
-
-
-
-
 
 
 

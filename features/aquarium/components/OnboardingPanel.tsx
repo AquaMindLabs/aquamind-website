@@ -98,7 +98,7 @@ export function OnboardingPanel({
         Tryb: {onboardingPlan.modeLabel || onboardingPlan.mode}
       </Text>
       <Text style={{ color: theme.textSecondary, marginTop: 4, fontSize: 12 }}>
-        Aktualny dzien od startu: {onboardingPlan.dayNumber}
+        Aktualny dzień od startu: {onboardingPlan.dayNumber}
       </Text>
       {onboardingPlan.activeStep ? (
         <Text style={{ color: theme.textSecondary, marginTop: 4, fontSize: 12 }}>
@@ -108,7 +108,7 @@ export function OnboardingPanel({
       ) : null}
       {onboardingPlan.nextStep ? (
         <Text style={{ color: theme.textSecondary, marginTop: 4, fontSize: 12 }}>
-          Nastepny krok: {onboardingPlan.nextStep.title} (dzien{' '}
+          Następny krok: {onboardingPlan.nextStep.title} (dzień{' '}
           {onboardingPlan.nextStep.recommendedDay})
         </Text>
       ) : null}
@@ -150,12 +150,12 @@ export function OnboardingPanel({
       <Pressable
         onPress={() =>
           Alert.alert(
-            'Wylaczyc onboarding?',
+            'Wyłączyc onboarding?',
             'Ta opcja jest nieodwracalna. Po potwierdzeniu sekcja onboardingu zniknie dla tego akwarium.',
             [
               { text: 'Anuluj', style: 'cancel' },
               {
-                text: 'Wylacz',
+                text: 'Wyłącz',
                 style: 'destructive',
                 onPress: onDisableOnboarding,
               },
@@ -180,7 +180,7 @@ export function OnboardingPanel({
             fontWeight: '700',
             textAlign: 'center',
           }}>
-          {onboardingToggleBusy ? 'Zapisywanie...' : 'Wylacz onboarding'}
+          {onboardingToggleBusy ? 'Zapisywanie...' : 'Wyłącz onboarding'}
         </Text>
       </Pressable>
       {Array.isArray(onboardingPlan.checklistStart) &&
@@ -220,16 +220,16 @@ export function OnboardingPanel({
       ) : (
         <>
           <Text style={{ color: theme.textSecondary, marginTop: 4, fontSize: 12 }}>
-            Dzien {onboardingPlan.dayNumber} / cel: dzien {onboardingPlan.targetEndDay}
+            Dzień {onboardingPlan.dayNumber} / cel: dzień {onboardingPlan.targetEndDay}
           </Text>
           <Text style={{ color: theme.textSecondary, marginTop: 4, fontSize: 12 }}>
-            Zadanie oznacza sie jako zrobione dopiero po zaznaczeniu checkboxa.
+            Zadanie oznacza sie jako zróbione dopiero po zaznaczeniu checkboxa.
           </Text>
 
           <View style={{ marginTop: 10 }}>
             {visibleOnboardingRows.length === 0 ? (
               <Text style={{ color: theme.textSecondary, fontSize: 12 }}>
-                Na dzisiaj nie ma zadan. Wroc jutro po kolejne kroki.
+                Na dzisiaj nie ma zadan. Wróć jutro po kolejne kroki.
               </Text>
             ) : (
               visibleOnboardingRows.map((row) => {
@@ -338,9 +338,9 @@ export function OnboardingPanel({
                             fontWeight: '700',
                             fontSize: 12,
                           }}>
-                          Dzien {row.dayStart}
+                          Dzień {row.dayStart}
                           {row.dayEnd > row.dayStart ? `-${row.dayEnd}` : ''} |{' '}
-                          {formatDateOnly(row.dueAtMs)} | {isChecked ? 'zrobione' : rowTimeLabel}
+                          {formatDateOnly(row.dueAtMs)} | {isChecked ? 'zróbione' : rowTimeLabel}
                         </Text>
                         <Text style={{ color: theme.textSecondary, marginTop: 3 }}>
                           {row.text}
@@ -372,8 +372,8 @@ export function OnboardingPanel({
                     fontWeight: '700',
                   }}>
                   {isCompletedOnboardingVisible
-                    ? `Ukryj zrobione (${completedOnboardingRows.length})`
-                    : `Pokaz zrobione (${completedOnboardingRows.length})`}
+                    ? `Ukryj zróbione (${completedOnboardingRows.length})`
+                    : `Pokaz zróbione (${completedOnboardingRows.length})`}
                 </Text>
               </Pressable>
 
@@ -430,9 +430,9 @@ export function OnboardingPanel({
                             fontWeight: '700',
                             fontSize: 12,
                           }}>
-                          Dzien {row.dayStart}
+                          Dzień {row.dayStart}
                           {row.dayEnd > row.dayStart ? `-${row.dayEnd}` : ''} |{' '}
-                          {formatDateOnly(row.dueAtMs)} | zrobione
+                          {formatDateOnly(row.dueAtMs)} | zróbione
                         </Text>
                         <Text style={{ color: theme.textSecondary, marginTop: 3 }}>
                           {row.text}

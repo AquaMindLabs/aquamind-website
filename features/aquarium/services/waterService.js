@@ -75,7 +75,7 @@ export function parseTankTargetRangeDraftOrThrowService(
         : parseNumberOrThrow(`${field.label} max`, rawMax);
 
     if (minValue > maxValue) {
-      throw new Error(`Zakres ${field.label}: min nie moze byc wieksze od max.`);
+      throw new Error(`Zakres ${field.label}: min nie może byc większe od max.`);
     }
 
     result[field.key] = {

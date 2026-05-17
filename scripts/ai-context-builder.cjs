@@ -273,6 +273,12 @@ function buildUserAquariumContext(uid, optionalTankId = null, data = {}, options
   const filterItems = extractEquipmentEntries(
     selectedTank?.filterEquipments ?? selectedTank?.filterEquipment
   );
+  const onboardingTaskChecks =
+    selectedTank?.onboardingTaskChecks &&
+    typeof selectedTank.onboardingTaskChecks === 'object' &&
+    !Array.isArray(selectedTank.onboardingTaskChecks)
+      ? selectedTank.onboardingTaskChecks
+      : {};
 
   const context = {
     selectedTank: selectedTank
@@ -344,8 +350,7 @@ function buildUserAquariumContext(uid, optionalTankId = null, data = {}, options
       enabled: Boolean(selectedTank?.onboardingEnabled),
       mode: toSafeString(selectedTank?.onboardingMode, 64) || null,
       startAt: toIsoDate(selectedTank?.onboardingStartAt ?? selectedTank?.createdAt),
-      completedTaskCount: Object.values(selectedTank?.onboardingTaskChecks ?? {}).filter(Boolean)
-        .length,
+      completedTaskCount: Object.values(onboardingTaskChecks).filter(Boolean).length,
     },
     actionCalendarHighlights: {
       highlights: buildActionHighlights(

@@ -1,3 +1,8 @@
+import {
+  buildUnifiedAlert,
+  sortUnifiedAlerts,
+} from '@/features/aquarium/services/alertsService';
+
 type TrendSuggestedEnvironmentInput = {
   fishItems?: any[];
   plantItems?: any[];
@@ -169,6 +174,7 @@ export function buildAttentionItemsForTank(
     activeAlgaeCasesCount = 0,
     activeAlgaeCases = [],
     selectedTankHealthAssessment,
+    measurementAnalysis = null,
   }: any,
   deps: {
     summarizeCompatibilityResults: (results: any[]) => any;
@@ -225,26 +231,53 @@ export function buildAttentionItemsForTank(
     return score;
   };
 
-  const appendItem = (severity: string, text: string, details: string[] = []) => {
-    const normalizedText = String(text ?? '').trim();
-    if (!normalizedText) {
+  const appendItem = ({
+    severity = 'info',
+    title = '',
+    explanation = '',
+    suggestedAction = '',
+    source = 'review',
+    affectedArea = 'general',
+    area = '',
+    urgency = '',
+    priorityBoost = 0,
+    details = [],
+  }: any) => {
+    const normalizedTitle = String(title ?? '').trim();
+    if (!normalizedTitle) {
       return;
     }
-    const key = normalizedText.toLowerCase();
+    const key = `${String(affectedArea ?? '').trim().toLowerCase()}::${normalizedTitle.toLowerCase()}`;
     if (seen.has(key)) {
       return;
     }
     seen.add(key);
+    const normalizedDetails = Array.isArray(details)
+      ? details.map((item) => String(item ?? '').trim()).filter(Boolean)
+      : [];
+    const resolvedExplanation =
+      String(explanation ?? '').trim() || normalizedDetails[0] || '';
+    const resolvedAction =
+      String(suggestedAction ?? '').trim() ||
+      normalizedDetails.find((item) => item.toLowerCase().includes('działanie:')) ||
+      normalizedDetails[1] ||
+      '';
+
     items.push({
-      id: key,
-      severity: severity === 'critical' ? 'critical' : 'warning',
-      text: normalizedText,
-      details: Array.isArray(details)
-        ? details
-            .map((item) => String(item ?? '').trim())
-            .filter(Boolean)
-        : [],
-      priority: getSuggestionPriorityScore(severity, normalizedText),
+      ...buildUnifiedAlert({
+        id: key,
+        severity,
+        title: normalizedTitle,
+        explanation: resolvedExplanation,
+        suggestedAction: resolvedAction,
+        source,
+        affectedArea,
+        area,
+        urgency,
+        priorityBoost:
+          getSuggestionPriorityScore(severity, normalizedTitle) + Number(priorityBoost || 0),
+      }),
+      details: normalizedDetails.length > 0 ? normalizedDetails : [],
     });
   };
 
@@ -254,14 +287,23 @@ export function buildAttentionItemsForTank(
         (entry.status === 'warning' || entry.status === 'critical') &&
         (entry.actions?.[0] || entry.details)
       ) {
-        appendItem(
-          entry.status,
-          `Sprzet (${entry.title}) wymaga korekty.`,
-          [
+        appendItem({
+          severity: entry.status,
+          title: `Sprzet (${entry.title}) wymaga korekty.`,
+          explanation: String(entry.details ?? '').trim(),
+          suggestedAction:
+            Array.isArray(entry.actions) && entry.actions.length > 0
+              ? String(entry.actions[0] ?? '').trim()
+              : '',
+          source: 'equipment_assessment',
+          affectedArea: 'equipment',
+          area: 'Sprzet',
+          urgency: entry.status === 'critical' ? 'immediate' : 'today',
+          details: [
             entry.details,
             ...(Array.isArray(entry.actions) ? entry.actions.slice(0, 3) : []),
-          ]
-        );
+          ],
+        });
       }
     });
   }
@@ -270,37 +312,108 @@ export function buildAttentionItemsForTank(
     trendSuggestedEnvironment.recommendedTempRange &&
     trendSuggestedEnvironment.currentTempValue === null
   ) {
-    appendItem(
-      'warning',
-      `Dodaj aktualny pomiar temperatury i porownaj go z zakresem ${trendSuggestedEnvironment.recommendedTempRange.min}-${trendSuggestedEnvironment.recommendedTempRange.max} C.`
-    );
+    appendItem({
+      severity: 'info',
+      title: `Dodaj aktualny pomiar temperatury i porownaj go z zakresem ${trendSuggestedEnvironment.recommendedTempRange.min}-${trendSuggestedEnvironment.recommendedTempRange.max} C.`,
+      explanation: 'Brak danych temperatury utrudnia ocene ryzyka dla obsady i stabilności zbiornika.',
+      suggestedAction: 'Wprowadź pomiar temperatury, aby uruchomic precyzyjne rekomendacje.',
+      source: 'temperature_context',
+      affectedArea: 'data_quality',
+      area: 'Parametry',
+      urgency: 'monitor',
+    });
   } else if (
     trendSuggestedEnvironment.recommendedTempRange &&
     trendSuggestedEnvironment.isTempWithinSuggested === false
   ) {
-    appendItem(
-      'critical',
-      `Skoryguj temperature do ${trendSuggestedEnvironment.recommendedTempRange.min}-${trendSuggestedEnvironment.recommendedTempRange.max} C (aktualnie: ${trendSuggestedEnvironment.currentTempValue} C).`
-    );
+    const targetMin = Number(trendSuggestedEnvironment.recommendedTempRange.min);
+    const targetMax = Number(trendSuggestedEnvironment.recommendedTempRange.max);
+    const currentTemp = Number(trendSuggestedEnvironment.currentTempValue);
+    const tempDelta = Number.isFinite(currentTemp)
+      ? Math.max(
+          Math.abs(currentTemp - targetMin),
+          Math.abs(currentTemp - targetMax)
+        )
+      : 0;
+    const severity = tempDelta >= 1.5 ? 'critical' : 'warning';
+    appendItem({
+      severity,
+      title: `Skoryguj temperature do ${targetMin}-${targetMax} C (aktualnie: ${trendSuggestedEnvironment.currentTempValue} C).`,
+      explanation:
+        severity === 'critical'
+          ? 'Odchylenie temperatury może szybko pogorszyc kondycje obsady.'
+          : 'Temperatura jest poza celem, ale odchylenie wyglada na umiarkowane.',
+      suggestedAction:
+        severity === 'critical'
+          ? 'Koryguj temperature stopniowo i zwiększ natlenienie.'
+          : 'Skoryguj temperature przy najbliższej kontroli.',
+      source: 'temperature_context',
+      affectedArea: 'water_parameters',
+      area: 'Parametry',
+      urgency: severity === 'critical' ? 'immediate' : 'today',
+    });
   }
 
   if (
     trendSuggestedEnvironment.recommendedLightRange &&
     trendSuggestedEnvironment.currentLightValue === null
   ) {
-    appendItem(
-      'warning',
-      `Uzupelnij czas swiecenia lampy i porownaj go z zakresem ${trendSuggestedEnvironment.recommendedLightRange.min}-${trendSuggestedEnvironment.recommendedLightRange.max} h/dobe.`
-    );
+    appendItem({
+      severity: 'info',
+      title: `Uzupelnij czas świecenia lampy i porownaj go z zakresem ${trendSuggestedEnvironment.recommendedLightRange.min}-${trendSuggestedEnvironment.recommendedLightRange.max} h/dobe.`,
+      explanation: 'Bez czasu świecenia trudniej ocenic przyczyny słabego wzrostu roslin lub glonow.',
+      suggestedAction: 'Wprowadź liczbe godzin świecenia na dobe.',
+      source: 'lighting_context',
+      affectedArea: 'data_quality',
+      area: 'Rosliny',
+      urgency: 'monitor',
+    });
   } else if (
     trendSuggestedEnvironment.recommendedLightRange &&
     trendSuggestedEnvironment.isLightWithinSuggested === false
   ) {
-    appendItem(
-      'warning',
-      `Skoryguj czas swiecenia do ${trendSuggestedEnvironment.recommendedLightRange.min}-${trendSuggestedEnvironment.recommendedLightRange.max} h/dobe (aktualnie: ${trendSuggestedEnvironment.currentLightValue} h).`
-    );
+    appendItem({
+      severity: 'warning',
+      title: `Skoryguj czas świecenia do ${trendSuggestedEnvironment.recommendedLightRange.min}-${trendSuggestedEnvironment.recommendedLightRange.max} h/dobe (aktualnie: ${trendSuggestedEnvironment.currentLightValue} h).`,
+      explanation: 'Nieoptymalny fotoperiod może nasilic glony lub oslabic rosliny.',
+      suggestedAction: 'Skoryguj fotoperiod i obserwuj zmiany przez 5-7 dni.',
+      source: 'lighting_context',
+      affectedArea: 'plants',
+      area: 'Rosliny',
+      urgency: 'today',
+    });
   }
+
+  (measurementAnalysis?.recommendations ?? [])
+    .slice(0, 6)
+    .forEach((recommendation: any, index: number) => {
+      const recommendationSeverity = String(recommendation?.severity ?? '').toLowerCase();
+      const normalizedSeverity =
+        recommendationSeverity === 'critical'
+          ? 'critical'
+          : recommendationSeverity === 'warning'
+            ? 'warning'
+            : 'info';
+      if (normalizedSeverity === 'info' && !recommendation?.issue && !recommendation?.action) {
+        return;
+      }
+      appendItem({
+        severity: normalizedSeverity,
+        title:
+          String(recommendation?.issue ?? '').trim() ||
+          `Parametry wymagaja uwagi (${String(recommendation?.parameter ?? '').toUpperCase() || index + 1}).`,
+        explanation:
+          String(recommendation?.expectedRange ?? '').trim() ||
+          String(recommendation?.parameter ?? '').trim()
+            ? `Parametr: ${String(recommendation?.parameter ?? '').toUpperCase()}.`
+            : 'Wykryto odchylenie w parametrach wody.',
+        suggestedAction: String(recommendation?.action ?? '').trim(),
+        source: 'water_analysis',
+        affectedArea: 'water_parameters',
+        area: 'Parametry',
+        urgency: normalizedSeverity === 'critical' ? 'immediate' : 'today',
+      });
+    });
 
   const fishCompatibilitySummary = summarizeCompatibilityResults(fishCompatibilityResults);
   const fishMismatch = buildCompatibilityMismatchDetails(fishCompatibilityResults, {
@@ -311,68 +424,108 @@ export function buildAttentionItemsForTank(
   const incompatibleFishMajorCount = fishCompatibilitySummary.speciesWithMajorIssues;
   const fishMismatchNames = formatCompactNameList(fishMismatch.names, 3);
   if (incompatibleFishCount > 0) {
-    appendItem(
-      incompatibleFishMajorCount >= 2 ? 'critical' : 'warning',
-      fishMismatchNames
+    appendItem({
+      severity: incompatibleFishMajorCount >= 3 ? 'critical' : 'warning',
+      title: fishMismatchNames
         ? `Niedopasowanie warunkow u ryb: ${fishMismatchNames}.`
         : `Wykryto niezgodnosci dla ryb (${incompatibleFishCount} gat.).`,
-      [
+      explanation: 'Czesc ryb ma wymagania odbiegajace od aktualnych warunkow akwarium.',
+      suggestedAction: 'Dopasuj obsade do parametrów i litrażu akwarium.',
+      source: 'fish_compatibility',
+      affectedArea: 'fish',
+      area: 'Ryby',
+      urgency: incompatibleFishMajorCount >= 3 ? 'today' : 'soon',
+      details: [
         ...fishMismatch.details,
         `Mocniejsze odchylenia: ${incompatibleFishMajorCount}.`,
-        'Dzialanie: dopasuj obsade do parametrow i litrazu akwarium.',
-      ]
-    );
+        'Działanie: dopasuj obsade do parametrów i litrażu akwarium.',
+      ],
+    });
   }
 
   const aggressionDetails = buildAggressionConflictDetails(fishAggressionConflicts, 4);
   if (fishAggressionConflictsCount > 0) {
-    appendItem(
-      'critical',
-      aggressionDetails.length > 0
+    appendItem({
+      severity: fishAggressionConflictsCount >= 3 ? 'critical' : 'warning',
+      title: aggressionDetails.length > 0
         ? `Konflikty agresji: ${formatCompactNameList(aggressionDetails, 2)}.`
-        : `Wykryto konflikty agresji miedzy rybami (${fishAggressionConflictsCount}).`,
-      [
+        : `Wykryto konflikty agresji między rybami (${fishAggressionConflictsCount}).`,
+      explanation: 'Konflikty behawioralne moga prowadzic do przewleklego stresu i urazow.',
+      suggestedAction: 'Rozdziel konfliktówe gatunki lub zmien obsade.',
+      source: 'stocking_conflicts',
+      affectedArea: 'stocking',
+      area: 'Ryby',
+      urgency: fishAggressionConflictsCount >= 3 ? 'immediate' : 'today',
+      details: [
         ...aggressionDetails.map((pair) => `Konflikt: ${pair}.`),
-        `Liczba konfliktow: ${fishAggressionConflictsCount}.`,
-        'Dzialanie: rozdziel konfliktowe gatunki lub zmien obsade.',
-      ]
-    );
+        `Liczba konfliktów: ${fishAggressionConflictsCount}.`,
+        'Działanie: rozdziel konfliktówe gatunki lub zmien obsade.',
+      ],
+    });
   }
 
   const schoolingDetails = buildSchoolingWarningDetails(fishSchoolingWarnings, 4);
   if (fishSchoolingWarningsCount > 0) {
-    appendItem(
-      'warning',
-      schoolingDetails.length > 0
+    appendItem({
+      severity: 'warning',
+      title: schoolingDetails.length > 0
         ? `Za mala liczebnosc ryb stadnych: ${formatCompactNameList(
             fishSchoolingWarnings.map((item: any) => item?.label),
             3
           )}.`
         : `Za mala liczebnosc ryb stadnych (${fishSchoolingWarningsCount} gat.).`,
-      [...schoolingDetails, 'Dzialanie: zwieksz liczebnosc ryb stadnych albo zmien gatunki.']
-    );
+      explanation: 'Niedobor liczebnosci stadnej podnosi stres i może nasilic konflikty.',
+      suggestedAction: 'Zwiększ liczebnosc ryb stadnych albo zmien gatunki.',
+      source: 'schooling_check',
+      affectedArea: 'stocking',
+      area: 'Ryby',
+      urgency: 'soon',
+      details: [...schoolingDetails, 'Działanie: zwiększ liczebnosc ryb stadnych albo zmien gatunki.'],
+    });
   }
 
   if (fishStockingSummary.hasFish && !fishStockingSummary.hasTankLiters) {
-    appendItem('warning', 'Uzupelnij litraz akwarium, aby poprawnie oceniac przerybienie.');
+    appendItem({
+      severity: 'info',
+      title: 'Uzupelnij litraż akwarium, aby poprawnie oceniac przerybienie.',
+      explanation: 'Brak litrażu ogranicza wiarygodnosc ocen obsady.',
+      suggestedAction: 'Wprowadź litraż w ustawieńiach akwarium.',
+      source: 'stocking_check',
+      affectedArea: 'data_quality',
+      area: 'Ryby',
+      urgency: 'monitor',
+    });
   } else if (
     fishStockingSummary.hasFish &&
     fishStockingSummary.hasTankLiters &&
-    fishStockingSummary.ratio > 1.2
+    fishStockingSummary.ratio > 1.35
   ) {
-    appendItem(
-      'critical',
-      `Zmniejsz obsade lub zwieksz litraz: przerybienie na poziomie ${Math.round(
+    appendItem({
+      severity: 'critical',
+      title: `Zmniejsz obsade lub zwiększ litraż: przerybienie na poziomie ${Math.round(
         fishStockingSummary.ratio * 100
-      )}%.`
-    );
+      )}%.`,
+      explanation: 'Wysokie przerybienie podnosi ryzyko toksyn i niedotlenienia.',
+      suggestedAction: 'Zmniejsz obsade lub rozdziel ryby do większego zbiornika.',
+      source: 'stocking_check',
+      affectedArea: 'stocking',
+      area: 'Ryby',
+      urgency: 'immediate',
+    });
   } else if (fishStockingSummary.isOverstocked) {
-    appendItem(
-      'warning',
-      `Obsada jest lekko za duza (${Math.round(
+    appendItem({
+      severity: 'warning',
+      title: `Obsada jest lekko za duza (${Math.round(
         fishStockingSummary.ratio * 100
       )}%). Warto odciazyc zbiornik.`
-    );
+      ,
+      explanation: 'To odchylenie nie wyglada na natychmiastowe zagrozenie, ale obciaza biologie.',
+      suggestedAction: 'Stopniowo odciaz zbiornik i monitoruj NO2/NO3.',
+      source: 'stocking_check',
+      affectedArea: 'stocking',
+      area: 'Ryby',
+      urgency: 'soon',
+    });
   }
 
   const plantCompatibilitySummary = summarizeCompatibilityResults(plantCompatibilityResults);
@@ -384,17 +537,23 @@ export function buildAttentionItemsForTank(
   const incompatiblePlantMajorCount = plantCompatibilitySummary.speciesWithMajorIssues;
   const plantMismatchNames = formatCompactNameList(plantMismatch.names, 3);
   if (incompatiblePlantCount > 0) {
-    appendItem(
-      incompatiblePlantMajorCount >= 2 ? 'critical' : 'warning',
-      plantMismatchNames
+    appendItem({
+      severity: incompatiblePlantMajorCount >= 3 ? 'critical' : 'warning',
+      title: plantMismatchNames
         ? `Niedopasowanie warunkow u roslin: ${plantMismatchNames}.`
         : `Wykryto niezgodnosci dla roslin (${incompatiblePlantCount} gat.).`,
-      [
+      explanation: 'Czesc roslin ma wymagania, ktore sa poza aktualnymi warunkami.',
+      suggestedAction: 'Dopasuj gatunki do pH, GH/KH, oświetlenia i temperatury.',
+      source: 'plant_compatibility',
+      affectedArea: 'plants',
+      area: 'Rosliny',
+      urgency: incompatiblePlantMajorCount >= 3 ? 'today' : 'soon',
+      details: [
         ...plantMismatch.details,
         `Mocniejsze odchylenia: ${incompatiblePlantMajorCount}.`,
-        'Dzialanie: dopasuj gatunki do pH, GH/KH, oswietlenia i temperatury.',
-      ]
-    );
+        'Działanie: dopasuj gatunki do pH, GH/KH, oświetlenia i temperatury.',
+      ],
+    });
   }
 
   const activeIssueCasesCount =
@@ -408,31 +567,44 @@ export function buildAttentionItemsForTank(
     4
   );
   if (activeIssueCasesCount > 0) {
-    appendItem(
-      activeIssueCasesCount > 1 ? 'critical' : 'warning',
-      activeIssueNames
+    appendItem({
+      severity: activeIssueCasesCount > 2 ? 'critical' : 'warning',
+      title: activeIssueNames
         ? `Aktywne problemy: ${activeIssueNames}.`
         : `Masz aktywne problemy zdrowotne/glony (${activeIssueCasesCount}).`,
-      [
+      explanation: 'Aktywne problemy wymagaja regularnej weryfikacji efektow leczenia i korekt.',
+      suggestedAction: 'Realizuj plan leczenia i harmonogram dla aktywnych problemów.',
+      source: 'issue_tracking',
+      affectedArea: 'health',
+      area: 'Problemy',
+      urgency: activeIssueCasesCount > 2 ? 'today' : 'soon',
+      details: [
         `Choroby ryb: ${activeDiseaseCasesCount}.`,
         `Choroby roslin: ${activePlantDiseaseCasesCount}.`,
         `Glony: ${activeAlgaeCasesCount}.`,
-        'Dzialanie: realizuj plan leczenia i harmonogram dla aktywnych problemow.',
-      ]
-    );
+        'Działanie: realizuj plan leczenia i harmonogram dla aktywnych problemów.',
+      ],
+    });
   }
 
   if (items.length === 0 && selectedTankHealthAssessment?.score < 85) {
     (selectedTankHealthAssessment.penalties ?? [])
       .slice(0, 2)
       .forEach((penalty: any) =>
-        appendItem(penalty.points >= 12 ? 'critical' : 'warning', penalty.text)
+        appendItem({
+          severity: penalty.points >= 18 ? 'critical' : penalty.points >= 10 ? 'warning' : 'info',
+          title: String(penalty.text ?? '').trim(),
+          explanation: 'Wynik zdrowia wskazuje obszar do poprawy.',
+          suggestedAction: 'Wprowadź poprawke i sprawdz zmiane po kolejnym pomiarze.',
+          source: 'health_score',
+          affectedArea: 'general',
+          area: 'Ogolne',
+          urgency: penalty.points >= 18 ? 'today' : 'soon',
+        })
       );
   }
 
-  return items
-    .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
-    .slice(0, 6);
+  return sortUnifiedAlerts(items, 12);
 }
 
 export function buildHomeSectionCounts(
@@ -498,15 +670,17 @@ export function buildHomeSectionCounts(
   const tankLiters = Number(tank?.liters);
   const tankProfile = buildTankEnvironmentProfile(tank);
   const equipmentAssessment = buildTankEquipmentAssessment(tank, equipmentCatalog);
-  const fishItems = stockItems.filter((item: any) => item.type === 'fish');
-  const plantItems = stockItems.filter((item: any) => item.type === 'plant');
-  const activeDiseaseCases = issueCases.filter(
+  const safeStockItems = Array.isArray(stockItems) ? stockItems : [];
+  const safeIssueCases = Array.isArray(issueCases) ? issueCases : [];
+  const fishItems = safeStockItems.filter((item: any) => item?.type === 'fish');
+  const plantItems = safeStockItems.filter((item: any) => item?.type === 'plant');
+  const activeDiseaseCases = safeIssueCases.filter(
     (item: any) => String(item.caseType ?? 'disease').toLowerCase() === 'disease'
   );
-  const activePlantDiseaseCases = issueCases.filter(
+  const activePlantDiseaseCases = safeIssueCases.filter(
     (item: any) => String(item.caseType ?? '').toLowerCase() === 'plant_disease'
   );
-  const activeAlgaeCases = issueCases.filter(
+  const activeAlgaeCases = safeIssueCases.filter(
     (item: any) => String(item.caseType ?? '').toLowerCase() === 'algae'
   );
 
@@ -537,7 +711,11 @@ export function buildHomeSectionCounts(
     .filter(Boolean);
   const fishSchoolingWarningsCount = fishSchoolingWarnings.length;
 
-  const stockingCompatibility = evaluateStockingCompatibility(tank, stockItems, measurement);
+  const stockingCompatibility = evaluateStockingCompatibility(
+    tank,
+    safeStockItems,
+    measurement
+  );
   const fishAggressionConflicts = (stockingCompatibility?.conflicts ?? [])
     .filter((item: any) =>
       ['aggression', 'territoriality', 'predation', 'finNipping'].includes(

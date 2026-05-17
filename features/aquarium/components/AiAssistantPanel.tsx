@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Image, Pressable, Text, TextInput, View } from 'react-native';
 import {
   AiChatRequestError,
@@ -66,6 +66,8 @@ type RetryKind = 'chat' | 'vision' | null;
 type AiAssistantPanelProps = {
   user: { uid?: string; getIdToken?: () => Promise<string> } | null;
   selectedTankId?: string | null;
+  selectedTankName?: string | null;
+  forceActiveTankContext?: boolean;
   hasAiAssistantAccess: boolean;
   aiAssistantLockMessage: string;
   aiAssistantUpgradePromptMessage?: string;
@@ -86,6 +88,56 @@ type PickedVisionImage = {
 };
 
 const MAX_HISTORY_ITEMS = 8;
+const QUICK_ACTIONS = Object.freeze([
+  {
+    id: 'interpret-params',
+    label: 'Zinterpretuj moje parametry',
+    question:
+      'Zinterpretuj moje ostatnie parametry w aktywnym akwarium i powiedz, co jest najpilniejsze.',
+    additionalInfo: 'Skup sie na pH, NO2, NO3, NH3/NH4 i temperaturze.',
+    mode: 'chat',
+  },
+  {
+    id: 'what-now',
+    label: 'Co zróbic teraz?',
+    question:
+      'Co powinienem zróbic teraz w tym akwarium? Ustal priorytety na dzisiaj.',
+    additionalInfo: 'Daj krótki plan krok po kroku.',
+    mode: 'chat',
+  },
+  {
+    id: 'check-stocking',
+    label: 'Sprawdz obsade',
+    question:
+      'Ocen obsade mojego akwarium i wskaz największe ryzyka dla ryb.',
+    additionalInfo: 'Podaj, co poprawic najpierw i dlaczego.',
+    mode: 'chat',
+  },
+  {
+    id: 'analyze-photo',
+    label: 'Przeanalizuj zdjęcie',
+    question:
+      'Przeanalizuj zdjęcie akwarium i wskaz najbardziej prawdopodobne problemy.',
+    additionalInfo: 'Podaj hipotezy, poziom pewnosci i plan weryfikacji pomiarami.',
+    mode: 'vision',
+  },
+  {
+    id: 'help-algae',
+    label: 'Pomoz z glonami',
+    question:
+      'Mam problem z glonami. Ocen dane i zaproponuj plan ograniczania glonow.',
+    additionalInfo: 'Uwzglednij światło, NO3/PO4 i obciążenie biologiczne.',
+    mode: 'chat',
+  },
+  {
+    id: 'help-sick-fish',
+    label: 'Pomoz z chora ryba',
+    question:
+      'Ryba wyglada na chora. Co moge sprawdzic i jakie kroki wykonac najpierw?',
+    additionalInfo: 'Daj ostrozny plan i oznacz, co wymaga konsultacji specjalistycznej.',
+    mode: 'chat',
+  },
+]);
 
 function toSafeString(value: unknown, maxLength = 4000): string {
   const normalized = String(value ?? '').trim();
@@ -101,6 +153,8 @@ function toSafeString(value: unknown, maxLength = 4000): string {
 export function AiAssistantPanel({
   user,
   selectedTankId = null,
+  selectedTankName = null,
+  forceActiveTankContext = false,
   hasAiAssistantAccess,
   aiAssistantLockMessage,
   aiAssistantUpgradePromptMessage = '',
@@ -124,6 +178,7 @@ export function AiAssistantPanel({
   const [retryableError, setRetryableError] = useState(false);
   const [isTimeoutError, setIsTimeoutError] = useState(false);
   const [emptyDataHintVisible, setEmptyDataHintVisible] = useState(false);
+  const [missingDataHints, setMissingDataHints] = useState<string[]>([]);
   const [lastRetryKind, setLastRetryKind] = useState<RetryKind>(null);
   const [lastChatRequest, setLastChatRequest] = useState<{
     question: string;
@@ -137,9 +192,17 @@ export function AiAssistantPanel({
     image: PickedVisionImage;
   } | null>(null);
 
-  const activeTankIdForRequest = includeActiveTank ? selectedTankId || null : null;
+  useEffect(() => {
+    if (forceActiveTankContext) {
+      setIncludeActiveTank(true);
+    }
+  }, [forceActiveTankContext]);
+
+  const effectiveIncludeActiveTank = forceActiveTankContext ? true : includeActiveTank;
+  const activeTankIdForRequest = effectiveIncludeActiveTank ? selectedTankId || null : null;
   const canRetry = Boolean(lastRetryKind) && retryableError && !isLoading;
   const historyItems = useMemo(() => history, [history]);
+  const activeTankLabel = toSafeString(selectedTankName || selectedTankId, 120);
 
   const pushHistoryEntry = useCallback((entry: AiAssistantEntry) => {
     setHistory((previous) => [entry, ...previous].slice(0, MAX_HISTORY_ITEMS));
@@ -156,6 +219,37 @@ export function AiAssistantPanel({
     setRetryableError(false);
     setIsTimeoutError(false);
     setLastRetryKind(null);
+  }, []);
+
+  const buildMissingDataHints = useCallback((contextSummary: Record<string, unknown> | null) => {
+    const hints: string[] = [];
+    const tankCount = Number((contextSummary as { tankCount?: unknown } | null)?.tankCount);
+    const measurementCount = Number(
+      (contextSummary as { measurementCount?: unknown } | null)?.measurementCount
+    );
+    const stockCount = Number((contextSummary as { stockCount?: unknown } | null)?.stockCount);
+    const equipmentTotal = Number(
+      (
+        contextSummary as {
+          equipmentSummary?: { total?: unknown };
+        } | null
+      )?.equipmentSummary?.total
+    );
+
+    if (!Number.isFinite(tankCount) || tankCount <= 0) {
+      hints.push('Dodaj pierwsze akwarium lub wybierz aktywne akwarium do analizy.');
+      return hints;
+    }
+    if (!Number.isFinite(measurementCount) || measurementCount <= 0) {
+      hints.push('Dodaj pomiar: pH, NO2, NO3 i temperatura.');
+    }
+    if (!Number.isFinite(stockCount) || stockCount <= 0) {
+      hints.push('Uzupelnij obsade (ryby/rosliny), aby AI moglo ocenic zgodnosc.');
+    }
+    if (!Number.isFinite(equipmentTotal) || equipmentTotal <= 0) {
+      hints.push('Uzupelnij sprzet (filtr, grzalka, oświetlenie) dla trafniejszych zaleceń.');
+    }
+    return hints;
   }, []);
 
   const runChatRequest = useCallback(
@@ -175,7 +269,7 @@ export function AiAssistantPanel({
       if (!aiConsentDataProcessing) {
         setHandledError(
           new AiChatRequestError(
-            'Aby korzystac z AI, wlacz zgode na przetwarzanie danych AI.',
+            'Aby korzystac z AI, włącz zgode na przetwarzanie danych AI.',
             'AIW_VALIDATION',
             false
           )
@@ -217,6 +311,9 @@ export function AiAssistantPanel({
             ?.hasMinimalData
         );
         setEmptyDataHintVisible(hasMinimalData);
+        setMissingDataHints(
+          hasMinimalData ? buildMissingDataHints(response.contextSummary) : []
+        );
 
         pushHistoryEntry({
           type: 'chat',
@@ -243,7 +340,7 @@ export function AiAssistantPanel({
           rawError instanceof AiChatRequestError
             ? rawError
             : new AiChatRequestError(
-                'Wystapil blad Asystenta AI. Sprobuj ponownie.',
+                'Wystapil błąd Asystenta AI. Spróbuj ponownie.',
                 'AIW_INTERNAL',
                 true
               );
@@ -275,6 +372,7 @@ export function AiAssistantPanel({
       question,
       setHandledError,
       user,
+      buildMissingDataHints,
     ]
   );
 
@@ -301,7 +399,7 @@ export function AiAssistantPanel({
           rawError instanceof AiChatRequestError
             ? rawError
             : new AiChatRequestError(
-                'Nie udalo sie wybrac zdjecia. Sprobuj ponownie.',
+                'Nie udalo sie wybrac zdjęcia. Spróbuj ponownie.',
                 'AIW_INTERNAL',
                 true
               );
@@ -330,7 +428,7 @@ export function AiAssistantPanel({
       if (!image?.uri) {
         setHandledError(
           new AiChatRequestError(
-            'Dodaj zdjecie z aparatu lub galerii przed analiza.',
+            'Dodaj zdjęcie z aparatu lub galerii przed analiza.',
             'AIW_VALIDATION',
             false
           )
@@ -340,7 +438,7 @@ export function AiAssistantPanel({
       if (!aiConsentDataProcessing || !aiConsentImageAnalysis) {
         setHandledError(
           new AiChatRequestError(
-            'Aby analizowac zdjecia, wlacz zgody: przetwarzanie danych AI i analiza obrazow.',
+            'Aby analizowac zdjęcia, włącz zgody: przetwarzanie danych AI i analiza obrazow.',
             'AIW_VALIDATION',
             false
           )
@@ -389,12 +487,15 @@ export function AiAssistantPanel({
             ?.hasMinimalData
         );
         setEmptyDataHintVisible(hasMinimalData || response.unreadableImageFallback);
+        setMissingDataHints(
+          hasMinimalData ? buildMissingDataHints(response.contextSummary) : []
+        );
 
         pushHistoryEntry({
           type: 'vision',
           id: `ai-vision-${Date.now()}`,
           createdAtLabel: new Date().toLocaleString(),
-          question: nextRequest.question || 'Analiza zdjecia akwarium',
+          question: nextRequest.question || 'Analiza zdjęcia akwarium',
           imageUri: nextRequest.image.uri,
           summary: response.summary,
           hypotheses: response.hypotheses,
@@ -418,7 +519,7 @@ export function AiAssistantPanel({
           rawError instanceof AiChatRequestError
             ? rawError
             : new AiChatRequestError(
-                'Wystapil blad analizy obrazu. Sprobuj ponownie.',
+                'Wystapil błąd analizy obrazu. Spróbuj ponownie.',
                 'AIW_INTERNAL',
                 true
               );
@@ -452,7 +553,22 @@ export function AiAssistantPanel({
       selectedVisionImage,
       setHandledError,
       user,
+      buildMissingDataHints,
     ]
+  );
+
+  const handleQuickAction = useCallback(
+    (actionId: string) => {
+      const action = QUICK_ACTIONS.find((item) => item.id === actionId);
+      if (!action || isLoading) {
+        return;
+      }
+
+      clearErrorState();
+      setQuestion(action.question);
+      setExtraContext(action.additionalInfo);
+    },
+    [clearErrorState, isLoading]
   );
 
   const handleRetry = useCallback(() => {
@@ -482,10 +598,11 @@ export function AiAssistantPanel({
           fontSize: 16,
           marginBottom: 8,
         }}>
-        Asystent AI
+        Asystent AI Pro
       </Text>
       <Text style={{ color: theme.themeTextSecondary, fontSize: 12, marginBottom: 10 }}>
-        Zadawaj pytania i analizuj zdjecia akwarium na bazie zapisanych danych.
+        Doradca premium, ktory analizuje dane konkretnego akwarium: parametry, obsade, sprzet,
+        onboarding i zdjęcia.
       </Text>
 
       {!hasAiAssistantAccess ? (
@@ -494,11 +611,23 @@ export function AiAssistantPanel({
             borderWidth: 1,
             borderColor: theme.themeWarningText,
             borderRadius: 8,
-            padding: 10,
+            padding: 12,
             backgroundColor: theme.themeCardBgAlt,
           }}>
-          <Text style={{ color: theme.themeWarningText, fontSize: 12 }}>
+          <Text style={{ color: theme.themeWarningText, fontSize: 12, fontWeight: '700' }}>
             {aiAssistantLockMessage}
+          </Text>
+          <Text style={{ color: theme.themeTextSecondary, fontSize: 12, marginTop: 6 }}>
+            Funkcja Pro pomaga konkretnie w:
+          </Text>
+          <Text style={{ color: theme.themeTextSecondary, fontSize: 12, marginTop: 4 }}>
+            - interpretacji parametrów i priorytetow działań,
+          </Text>
+          <Text style={{ color: theme.themeTextSecondary, fontSize: 12, marginTop: 2 }}>
+            - diagnozie problemów (ryby/rosliny/glony),
+          </Text>
+          <Text style={{ color: theme.themeTextSecondary, fontSize: 12, marginTop: 2 }}>
+            - analizie zdjęć + planie krok po kroku.
           </Text>
           {showAiAssistantUpgradePrompt && aiAssistantUpgradePromptMessage ? (
             <Text
@@ -549,6 +678,66 @@ export function AiAssistantPanel({
               marginBottom: 8,
             }}>
             <Text style={{ color: theme.themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+              Kontekst AI
+            </Text>
+            <Text style={{ color: theme.themeTextSecondary, fontSize: 12, marginTop: 5 }}>
+              {effectiveIncludeActiveTank
+                ? activeTankLabel
+                  ? `Analiza dla aktywnego akwarium: ${activeTankLabel}`
+                  : 'Brak aktywnego akwarium. AI użyje danych ze wszystkich zbiornikow.'
+                : 'AI użyje danych ze wszystkich Twoich akwariów.'}
+            </Text>
+          </View>
+
+          <View
+            style={{
+              borderWidth: 1,
+              borderColor: theme.themeBorder,
+              borderRadius: 8,
+              padding: 10,
+              backgroundColor: theme.themeCardBgAlt,
+              marginBottom: 8,
+            }}>
+            <Text style={{ color: theme.themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+              Szybkie akcje AI
+            </Text>
+            <Text style={{ color: theme.themeTextSecondary, fontSize: 11, marginTop: 4 }}>
+              Klikniecie tylko uzupelnia pole pytania. Wysylka nastapi dopiero po recznym kliknieciu
+              przycisku.
+            </Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+              {QUICK_ACTIONS.map((action) => (
+                <Pressable
+                  key={action.id}
+                  onPress={() => handleQuickAction(action.id)}
+                  disabled={isLoading}
+                  style={{
+                    borderWidth: 1,
+                    borderColor: theme.themeBorderStrong,
+                    borderRadius: 999,
+                    paddingVertical: 7,
+                    paddingHorizontal: 10,
+                    backgroundColor: theme.themeCardBg,
+                    opacity: isLoading ? 0.7 : 1,
+                  }}>
+                  <Text style={{ color: theme.themeTextPrimary, fontSize: 12 }}>
+                    {action.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+
+          <View
+            style={{
+              borderWidth: 1,
+              borderColor: theme.themeBorder,
+              borderRadius: 8,
+              padding: 10,
+              backgroundColor: theme.themeCardBgAlt,
+              marginBottom: 8,
+            }}>
+            <Text style={{ color: theme.themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
               Zgody prywatnosci AI
             </Text>
             <Pressable
@@ -582,100 +771,21 @@ export function AiAssistantPanel({
               }}>
               <Text style={{ color: theme.themeTextPrimary, fontSize: 12 }}>
                 {aiConsentImageAnalysis ? 'X ' : ''}
-                Wyrazam zgode na analize obrazow akwarium przez AI.
+                Wyrazam zgode na analizę obrazow akwarium przez AI.
               </Text>
             </Pressable>
+            <Text style={{ color: theme.themeTextSecondary, fontSize: 11, marginTop: 8 }}>
+              Prywatnosc: przed wysylka maskujemy m.in. email, telefon i linki. Nie wpisuj danych
+              kontaktowych ani innych danych wrazliwych.
+            </Text>
           </View>
 
-          <TextInput
-            value={question}
-            onChangeText={setQuestion}
-            placeholder="Np. Co poprawic, zeby ustabilizowac NO3?"
-            placeholderTextColor={theme.themePlaceholder}
-            multiline
-            style={{
-              borderWidth: 1,
-              borderColor: theme.themeInputBorder,
-              borderRadius: 8,
-              paddingHorizontal: 10,
-              paddingVertical: 10,
-              backgroundColor: theme.themeInputBg,
-              color: theme.themeInputText,
-              minHeight: 74,
-              textAlignVertical: 'top',
-            }}
-          />
-          <TextInput
-            value={extraContext}
-            onChangeText={setExtraContext}
-            placeholder="Dodatkowy kontekst (opcjonalnie), np. podmiany, karmienie, obserwacje."
-            placeholderTextColor={theme.themePlaceholder}
-            multiline
-            style={{
-              marginTop: 8,
-              borderWidth: 1,
-              borderColor: theme.themeInputBorder,
-              borderRadius: 8,
-              paddingHorizontal: 10,
-              paddingVertical: 10,
-              backgroundColor: theme.themeInputBg,
-              color: theme.themeInputText,
-              minHeight: 62,
-              textAlignVertical: 'top',
-            }}
-          />
-
-          <Pressable
-            onPress={() => setIncludeActiveTank((previous) => !previous)}
-            style={{
-              marginTop: 8,
-              borderWidth: 1,
-              borderColor: includeActiveTank ? theme.themeAccent : theme.themeBorderStrong,
-              borderRadius: 8,
-              paddingHorizontal: 10,
-              paddingVertical: 8,
-              backgroundColor: includeActiveTank ? theme.themeCardBgAlt : theme.themeCardBg,
-            }}>
-            <Text
-              style={{
-                color: includeActiveTank ? theme.themeTextPrimary : theme.themeTextSecondary,
-                fontSize: 12,
-              }}>
-              {includeActiveTank
-                ? selectedTankId
-                  ? 'Kontekst: aktywne akwarium'
-                  : 'Kontekst: wszystkie akwaria (brak aktywnego)'
-                : 'Kontekst: wszystkie akwaria'}
-            </Text>
-          </Pressable>
-
-          <Pressable
-            onPress={() => {
-              void runChatRequest();
-            }}
-            disabled={isLoading}
-            style={{
-              marginTop: 10,
-              borderWidth: 1,
-              borderColor: theme.themeAccent,
-              borderRadius: 8,
-              paddingVertical: 10,
-              backgroundColor: theme.themeAccent,
-              opacity: isLoading ? 0.7 : 1,
-            }}>
-            <Text
-              style={{
-                color: theme.themeAccentOnStrong,
-                textAlign: 'center',
-                fontWeight: '700',
-              }}>
-              {isLoading ? 'Asystent odpowiada...' : 'Zapytaj Asystenta'}
-            </Text>
-          </Pressable>
-
-          <View style={{ marginTop: 10 }}>
+          <View style={{ marginTop: 2, marginBottom: 8 }}>
             <Text style={{ color: theme.themeTextPrimary, fontWeight: '700', fontSize: 13 }}>
-              Analiza zdjecia
+              Zalacz zdjęcie (opcjonalnie)
+            </Text>
+            <Text style={{ color: theme.themeTextSecondary, fontSize: 11, marginTop: 4 }}>
+              Dodaj zdjęcie przed wyslaniem pytania albo przed reczna analiza obrazu.
             </Text>
             <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
               <Pressable
@@ -723,7 +833,7 @@ export function AiAssistantPanel({
                     fontWeight: '700',
                     fontSize: 12,
                   }}>
-                  Zrob zdjecie
+                  Zrób zdjęcie
                 </Text>
               </Pressable>
             </View>
@@ -765,12 +875,102 @@ export function AiAssistantPanel({
                       fontWeight: '700',
                       fontSize: 12,
                     }}>
-                    Usun zdjecie
+                    Usun zdjęcie
                   </Text>
                 </Pressable>
               </View>
             ) : null}
+          </View>
 
+          <TextInput
+            value={question}
+            onChangeText={setQuestion}
+            placeholder="Np. Co poprawic, zeby ustabilizowac NO3?"
+            placeholderTextColor={theme.themePlaceholder}
+            multiline
+            style={{
+              borderWidth: 1,
+              borderColor: theme.themeInputBorder,
+              borderRadius: 8,
+              paddingHorizontal: 10,
+              paddingVertical: 10,
+              backgroundColor: theme.themeInputBg,
+              color: theme.themeInputText,
+              minHeight: 74,
+              textAlignVertical: 'top',
+            }}
+          />
+          <TextInput
+            value={extraContext}
+            onChangeText={setExtraContext}
+            placeholder="Dodatkowy kontekst (opcjonalnie), np. podmiany, karmienie, obserwacje."
+            placeholderTextColor={theme.themePlaceholder}
+            multiline
+            style={{
+              marginTop: 8,
+              borderWidth: 1,
+              borderColor: theme.themeInputBorder,
+              borderRadius: 8,
+              paddingHorizontal: 10,
+              paddingVertical: 10,
+              backgroundColor: theme.themeInputBg,
+              color: theme.themeInputText,
+              minHeight: 62,
+              textAlignVertical: 'top',
+            }}
+          />
+
+          {!forceActiveTankContext ? (
+            <Pressable
+              onPress={() => setIncludeActiveTank((previous) => !previous)}
+              style={{
+                marginTop: 8,
+                borderWidth: 1,
+                borderColor: includeActiveTank ? theme.themeAccent : theme.themeBorderStrong,
+                borderRadius: 8,
+                paddingHorizontal: 10,
+                paddingVertical: 8,
+                backgroundColor: includeActiveTank ? theme.themeCardBgAlt : theme.themeCardBg,
+              }}>
+              <Text
+                style={{
+                  color: includeActiveTank ? theme.themeTextPrimary : theme.themeTextSecondary,
+                  fontSize: 12,
+                }}>
+                {includeActiveTank
+                  ? selectedTankId
+                    ? 'Kontekst zapytania: aktywne akwarium'
+                    : 'Kontekst: wszystkie akwaria (brak aktywnego)'
+                  : 'Kontekst: wszystkie akwaria'}
+              </Text>
+            </Pressable>
+          ) : null}
+
+          <Pressable
+            onPress={() => {
+              void runChatRequest();
+            }}
+            disabled={isLoading}
+            style={{
+              marginTop: 10,
+              borderWidth: 1,
+              borderColor: theme.themeAccent,
+              borderRadius: 8,
+              paddingVertical: 10,
+              backgroundColor: theme.themeAccent,
+              opacity: isLoading ? 0.7 : 1,
+            }}>
+              <Text
+                style={{
+                  color: theme.themeAccentOnStrong,
+                  textAlign: 'center',
+                  fontWeight: '700',
+                }}>
+                {isLoading ? 'Asystent odpowiada...' : 'Zapytaj asystanta'}
+              </Text>
+            </Pressable>
+
+          <View style={{ marginTop: 10 }}>
             <Pressable
               onPress={() => {
                 void runVisionRequest();
@@ -791,7 +991,7 @@ export function AiAssistantPanel({
                   textAlign: 'center',
                   fontWeight: '700',
                 }}>
-                {isLoading ? 'Trwa analiza...' : 'Analizuj zdjecie'}
+                {isLoading ? 'Trwa analiza...' : 'Analizuj zdjęcie'}
               </Text>
             </Pressable>
           </View>
@@ -809,7 +1009,8 @@ export function AiAssistantPanel({
               <Text style={{ color: theme.themeDangerText, fontSize: 12 }}>{errorMessage}</Text>
               {isTimeoutError ? (
                 <Text style={{ color: theme.themeTextSecondary, fontSize: 12, marginTop: 6 }}>
-                  Wskazowka: skroc opis i wybierz wyrazniejsze zdjecie.
+                  Timeout: spróbuj krótszego pytania, zostaw kontekst aktywnego akwarium i
+                  wybierz wyrazniejsze zdjęcie.
                 </Text>
               ) : null}
               {canRetry ? (
@@ -830,7 +1031,7 @@ export function AiAssistantPanel({
                       fontWeight: '700',
                       fontSize: 12,
                     }}>
-                    Sprobuj ponownie
+                    Spróbuj ponownie
                   </Text>
                 </Pressable>
               ) : null}
@@ -838,10 +1039,33 @@ export function AiAssistantPanel({
           ) : null}
 
           {emptyDataHintVisible ? (
-            <Text style={{ color: theme.themeWarningText, fontSize: 12, marginTop: 10 }}>
-              Brakuje danych historycznych lub obraz jest nieczytelny. Odpowiedz ma charakter
-              ogolny - dodaj pomiary i zrob wyrazniejsze zdjecie.
-            </Text>
+            <View
+              style={{
+                marginTop: 10,
+                borderWidth: 1,
+                borderColor: theme.themeWarningText,
+                borderRadius: 8,
+                padding: 10,
+                backgroundColor: theme.themeCardBgAlt,
+              }}>
+              <Text style={{ color: theme.themeWarningText, fontSize: 12, fontWeight: '700' }}>
+                Odpowiedz AI ma ograniczony kontekst.
+              </Text>
+              {missingDataHints.length > 0 ? (
+                missingDataHints.map((hint, index) => (
+                  <Text
+                    key={`ai-missing-hint-${index}`}
+                    style={{ color: theme.themeTextSecondary, fontSize: 12, marginTop: 4 }}>
+                    - {hint}
+                  </Text>
+                ))
+              ) : (
+                <Text style={{ color: theme.themeTextSecondary, fontSize: 12, marginTop: 4 }}>
+                  Brakuje danych historycznych lub obraz jest nieczytelny. Dodaj pomiary i wykonaj
+                  wyrazniejsze zdjęcie, aby uzyskac bardziej precyzyjna analizę.
+                </Text>
+              )}
+            </View>
           ) : null}
         </>
       )}
@@ -858,7 +1082,7 @@ export function AiAssistantPanel({
         </Text>
         {historyItems.length === 0 ? (
           <Text style={{ color: theme.themeTextSecondary, fontSize: 12 }}>
-            Brak wpisow. Zadaj pytanie lub wykonaj analize zdjecia.
+            Brak wpisow. U?yj szybkiej akcji albo zadaj pytanie dla aktywnego akwarium.
           </Text>
         ) : (
           historyItems.map((entry) => (
@@ -944,7 +1168,7 @@ export function AiAssistantPanel({
                   {entry.actionPlan.length > 0 ? (
                     <View style={{ marginTop: 6 }}>
                       <Text style={{ color: theme.themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
-                        Plan dzialania:
+                        Plan działania:
                       </Text>
                       {entry.actionPlan.slice(0, 3).map((item, index) => (
                         <Text
@@ -980,6 +1204,9 @@ export function AiAssistantPanel({
           ))
         )}
       </View>
+      <Text style={{ color: theme.themeTextSecondary, fontSize: 11, marginTop: 8 }}>
+        AI wspiera decyzje akwarystyczne, ale nie zastępuje specjalisty ani lekarza weterynarii.
+      </Text>
     </View>
   );
 }

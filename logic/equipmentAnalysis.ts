@@ -165,11 +165,24 @@ function resolveAmbientTemperatureC(tank: TankInput | null | undefined) {
 }
 
 function getWattsPerLiterByDelta(deltaC: number): number {
-  if (deltaC <= 2) return 0.5;
-  if (deltaC <= 5) return 1.0;
-  if (deltaC <= 8) return 1.5;
-  if (deltaC <= 12) return 2.0;
-  return 2.5;
+  if (!Number.isFinite(deltaC) || deltaC <= 0) return 0;
+  if (deltaC < 1) {
+    // 0-1 C -> 0-0.25 W/l
+    return (deltaC / 1) * 0.25;
+  }
+  if (deltaC < 2) {
+    // 1-2 C -> 0.25-0.5 W/l
+    return 0.25 + ((deltaC - 1) / 1) * 0.25;
+  }
+  if (deltaC < 3) return 0.5; // 2-3 C
+  if (deltaC < 5) return 0.75; // 3-5 C
+  if (deltaC < 7) return 1.0; // 5-7 C
+  if (deltaC < 10) {
+    // 7-10 C -> 1.25-1.5 W/l
+    return 1.25 + ((deltaC - 7) / 3) * 0.25;
+  }
+  // >10 C -> 1.5-2 W/l (capped)
+  return Math.min(2.0, 1.5 + ((deltaC - 10) / 5) * 0.5);
 }
 
 export function calculateHeaterRequirement(
@@ -195,6 +208,12 @@ export function calculateHeaterRequirement(
   if (ambientResolved.usedDefault) {
     warnings.push(
       'Przyjeto domyslna temperature pomieszczenia 20 C. W cieplejszym pomieszczeniu slabsza grzalka moze wystarczyc, a w chlodniejszym moze byc za slaba.'
+    );
+  }
+
+  if (temperatureDeltaC > 10) {
+    warnings.push(
+      'Roznica temperatur przekracza 10 C. To wymagajace warunki - warto rozwazyc podniesienie temperatury pomieszczenia.'
     );
   }
 
@@ -590,6 +609,11 @@ export function buildTankEquipmentAssessment(
   }
 
   if (filterEquipments.length > 0) {
+    const TOO_LOW_TURNOVER_PER_HOUR = 3;
+    const MINIMUM_TURNOVER_PER_HOUR = 4;
+    const ACCEPTABLE_TURNOVER_PER_HOUR = 5;
+    const OPTIMAL_TURNOVER_PER_HOUR = 6.5;
+    const MAX_OK_TURNOVER_PER_HOUR = 8;
     const flowPairs = filterEquipments
       .map((item) => {
         const nominalFlow = toFiniteNumber(item.flowLh);
@@ -660,32 +684,38 @@ export function buildTankEquipmentAssessment(
                 weightedEffectiveFlowFactor === null
                   ? null
                   : Math.round(weightedEffectiveFlowFactor * 100) / 100,
-              hasStrongCurrentWarning: turnover > 10,
+              hasStrongCurrentWarning: turnover > MAX_OK_TURNOVER_PER_HOUR,
             },
     };
 
     if (totalEffectiveFlowLh === null || turnover === null) {
       result.status = 'warning';
       result.actions.push('Uzupelnij wydajnosci filtrow albo wybierz modele z katalogu.');
-    } else if (turnover < 5) {
-      result.status = turnover < 3 ? 'critical' : 'warning';
-      result.actions.push('Laczna wydajnosc filtrow jest niska wzgledem litrazu.');
-      if (turnover >= 4) {
-        result.actions.push('Mozesz poprawic przeplyw czyszczeniem mediow i prefiltra, ale docelowo warto mocniejszy zestaw.');
-      } else {
-        result.actions.push('Zalecane dolozenie drugiego filtra lub wymiana na wydajniejszy zestaw.');
-      }
-    } else if (turnover > 10) {
-      result.status = turnover > 14 ? 'critical' : 'warning';
-      result.actions.push('Laczny przeplyw filtrow jest wysoki wzgledem litrazu.');
-      if (turnover <= 14) {
-        result.actions.push('Sprobuj zmniejszyc przeplyw lub rozproszyc strumien (deszczownia, kierunek wylotu).');
-      } else {
-        result.actions.push('Rozwaz spokojniejszy zestaw lub mocne zdlawienie przeplywu.');
-      }
-    } else {
+    } else if (turnover < TOO_LOW_TURNOVER_PER_HOUR) {
+      result.status = 'critical';
+      result.actions.push('Obieg jest za slaby (ponizej 3x/h).');
+      result.actions.push('Zalecane dolozenie drugiego filtra lub wymiana na wydajniejszy zestaw.');
+    } else if (turnover < MINIMUM_TURNOVER_PER_HOUR) {
+      result.status = 'warning';
+      result.actions.push(
+        'Obieg jest na poziomie minimum (3-4x/h), odpowiedni glownie dla spokojnych akwariow.'
+      );
+      result.actions.push(
+        'Rozwaz lekkie podniesienie przeplywu, jesli obsada lub zanieczyszczenia tego wymagaja.'
+      );
+    } else if (turnover < ACCEPTABLE_TURNOVER_PER_HOUR) {
       result.status = 'ok';
-      result.actions.push('Laczna wydajnosc filtrow jest dobrze dopasowana do litrazu.');
+      result.actions.push('Obieg jest akceptowalny (4-5x/h).');
+    } else if (turnover <= OPTIMAL_TURNOVER_PER_HOUR) {
+      result.status = 'ok';
+      result.actions.push('Obieg jest optymalny dla wiekszosci akwariow (5-6.5x/h).');
+    } else if (turnover <= MAX_OK_TURNOVER_PER_HOUR) {
+      result.status = 'ok';
+      result.actions.push('Obieg jest mocny, ale nadal prawidlowy (6.5-8x/h).');
+    } else {
+      result.status = 'warning';
+      result.actions.push('Obieg jest wysoki (powyzej 8x/h) i moze tworzyc zbyt silny nurt.');
+      result.actions.push('Rozwaz zmniejszenie przeplywu lub rozproszenie strumienia.');
     }
 
     if (missingFlowCount > 0) {
@@ -694,12 +724,10 @@ export function buildTankEquipmentAssessment(
 
     if (declaredCoverage !== null) {
       if (declaredCoverage < 0.85) {
-        result.status = pickWorseStatus(result.status, 'critical');
         result.actions.push(
           'Deklarowany litraz filtrow jest wyraznie za niski dla tego zbiornika.'
         );
       } else if (declaredCoverage < 1) {
-        result.status = pickWorseStatus(result.status, 'warning');
         result.actions.push(
           'Deklarowany litraz filtrow jest lekko ponizej litrazu akwarium.'
         );

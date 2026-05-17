@@ -21,6 +21,7 @@
     "sync:equipment:catalog": "node scripts/sync-equipment-catalog.cjs",
     "release:preflight": "node scripts/release-candidate-preflight.cjs",
     "billing:webhook:start": "node scripts/subscription-webhook-server.cjs",
+    "billing:sandbox:audit": "node scripts/billing-sandbox-audit.cjs",
     "test:subscription:webhook": "node --test tests/subscriptionWebhookSync.test.cjs",
     "test:subscription:gating": "node --test tests/aiSubscriptionGating.test.cjs",
     "ai:backend:start": "node scripts/ai-backend-server.cjs",

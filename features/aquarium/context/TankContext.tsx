@@ -15,9 +15,7 @@ import {
 } from '@/features/aquarium/subscription/billingService';
 import {
   DEFAULT_SUBSCRIPTION_STATE,
-  canCreateTank as canCreateTankForPlan,
   canAccessMeasurementKey,
-  canUseFeature as canUseFeatureByPlan,
   getCapability as getCapabilityByPlan,
   getAllowedMeasurementKeys,
   getPlanLimits,
@@ -46,6 +44,7 @@ import {
   trackBillingPurchaseFailure,
   trackBillingPurchaseStarted,
   trackBillingPurchaseSuccess,
+  trackBillingEntitlementRefreshed,
   trackBillingRestore,
   logTelemetryError,
   logTelemetryEvent,
@@ -81,6 +80,8 @@ type AppSettings = {
   prefillMeasurementFromLast: boolean;
   aiConsentDataProcessing: boolean;
   aiConsentImageAnalysis: boolean;
+  firstTankCreated: boolean;
+  firstRunCompleted: boolean;
   subscription: SubscriptionState;
 };
 
@@ -262,6 +263,15 @@ function normalizeFirestoreSubscriptionData(
   });
 }
 
+function toIsoMs(value: unknown): number {
+  const normalized = String(value ?? '').trim();
+  if (!normalized) {
+    return 0;
+  }
+  const ms = new Date(normalized).getTime();
+  return Number.isFinite(ms) && ms > 0 ? ms : 0;
+}
+
 const DEFAULT_ENABLED_TESTS: EnabledTests = {
   ph: true,
   gh: true,
@@ -285,6 +295,8 @@ const DEFAULT_APP_SETTINGS: AppSettings = {
   prefillMeasurementFromLast: false,
   aiConsentDataProcessing: false,
   aiConsentImageAnalysis: false,
+  firstTankCreated: false,
+  firstRunCompleted: false,
   subscription: DEFAULT_SUBSCRIPTION_STATE,
 };
 
@@ -345,12 +357,20 @@ export function TankProvider({ children }: TankProviderProps) {
               typeof parsed?.aiConsentImageAnalysis === 'boolean'
                 ? parsed.aiConsentImageAnalysis
                 : prev.aiConsentImageAnalysis,
+            firstTankCreated:
+              typeof parsed?.firstTankCreated === 'boolean'
+                ? parsed.firstTankCreated
+                : prev.firstTankCreated,
+            firstRunCompleted:
+              typeof parsed?.firstRunCompleted === 'boolean'
+                ? parsed.firstRunCompleted
+                : prev.firstRunCompleted,
             subscription: nextSubscription,
           };
         });
       } catch (error) {
         console.warn(
-          'Blad ladowania ustawien aplikacji:',
+          'Błąd ladowania ustawień aplikacji:',
           error instanceof Error ? error.message : String(error)
         );
         logTelemetryError(error, {
@@ -398,7 +418,7 @@ export function TankProvider({ children }: TankProviderProps) {
           AsyncStorage.setItem(APP_SETTINGS_STORAGE_KEY, JSON.stringify(nextState)).catch(
             (error) => {
               console.warn(
-                'Blad zapisu ustawien aplikacji:',
+                'Błąd zapisu ustawień aplikacji:',
                 error instanceof Error ? error.message : String(error)
               );
               logTelemetryError(error, {
@@ -428,6 +448,20 @@ export function TankProvider({ children }: TankProviderProps) {
               );
 
           setAppSettings((prev) => {
+            const currentLastValidatedAtMs = toIsoMs(
+              prev.subscription?.lastValidatedAt
+            );
+            const incomingLastValidatedAtMs = toIsoMs(
+              subscriptionFromFirestore?.lastValidatedAt
+            );
+            if (
+              currentLastValidatedAtMs > 0 &&
+              incomingLastValidatedAtMs > 0 &&
+              incomingLastValidatedAtMs < currentLastValidatedAtMs
+            ) {
+              return prev;
+            }
+
             if (areSubscriptionsEqual(prev.subscription, subscriptionFromFirestore)) {
               return prev;
             }
@@ -440,7 +474,7 @@ export function TankProvider({ children }: TankProviderProps) {
             AsyncStorage.setItem(APP_SETTINGS_STORAGE_KEY, JSON.stringify(nextState)).catch(
               (error) => {
                 console.warn(
-                  'Blad zapisu ustawien aplikacji:',
+                  'Błąd zapisu ustawień aplikacji:',
                   error instanceof Error ? error.message : String(error)
                 );
                 logTelemetryError(error, {
@@ -454,7 +488,7 @@ export function TankProvider({ children }: TankProviderProps) {
         },
         (error) => {
           console.warn(
-            'Blad odczytu subskrypcji z Firestore:',
+            'Błąd odczytu subskrypcji z Firestore:',
             error instanceof Error ? error.message : String(error)
           );
           logTelemetryError(error, {
@@ -502,13 +536,21 @@ export function TankProvider({ children }: TankProviderProps) {
           typeof nextPatch?.aiConsentImageAnalysis === 'boolean'
             ? nextPatch.aiConsentImageAnalysis
             : prev.aiConsentImageAnalysis,
+        firstTankCreated:
+          typeof nextPatch?.firstTankCreated === 'boolean'
+            ? nextPatch.firstTankCreated
+            : prev.firstTankCreated,
+        firstRunCompleted:
+          typeof nextPatch?.firstRunCompleted === 'boolean'
+            ? nextPatch.firstRunCompleted
+            : prev.firstRunCompleted,
         subscription: normalizedSubscription,
       };
 
       AsyncStorage.setItem(APP_SETTINGS_STORAGE_KEY, JSON.stringify(nextState)).catch(
         (error) => {
           console.warn(
-            'Blad zapisu ustawien aplikacji:',
+            'Błąd zapisu ustawień aplikacji:',
             error instanceof Error ? error.message : String(error)
           );
           logTelemetryError(error, {
@@ -554,7 +596,16 @@ export function TankProvider({ children }: TankProviderProps) {
   );
 
   const applyBillingSyncResult = useCallback(
-    (result: BillingSyncResult) => {
+    (
+      result: BillingSyncResult,
+      contextSource:
+        | 'listener'
+        | 'auth_refresh'
+        | 'manual_refresh'
+        | 'purchase'
+        | 'restore'
+        | 'unknown' = 'unknown'
+    ) => {
       if (!result) {
         return;
       }
@@ -566,6 +617,14 @@ export function TankProvider({ children }: TankProviderProps) {
           ...result.patch,
         })
       );
+      trackBillingEntitlementRefreshed({
+        source: contextSource,
+        resolvedTier: result.resolvedTier,
+        resolvedStatus: result.resolvedStatus,
+        storeSource: result.source,
+        productId: result.productId,
+        sandbox: result.isSandbox,
+      });
     },
     [updateSubscription]
   );
@@ -595,7 +654,7 @@ export function TankProvider({ children }: TankProviderProps) {
       }
       try {
         removeCustomerInfoListener = addBillingCustomerInfoListener((result) => {
-          applyBillingSyncResult(result);
+          applyBillingSyncResult(result, 'listener');
         });
       } catch (error) {
         removeCustomerInfoListener = null;
@@ -607,7 +666,7 @@ export function TankProvider({ children }: TankProviderProps) {
 
       try {
         const result = await refreshBillingCustomerInfo(appUserId);
-        applyBillingSyncResult(result);
+        applyBillingSyncResult(result, 'auth_refresh');
       } catch (error) {
         logTelemetryError(error, {
           source: 'billing_refresh_auth_state',
@@ -720,7 +779,7 @@ export function TankProvider({ children }: TankProviderProps) {
 
     try {
       const result = await refreshBillingCustomerInfo(auth.currentUser?.uid ?? null);
-      applyBillingSyncResult(result);
+      applyBillingSyncResult(result, 'manual_refresh');
       return true;
     } catch (error) {
       logTelemetryError(error, {
@@ -753,7 +812,7 @@ export function TankProvider({ children }: TankProviderProps) {
 
       try {
         const result = await purchaseSubscriptionByProductId(currentUserId, productId);
-        applyBillingSyncResult(result);
+        applyBillingSyncResult(result, 'purchase');
         trackBillingPurchaseSuccess({
           purchaseType: 'subscription_purchase',
           targetTier: tier,
@@ -794,7 +853,7 @@ export function TankProvider({ children }: TankProviderProps) {
 
     try {
       const result = await restoreBillingPurchases(currentUserId);
-      applyBillingSyncResult(result);
+      applyBillingSyncResult(result, 'restore');
       trackBillingRestore({
         phase: 'success',
         resolvedTier: result.resolvedTier,
@@ -821,8 +880,8 @@ export function TankProvider({ children }: TankProviderProps) {
 
   const canUseFeature = useCallback(
     (featureKey: SubscriptionFeatureKey) =>
-      canUseFeatureByPlan(currentPlan, featureKey),
-    [currentPlan]
+      hasSubscriptionFeature(subscription, featureKey),
+    [subscription]
   );
 
   const isFeatureLocked = useCallback(
@@ -831,9 +890,14 @@ export function TankProvider({ children }: TankProviderProps) {
   );
 
   const canCreateTank = useCallback(
-    (currentTankCount: number) =>
-      canCreateTankForPlan(currentPlan, currentTankCount),
-    [currentPlan]
+    (currentTankCount: number) => {
+      const limit = getSubscriptionLimitValue(subscription, 'maxTanks');
+      if (limit === null) {
+        return true;
+      }
+      return Number(currentTankCount) < limit;
+    },
+    [subscription]
   );
 
   const getCapability = useCallback(

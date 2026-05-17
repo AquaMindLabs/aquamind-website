@@ -264,3 +264,87 @@ test('processRevenueCatWebhookEvent ignores stale event ordering', async () => {
   assert.equal(store.subscriptions.get('user_stale').status, 'active');
   assert.equal(store.subscriptions.get('user_stale').lastEventId, 'evt_stale_new');
 });
+
+test('processRevenueCatWebhookEvent maps SUBSCRIPTION_PAUSED to paused status', async () => {
+  const store = createInMemoryStore();
+
+  const result = await processRevenueCatWebhookEvent({
+    payload: {
+      event: {
+        id: 'evt_paused_1',
+        type: 'SUBSCRIPTION_PAUSED',
+        app_user_id: 'user_paused',
+        product_id: 'rc_premium_monthly',
+        event_timestamp_ms: 1765000000000,
+        expiration_at_ms: 1765600000000,
+        auto_resume_at_ms: 1765700000000,
+        store: 'PLAY_STORE',
+      },
+    },
+    store,
+    productTierMap: PRODUCT_TIER_MAP,
+    nowMs: () => 1765001000000,
+  });
+
+  assert.equal(result.status, 'processed');
+  const saved = store.subscriptions.get('user_paused');
+  assert.equal(saved.status, 'paused');
+  assert.equal(saved.source, 'play_store');
+  assert.equal(saved.renewsAt, '2025-12-14T08:13:20.000Z');
+});
+
+test('processRevenueCatWebhookEvent emits BILLING_WEBHOOK_IGNORED_STALE_EVENT log', async () => {
+  const store = createInMemoryStore();
+  const infoLogs = [];
+  const logger = {
+    info: (name, payload) => {
+      infoLogs.push({ name, payload });
+    },
+    error: () => null,
+    warn: () => null,
+  };
+
+  await processRevenueCatWebhookEvent({
+    payload: {
+      event: {
+        id: 'evt_log_new',
+        type: 'RENEWAL',
+        app_user_id: 'user_log',
+        product_id: 'rc_pro_monthly',
+        event_timestamp_ms: 1767000000000,
+        expiration_at_ms: 1769600000000,
+        store: 'PLAY_STORE',
+      },
+    },
+    store,
+    productTierMap: PRODUCT_TIER_MAP,
+    nowMs: () => 1767001000000,
+    logger,
+  });
+
+  await processRevenueCatWebhookEvent({
+    payload: {
+      event: {
+        id: 'evt_log_old',
+        type: 'CANCELLATION',
+        app_user_id: 'user_log',
+        product_id: 'rc_pro_monthly',
+        event_timestamp_ms: 1766000000000,
+        expiration_at_ms: 1766600000000,
+        cancel_reason: 'UNSUBSCRIBE',
+        store: 'PLAY_STORE',
+      },
+    },
+    store,
+    productTierMap: PRODUCT_TIER_MAP,
+    nowMs: () => 1767002000000,
+    logger,
+  });
+
+  const staleLog = infoLogs.find(
+    (entry) => entry.name === 'BILLING_WEBHOOK_IGNORED_STALE_EVENT'
+  );
+  assert.ok(staleLog, 'expected stale webhook diagnostic log');
+  assert.equal(typeof staleLog.payload.userIdHash, 'string');
+  assert.equal(staleLog.payload.userId, undefined);
+});

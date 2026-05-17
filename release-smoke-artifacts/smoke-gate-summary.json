@@ -1,6 +1,6 @@
 {
   "ok": false,
-  "releaseTag": "release-candidate-2026-05-15",
+  "releaseTag": "rc-fast-track-2026-05-16",
   "qaOwner": "QA-PM",
   "manualApproval": "yes",
   "manualApprovalRequired": true,
@@ -43,7 +43,9 @@
     "SMK-STK-04",
     "SMK-STK-05"
   ],
-  "blocked": [
+  "blocked": [],
+  "failed": [],
+  "uncheckedOnly": [
     "SMK-AI-01",
     "SMK-AI-02",
     "SMK-AI-03",
@@ -72,11 +74,7 @@
     "SMK-STK-04",
     "SMK-STK-05"
   ],
-  "failed": [],
-  "uncheckedOnly": [],
-  "blockedSignatures": [
-    "AUTH-BLK-001"
-  ],
+  "blockedSignatures": [],
   "missingCore": [],
   "uncheckedCore": [
     "SMK-CAL-01",
@@ -102,30 +100,7 @@
     "SMK-STK-04",
     "SMK-STK-05"
   ],
-  "blockedCore": [
-    "SMK-CAL-01",
-    "SMK-CAL-02",
-    "SMK-CAL-03",
-    "SMK-CAL-04",
-    "SMK-CAL-05",
-    "SMK-EQP-01",
-    "SMK-EQP-02",
-    "SMK-EQP-03",
-    "SMK-EQP-04",
-    "SMK-MEA-01",
-    "SMK-MEA-02",
-    "SMK-MEA-03",
-    "SMK-MEA-04",
-    "SMK-ONB-01",
-    "SMK-ONB-02",
-    "SMK-ONB-03",
-    "SMK-ONB-04",
-    "SMK-STK-01",
-    "SMK-STK-02",
-    "SMK-STK-03",
-    "SMK-STK-04",
-    "SMK-STK-05"
-  ],
+  "blockedCore": [],
   "failedCore": [],
   "missingAi": [],
   "uncheckedAi": [
@@ -135,18 +110,12 @@
     "SMK-AI-04",
     "SMK-AI-05"
   ],
-  "blockedAi": [
-    "SMK-AI-01",
-    "SMK-AI-02",
-    "SMK-AI-03",
-    "SMK-AI-04",
-    "SMK-AI-05"
-  ],
+  "blockedAi": [],
   "failedAi": [],
   "allChecksPassed": false,
   "coreChecksPassed": false,
   "aiChecksPassed": false,
   "aiChecksPresent": true,
   "manualGatePassed": true,
-  "generatedAt": "2026-05-15T12:38:41.204Z"
+  "generatedAt": "2026-05-16T16:54:16.352Z"
 }

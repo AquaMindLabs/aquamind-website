@@ -115,6 +115,7 @@ export function buildTankSanitizationPatchRuntime(
     'onboardingTaskChecks',
     'onboardingEnabled',
     'maintenanceActionState',
+    'acceptedProblemAcks',
   ];
   const allowedTankFields = new Set([
     'userId',
@@ -148,6 +149,7 @@ export function buildTankSanitizationPatchRuntime(
     'onboardingStartAt',
     'onboardingTaskChecks',
     'maintenanceActionState',
+    'acceptedProblemAcks',
     'plantFertilizationEntries',
     'heaterEquipments',
     'filterEquipments',
@@ -373,6 +375,7 @@ export function buildTankSanitizationPatchRuntime(
     ['zones', 20],
     ['onboardingTaskChecks', 300],
     ['maintenanceActionState', 60],
+    ['acceptedProblemAcks', 180],
   ];
   optionalMapFields.forEach(([field, maxSize]) => {
     if (!hasOwnField(normalizedTank, field)) {
@@ -435,4 +438,3 @@ export function buildTankUpdatePayloadRuntime({
     ...(includeUpdatedAt ? { updatedAt: now } : {}),
   };
 }
-

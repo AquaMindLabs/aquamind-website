@@ -181,6 +181,7 @@ service cloud.firestore {
           'onboardingStartAt',
           'onboardingTaskChecks',
           'maintenanceActionState',
+          'acceptedProblemAcks',
           'plantFertilizationEntries',
           'heaterEquipments',
           'filterEquipments',
@@ -219,6 +220,7 @@ service cloud.firestore {
         optionalMap(data, 'filterEquipment', 30) &&
         optionalMap(data, 'onboardingTaskChecks', 300) &&
         optionalMap(data, 'maintenanceActionState', 80) &&
+        optionalMap(data, 'acceptedProblemAcks', 180) &&
         (!('aquariumType' in data) || validAquariumType(data.aquariumType)) &&
         (!('lightIntensity' in data) || validLightIntensity(data.lightIntensity)) &&
         (!('lightHours' in data) || inRangeNumber(data.lightHours, 1, 24)) &&

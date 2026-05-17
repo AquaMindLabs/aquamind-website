@@ -16,6 +16,7 @@ type WaterTestingScheduleLike = {
 type CalendarAction = {
   id: string;
   stateKey: string;
+  stateKeys?: string[];
   kind: string;
   level: string;
   isOverdue: boolean;
@@ -208,20 +209,20 @@ export function buildWaterActionCalendar(params: {
   scheduleRecurringAction({
     stateKey: 'water_change',
     title: 'Podmiana wody (20-30%)',
-    details: 'Regularna podmiana wspiera stabilnosc biologiczna i kontroluje NO3.',
+    details: 'Regularna podmiana wspiera stabilność biologiczną i kontroluje NO3.',
     intervalDays: waterChangeIntervalDays,
   });
   scheduleRecurringAction({
     stateKey: 'gravel_vacuum',
     title: 'Odmulanie dna',
-    details: 'Najlepiej sekcjami i razem z podmiana, bez naruszania calego dna naraz.',
+    details: 'Najlepiej sekcjami i razem z podmianą, bez naruszania całego dna naraz.',
     intervalDays: gravelVacuumIntervalDays,
   });
   scheduleRecurringAction({
     stateKey: 'filter_service',
     title: 'Serwis filtra',
     details:
-      'Kontrola przeplywu, prefiltra i wirnika. Media biologiczne plucz delikatnie, nie wszystkie naraz.',
+      'Kontrola przepływu, prefiltra i wirnika. Media biologiczne płucz delikatnie, nie wszystkie naraz.',
     intervalDays: filterServiceIntervalDays,
   });
 
@@ -231,30 +232,27 @@ export function buildWaterActionCalendar(params: {
     displayDayBucketMs: number;
     sourceDueDayBucketMs: number;
   }>>();
-  const testStateEntry = state.water_tests ?? {};
-  const testCompletedAtMs = Number(testStateEntry?.lastCompletedAtMs) || 0;
-  const testSkippedAtMs = Number(testStateEntry?.lastSkippedAtMs) || 0;
-  const testPostponedUntilMs = Number(testStateEntry?.postponedUntilMs) || 0;
-  const testReferenceDayBucketMs = Math.max(
-    testCompletedAtMs,
-    testSkippedAtMs,
-    latestMeasurementDayBucketMs
-  );
-
   parameterPlans.forEach((plan) => {
     const cadenceDays = Math.max(1, Math.round(Number(plan?.cadenceDays) || 1));
+    const parameterKey = String(plan?.key ?? '').trim().toLowerCase();
+    const parameterStateKey = parameterKey ? `water_tests_${parameterKey}` : '';
+    const parameterStateEntry = parameterStateKey ? state[parameterStateKey] ?? {} : {};
+    const parameterCompletedAtMs = Number(parameterStateEntry?.lastCompletedAtMs) || 0;
+    const parameterSkippedAtMs = Number(parameterStateEntry?.lastSkippedAtMs) || 0;
+    const parameterPostponedUntilMs = Number(parameterStateEntry?.postponedUntilMs) || 0;
+    const parameterReferenceDayBucketMs = Math.max(parameterCompletedAtMs, parameterSkippedAtMs);
     let nextDayBucketMs =
       Number.isFinite(Number(plan?.dayBucketMs)) && Number(plan?.dayBucketMs) > 0
         ? Number(plan?.dayBucketMs)
-        : todayDayBucketMs;
-    if (testReferenceDayBucketMs > 0) {
+        : latestMeasurementDayBucketMs || todayDayBucketMs;
+    if (parameterReferenceDayBucketMs > 0) {
       nextDayBucketMs = Math.max(
         nextDayBucketMs,
-        testReferenceDayBucketMs + cadenceDays * dayMs
+        parameterReferenceDayBucketMs + cadenceDays * dayMs
       );
     }
-    if (testPostponedUntilMs > nextDayBucketMs) {
-      nextDayBucketMs = testPostponedUntilMs;
+    if (parameterPostponedUntilMs > nextDayBucketMs) {
+      nextDayBucketMs = parameterPostponedUntilMs;
     }
 
     const isOverdue = nextDayBucketMs < todayDayBucketMs;
@@ -273,50 +271,72 @@ export function buildWaterActionCalendar(params: {
     testsByDay.set(displayDayBucketMs, current);
   });
 
-  const nearestTestsDayBucketMs = [...testsByDay.keys()].sort((a, b) => a - b)[0];
-  if (Number.isFinite(nearestTestsDayBucketMs)) {
-    const dayPlans = testsByDay.get(nearestTestsDayBucketMs) ?? [];
-    const labels = [
-      ...new Set(
-        dayPlans
-          .map((plan) => String(plan?.label ?? plan?.key ?? '').trim())
-          .filter(Boolean)
-      ),
-    ];
-    const reasons = [
-      ...new Set(dayPlans.map((plan) => String(plan?.reason ?? '').trim()).filter(Boolean)),
-    ];
-    const highestLevel = dayPlans.reduce((level, plan) => {
-      const normalized = String(plan?.level ?? '').toLowerCase();
-      if (normalized === 'problem') {
-        return 'problem';
+  [...testsByDay.keys()]
+    .sort((a, b) => a - b)
+    .forEach((dayBucketMs) => {
+      const dayPlans = testsByDay.get(dayBucketMs) ?? [];
+      if (dayPlans.length === 0) {
+        return;
       }
-      if (normalized === 'warning' && level !== 'problem') {
-        return 'warning';
-      }
-      return level;
-    }, 'ok');
-    const hasOverduePlan = dayPlans.some((plan) => Boolean(plan?.isOverdue));
-    addNearestAction({
-      id: `water-tests-${nearestTestsDayBucketMs}`,
-      stateKey: 'water_tests',
-      kind: 'water_tests',
-      level: hasOverduePlan ? 'problem' : highestLevel,
-      isOverdue: hasOverduePlan,
-      dayBucketMs: nearestTestsDayBucketMs,
-      sourceDueDayBucketMs:
-        dayPlans[0]?.sourceDueDayBucketMs ?? nearestTestsDayBucketMs,
-      intervalDays: Math.max(
-        1,
-        ...dayPlans.map((plan) => Number(plan?.cadenceDays) || 1)
-      ),
-      title: `Testy parametrow: ${labels.join(', ')}`,
-      details:
-        reasons.length > 0
-          ? reasons.slice(0, 2).join(' ')
-          : 'Zakres testow dobrany do historii pomiarow i wymaganej czestotliwosci badan.',
+
+      const hasOverduePlan = dayPlans.some((plan) => Boolean(plan?.isOverdue));
+      const highestLevel = dayPlans.reduce((level, plan) => {
+        const normalized = String(plan?.level ?? '').toLowerCase();
+        if (normalized === 'problem') {
+          return 'problem';
+        }
+        if (normalized === 'warning' && level !== 'problem') {
+          return 'warning';
+        }
+        return level;
+      }, 'ok');
+      const labels = [
+        ...new Set(
+          dayPlans
+            .map((plan) => String(plan?.label ?? plan?.key ?? '').trim())
+            .filter(Boolean)
+        ),
+      ];
+      const reasons = [
+        ...new Set(dayPlans.map((plan) => String(plan?.reason ?? '').trim()).filter(Boolean)),
+      ];
+      const stateKeys = [
+        ...new Set(
+          dayPlans
+            .map((plan, index) => {
+              const key = String(plan?.key ?? '').trim().toLowerCase();
+              return key ? `water_tests_${key}` : `water_tests_${dayBucketMs}_${index}`;
+            })
+            .filter(Boolean)
+        ),
+      ];
+      const primaryStateKey =
+        stateKeys[0] ?? `water_tests_${dayBucketMs}`;
+
+      addNearestAction({
+        id: `water-tests-${dayBucketMs}`,
+        stateKey: primaryStateKey,
+        stateKeys,
+        kind: 'water_tests',
+        level: hasOverduePlan ? 'problem' : highestLevel,
+        isOverdue: hasOverduePlan,
+        dayBucketMs,
+        sourceDueDayBucketMs: Math.min(
+          ...dayPlans.map((plan) => Number(plan?.sourceDueDayBucketMs) || dayBucketMs)
+        ),
+        intervalDays: Math.max(
+          1,
+          ...dayPlans.map((plan) => Number(plan?.cadenceDays) || 1)
+        ),
+        title: `Test parametru: ${labels.join(', ')}`,
+        details:
+          reasons.length > 0
+            ? reasons.slice(0, 2).join(' ')
+            : hasOverduePlan
+              ? 'Test jest przeterminowany - wykonaj pomiar jak najszybciej.'
+              : 'Termin testu wyliczony na podstawie historii pomiarów.',
+      });
     });
-  }
 
   const levelRank = (value: string) => (value === 'problem' ? 3 : value === 'warning' ? 2 : 1);
   const kindRank = (value: string) =>

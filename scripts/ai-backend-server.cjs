@@ -1,4 +1,6 @@
 const http = require('node:http');
+const fs = require('node:fs');
+const path = require('node:path');
 const { initializeApp, applicationDefault, getApps } = require('firebase-admin/app');
 const { getAuth } = require('firebase-admin/auth');
 const { getFirestore } = require('firebase-admin/firestore');
@@ -6,8 +8,39 @@ const {
   AI_DIAGNOSTIC_CODES,
   createAiRequestHandlers,
   createFirestoreAiDataStore,
+  createOpenAiResponsesProvider,
   createRuleBasedAiProvider,
 } = require('./ai-backend-core.cjs');
+
+function loadEnvFile() {
+  const envPath = path.resolve(process.cwd(), '.env');
+  if (!fs.existsSync(envPath)) {
+    return;
+  }
+
+  const raw = fs.readFileSync(envPath, 'utf8');
+  raw.split(/\r?\n/).forEach((line) => {
+    const trimmed = String(line ?? '').trim();
+    if (!trimmed || trimmed.startsWith('#')) {
+      return;
+    }
+
+    const equalsIndex = trimmed.indexOf('=');
+    if (equalsIndex <= 0) {
+      return;
+    }
+
+    const key = trimmed.slice(0, equalsIndex).trim();
+    if (!key || Object.prototype.hasOwnProperty.call(process.env, key)) {
+      return;
+    }
+
+    const value = trimmed.slice(equalsIndex + 1).trim();
+    process.env[key] = value.replace(/^['"]|['"]$/g, '');
+  });
+}
+
+loadEnvFile();
 
 function resolveProjectId() {
   return String(
@@ -76,6 +109,28 @@ function sendJson(res, statusCode, payload) {
 
 function pathOnly(url) {
   return String(url ?? '').split('?')[0] || '/';
+}
+
+function resolveAiProviderConfig() {
+  const providerName = String(process.env.AI_PROVIDER_NAME || 'rule_based')
+    .trim()
+    .toLowerCase();
+  if (providerName === 'openai') {
+    return {
+      providerName: 'openai',
+      provider: createOpenAiResponsesProvider({
+        apiKey: process.env.OPENAI_API_KEY,
+        model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
+        baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
+        maxOutputTokens: Number(process.env.OPENAI_MAX_OUTPUT_TOKENS || 900),
+      }),
+    };
+  }
+
+  return {
+    providerName: 'rule_based',
+    provider: createRuleBasedAiProvider(),
+  };
 }
 
 function createAiHttpServer({
@@ -171,19 +226,21 @@ async function startServer() {
     },
   };
   const dataStore = createFirestoreAiDataStore(db);
-  const aiProvider = createRuleBasedAiProvider();
+  const { provider, providerName } = resolveAiProviderConfig();
 
   const server = createAiHttpServer({
     authVerifier,
     dataStore,
-    aiProvider,
+    aiProvider: provider,
     logger: console,
     providerTimeoutMs: Number(process.env.AI_PROVIDER_TIMEOUT_MS || 15000),
-    providerName: process.env.AI_PROVIDER_NAME || 'rule_based',
+    providerName,
   });
 
   server.listen(port, () => {
-    console.log(`AI backend server listening on http://0.0.0.0:${port}`);
+    console.log(
+      `AI backend server listening on http://0.0.0.0:${port} (provider=${providerName})`
+    );
   });
 }
 
@@ -200,4 +257,3 @@ module.exports = {
   createAiHttpServer,
   startServer,
 };
-
