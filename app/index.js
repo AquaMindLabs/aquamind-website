@@ -175,7 +175,13 @@ import {
   getRecommendationDueAtMs as getRecommendationDueAtMsLogic,
 } from '@/logic/waterAnalysis';
 import { auth, db } from '@/shared/services/firebase';
-import { logTelemetryError, logTelemetryEvent } from '@/shared/services/observability';
+import {
+  logTelemetryError,
+  logTelemetryEvent,
+  trackAiRequestFailure,
+  trackAiRequestStarted,
+  trackAiRequestSuccess,
+} from '@/shared/services/observability';
 import {
   normalizeArray,
   normalizeObject,
@@ -200,6 +206,276 @@ const REMOTE_JSON_REQUEST_HEADERS = Object.freeze({
   'User-Agent':
     'MyAquariumAssistant/1.0 (mobile app; https://my-aquarium-assistant.firebaseapp.com)',
 });
+const DISEASE_AI_DURATION_OPTIONS = [
+  { id: 'today', label: 'Dzisiaj' },
+  { id: '2_3_days', label: '2-3 dni' },
+  { id: 'about_week', label: 'Okolo tygodnia' },
+  { id: 'longer', label: 'Dluzej' },
+  { id: 'unknown', label: 'Nie wiem' },
+];
+const DISEASE_AI_OTHER_FISH_OPTIONS = [
+  { id: 'yes', label: 'Tak' },
+  { id: 'no', label: 'Nie' },
+  { id: 'unknown', label: 'Nie wiem' },
+];
+const DISEASE_AI_VET_WARNING = 'To nie jest porada weterynaryjna.';
+const PLANT_AI_MULTIPLE_OPTIONS = [
+  { id: 'yes', label: 'Tak' },
+  { id: 'no', label: 'Nie' },
+  { id: 'unknown', label: 'Nie wiem' },
+];
+const PLANT_AI_WARNING =
+  'AI wskazuje mozliwe przyczyny, ale nie zastepuje obserwacji roslin i regularnych testow wody.';
+const ALGAE_AI_WARNING =
+  'AI wskazuje mozliwe przyczyny, ale typ glonow warto potwierdzic obserwacja, parametrami wody i zdjeciem w dobrym swietle.';
+const ALGAE_AI_LOCATION_OPTIONS = [
+  { id: 'glass', label: 'Szyby' },
+  { id: 'plants', label: 'Rosliny' },
+  { id: 'substrate', label: 'Podloze' },
+  { id: 'decorations', label: 'Dekoracje/korzenie/kamienie' },
+  { id: 'filter_outlet', label: 'Filtr/wylot' },
+  { id: 'surface', label: 'Tafla wody' },
+  { id: 'unknown', label: 'Nie wiem' },
+];
+const ALGAE_AI_APPEARANCE_OPTIONS = [
+  { id: 'green_film', label: 'Zielony nalot' },
+  { id: 'brown_film', label: 'Brazowy nalot' },
+  { id: 'black_tufts', label: 'Czarne kepki/pedzelki' },
+  { id: 'threads', label: 'Nitki' },
+  { id: 'slimy_layer', label: 'Sliska warstwa' },
+  { id: 'green_water', label: 'Zielona woda' },
+  { id: 'blue_green_layer', label: 'Siny/niebiesko-zielony nalot' },
+  { id: 'other_unknown', label: 'Inne / nie wiem' },
+];
+
+function normalizeAiMatchText(value) {
+  return String(value ?? '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\w\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function mapDiseaseAiConfidenceLabel(confidence) {
+  const numeric = Number(confidence);
+  if (!Number.isFinite(numeric)) {
+    return 'medium';
+  }
+  if (numeric >= 0.75) {
+    return 'high';
+  }
+  if (numeric >= 0.45) {
+    return 'medium';
+  }
+  return 'low';
+}
+
+function mapDiseaseAiConfidenceBadge(confidenceLabel) {
+  if (confidenceLabel === 'high') {
+    return 'wysoka';
+  }
+  if (confidenceLabel === 'low') {
+    return 'niska';
+  }
+  return 'srednia';
+}
+
+function buildDiseaseAiSuspectedDiseases({
+  catalog = [],
+  summary = '',
+  hypotheses = [],
+}) {
+  const normalizedSummary = normalizeAiMatchText(summary);
+  const items = [];
+
+  catalog.forEach((disease, index) => {
+    const diseaseId = String(disease?.id ?? '').trim();
+    const diseaseName = String(disease?.name ?? '').trim();
+    if (!diseaseId || !diseaseName) {
+      return;
+    }
+    const matchName = normalizeAiMatchText(diseaseName.split('(')[0] || diseaseName);
+    if (!matchName) {
+      return;
+    }
+
+    let score = 0;
+    if (normalizedSummary.includes(matchName)) {
+      score = Math.max(score, 0.68 - index * 0.01);
+    }
+
+    (Array.isArray(hypotheses) ? hypotheses : []).forEach((entry) => {
+      const label = normalizeAiMatchText(entry?.label);
+      if (label && (label.includes(matchName) || matchName.includes(label))) {
+        const confidence = Number(entry?.confidence);
+        if (Number.isFinite(confidence)) {
+          score = Math.max(score, Math.min(0.95, Math.max(0.35, confidence)));
+        }
+      }
+    });
+
+    if (score <= 0) {
+      return;
+    }
+
+    const confidence = Math.round(score * 100) / 100;
+    const confidenceLabel = mapDiseaseAiConfidenceLabel(confidence);
+    items.push({
+      diseaseId,
+      label: diseaseName,
+      confidence,
+      confidenceLabel,
+      reason: `Opis objawow jest zblizony do pozycji "${diseaseName}".`,
+    });
+  });
+
+  const sorted = items.sort((a, b) => Number(b.confidence) - Number(a.confidence)).slice(0, 3);
+  if (sorted.length > 0) {
+    return sorted;
+  }
+
+  return [
+    {
+      diseaseId: null,
+      label: 'Niepewne objawy',
+      confidence: 0.32,
+      confidenceLabel: 'low',
+      reason: 'Brak jednoznacznego dopasowania do katalogu chorob.',
+    },
+  ];
+}
+
+function buildPlantAiSuspectedIssues({
+  catalog = [],
+  summary = '',
+  hypotheses = [],
+}) {
+  const normalizedSummary = normalizeAiMatchText(summary);
+  const items = [];
+
+  catalog.forEach((issue, index) => {
+    const issueId = String(issue?.id ?? '').trim();
+    const issueName = String(issue?.name ?? '').trim();
+    if (!issueId || !issueName) {
+      return;
+    }
+    const matchName = normalizeAiMatchText(issueName.split('(')[0] || issueName);
+    if (!matchName) {
+      return;
+    }
+
+    let score = 0;
+    if (normalizedSummary.includes(matchName)) {
+      score = Math.max(score, 0.66 - index * 0.01);
+    }
+
+    (Array.isArray(hypotheses) ? hypotheses : []).forEach((entry) => {
+      const label = normalizeAiMatchText(entry?.label);
+      if (label && (label.includes(matchName) || matchName.includes(label))) {
+        const confidence = Number(entry?.confidence);
+        if (Number.isFinite(confidence)) {
+          score = Math.max(score, Math.min(0.95, Math.max(0.35, confidence)));
+        }
+      }
+    });
+
+    if (score <= 0) {
+      return;
+    }
+
+    const confidence = Math.round(score * 100) / 100;
+    const confidenceLabel = mapDiseaseAiConfidenceLabel(confidence);
+    items.push({
+      plantIssueId: issueId,
+      label: issueName,
+      confidence,
+      confidenceLabel,
+      reason: `Opis problemu jest zblizony do pozycji "${issueName}".`,
+    });
+  });
+
+  const sorted = items.sort((a, b) => Number(b.confidence) - Number(a.confidence)).slice(0, 3);
+  if (sorted.length > 0) {
+    return sorted;
+  }
+
+  return [
+    {
+      plantIssueId: null,
+      label: 'Niepewny problem',
+      confidence: 0.32,
+      confidenceLabel: 'low',
+      reason: 'Brak jednoznacznego dopasowania do katalogu problemow roslin.',
+    },
+  ];
+}
+
+function buildAlgaeAiSuspectedIssues({
+  catalog = [],
+  summary = '',
+  hypotheses = [],
+}) {
+  const normalizedSummary = normalizeAiMatchText(summary);
+  const items = [];
+
+  catalog.forEach((issue, index) => {
+    const issueId = String(issue?.id ?? '').trim();
+    const issueName = String(issue?.name ?? '').trim();
+    if (!issueId || !issueName) {
+      return;
+    }
+    const matchName = normalizeAiMatchText(issueName.split('(')[0] || issueName);
+    if (!matchName) {
+      return;
+    }
+
+    let score = 0;
+    if (normalizedSummary.includes(matchName)) {
+      score = Math.max(score, 0.66 - index * 0.01);
+    }
+
+    (Array.isArray(hypotheses) ? hypotheses : []).forEach((entry) => {
+      const label = normalizeAiMatchText(entry?.label);
+      if (label && (label.includes(matchName) || matchName.includes(label))) {
+        const confidence = Number(entry?.confidence);
+        if (Number.isFinite(confidence)) {
+          score = Math.max(score, Math.min(0.95, Math.max(0.35, confidence)));
+        }
+      }
+    });
+
+    if (score <= 0) {
+      return;
+    }
+
+    const confidence = Math.round(score * 100) / 100;
+    const confidenceLabel = mapDiseaseAiConfidenceLabel(confidence);
+    items.push({
+      algaeId: issueId,
+      label: issueName,
+      confidence,
+      confidenceLabel,
+      reason: `Opis problemu jest zblizony do pozycji "${issueName}".`,
+    });
+  });
+
+  const sorted = items.sort((a, b) => Number(b.confidence) - Number(a.confidence)).slice(0, 3);
+  if (sorted.length > 0) {
+    return sorted;
+  }
+
+  return [
+    {
+      algaeId: null,
+      label: 'Niepewny typ glonu',
+      confidence: 0.32,
+      confidenceLabel: 'low',
+      reason: 'Brak jednoznacznego dopasowania do katalogu glonow.',
+    },
+  ];
+}
 function getFirstRunStatusLabel(statusSeverity = 'no_data') {
   if (statusSeverity === 'critical') {
     return 'Wymaga pilnej uwagi';
@@ -792,6 +1068,20 @@ function buildTankDiseaseCaseWritePayload(caseItem, options = {}) {
     now: options?.now,
     deps: { deleteFieldFn: deleteField },
   });
+}
+
+const ACTIVE_ISSUE_CASE_STATUSES = new Set([
+  'active',
+  'suspected',
+  'observing',
+  'adjusting',
+  'confirmed',
+]);
+
+function isIssueCaseActiveStatus(status) {
+  return ACTIVE_ISSUE_CASE_STATUSES.has(
+    String(status ?? 'active').trim().toLowerCase()
+  );
 }
 
 function buildTankEquipmentFromCatalogItem(equipmentItem, equipmentType) {
@@ -10372,6 +10662,43 @@ export default function HomeScreen() {
   const [catalogAiResultByKey, setCatalogAiResultByKey] = useState({});
   const [catalogAiProblemInput, setCatalogAiProblemInput] = useState('');
   const [catalogAiSelectedImage, setCatalogAiSelectedImage] = useState(null);
+  const [historyAiBusy, setHistoryAiBusy] = useState(false);
+  const [historyAiError, setHistoryAiError] = useState('');
+  const [historyAiResult, setHistoryAiResult] = useState(null);
+  const [historyAiAtLabel, setHistoryAiAtLabel] = useState('');
+  const [isDiseaseAiAnalyzerVisible, setIsDiseaseAiAnalyzerVisible] = useState(false);
+  const [diseaseAiTankId, setDiseaseAiTankId] = useState('');
+  const [diseaseAiStockItemId, setDiseaseAiStockItemId] = useState('unknown');
+  const [diseaseAiDescription, setDiseaseAiDescription] = useState('');
+  const [diseaseAiDuration, setDiseaseAiDuration] = useState('unknown');
+  const [diseaseAiOtherFishAffected, setDiseaseAiOtherFishAffected] = useState('unknown');
+  const [diseaseAiSelectedImage, setDiseaseAiSelectedImage] = useState(null);
+  const [diseaseAiBusy, setDiseaseAiBusy] = useState(false);
+  const [diseaseAiSavingBusy, setDiseaseAiSavingBusy] = useState(false);
+  const [diseaseAiError, setDiseaseAiError] = useState('');
+  const [diseaseAiResult, setDiseaseAiResult] = useState(null);
+  const [isPlantDiseaseAiAnalyzerVisible, setIsPlantDiseaseAiAnalyzerVisible] = useState(false);
+  const [plantDiseaseAiTankId, setPlantDiseaseAiTankId] = useState('');
+  const [plantDiseaseAiPlantItemId, setPlantDiseaseAiPlantItemId] = useState('unknown');
+  const [plantDiseaseAiDescription, setPlantDiseaseAiDescription] = useState('');
+  const [plantDiseaseAiDuration, setPlantDiseaseAiDuration] = useState('unknown');
+  const [plantDiseaseAiMultipleAffected, setPlantDiseaseAiMultipleAffected] = useState('unknown');
+  const [plantDiseaseAiSelectedImage, setPlantDiseaseAiSelectedImage] = useState(null);
+  const [plantDiseaseAiBusy, setPlantDiseaseAiBusy] = useState(false);
+  const [plantDiseaseAiSavingBusy, setPlantDiseaseAiSavingBusy] = useState(false);
+  const [plantDiseaseAiError, setPlantDiseaseAiError] = useState('');
+  const [plantDiseaseAiResult, setPlantDiseaseAiResult] = useState(null);
+  const [isAlgaeAiAnalyzerVisible, setIsAlgaeAiAnalyzerVisible] = useState(false);
+  const [algaeAiTankId, setAlgaeAiTankId] = useState('');
+  const [algaeAiLocationTags, setAlgaeAiLocationTags] = useState([]);
+  const [algaeAiAppearanceTags, setAlgaeAiAppearanceTags] = useState([]);
+  const [algaeAiDescription, setAlgaeAiDescription] = useState('');
+  const [algaeAiDuration, setAlgaeAiDuration] = useState('unknown');
+  const [algaeAiSelectedImage, setAlgaeAiSelectedImage] = useState(null);
+  const [algaeAiBusy, setAlgaeAiBusy] = useState(false);
+  const [algaeAiSavingBusy, setAlgaeAiSavingBusy] = useState(false);
+  const [algaeAiError, setAlgaeAiError] = useState('');
+  const [algaeAiResult, setAlgaeAiResult] = useState(null);
   const [tankDiseaseCases, setTankDiseaseCases] = useState([]);
   const [tankDiseaseHistoryCases, setTankDiseaseHistoryCases] = useState([]);
   const [diseaseCaseBusy, setDiseaseCaseBusy] = useState(false);
@@ -10940,7 +11267,7 @@ export default function HomeScreen() {
           ...normalizeTankDiseaseCaseRuntime(normalizeObject(item?.data?.())),
         }))
         .filter((item) => Boolean(item?.id))
-        .filter((item) => String(item.status ?? 'active').toLowerCase() === 'active')
+        .filter((item) => isIssueCaseActiveStatus(item?.status))
         .sort((a, b) => getCreatedAtMs(b.createdAt) - getCreatedAtMs(a.createdAt));
 
       setHomeMeasurements(allMeasurements);
@@ -10982,7 +11309,7 @@ export default function HomeScreen() {
         )
         .sort((a, b) => getCreatedAtMs(b.createdAt) - getCreatedAtMs(a.createdAt));
       const activeCases = allCases.filter(
-        (item) => String(item.status ?? 'active').toLowerCase() === 'active'
+        (item) => isIssueCaseActiveStatus(item?.status)
       );
 
       setTankDiseaseCases(activeCases);
@@ -17662,6 +17989,1342 @@ export default function HomeScreen() {
     }
   };
 
+  const buildWaterHistoryAiPayload = (tank) => {
+      const tankId = String(tank?.id ?? '').trim();
+      const tankMeasurements = normalizeArray(measurements)
+        .filter((item) => String(item?.tankId ?? '').trim() === tankId)
+        .sort((left, right) => getMeasurementRecordedAtMs(right) - getMeasurementRecordedAtMs(left));
+      const latestMeasurement = tankMeasurements[0] ?? null;
+      const measurementHistory = tankMeasurements.slice(0, 8).map((item) => ({
+        measuredAt: item?.measuredAt ?? item?.createdAt ?? null,
+        ph: item?.ph ?? null,
+        gh: item?.gh ?? null,
+        kh: item?.kh ?? null,
+        no2: item?.no2 ?? null,
+        no3: item?.no3 ?? null,
+        nh3nh4: item?.nh3nh4 ?? null,
+        temperature: item?.temperature ?? null,
+        po4: item?.po4 ?? null,
+        co2: item?.co2 ?? null,
+      }));
+
+      const timelineEvents = normalizeArray(historyIssueTimeline).map((item) => ({
+        at:
+          item?.startedAtIso ??
+          item?.endedAtIso ??
+          item?.updatedAtIso ??
+          item?.createdAtIso ??
+          null,
+        type: item?.type ?? item?.caseType ?? 'issue',
+        label: item?.issueName ?? item?.title ?? item?.name ?? 'Zdarzenie',
+        status: item?.status ?? null,
+      }));
+
+      const diseaseCaseEvents = normalizeArray(tankDiseaseHistoryCases)
+        .filter((item) => String(item?.tankId ?? '').trim() === tankId)
+        .map((item) => ({
+          at: item?.updatedAt ?? item?.resolvedAt ?? item?.createdAt ?? null,
+          type: item?.caseType ?? 'issue_case',
+          label:
+            item?.issueName ??
+            item?.diseaseType ??
+            item?.name ??
+            'Przypadek historii',
+          status: item?.status ?? null,
+        }));
+
+      const recentEvents = [...timelineEvents, ...diseaseCaseEvents]
+        .sort((left, right) => getCreatedAtMs(right?.at) - getCreatedAtMs(left?.at))
+        .slice(0, 8)
+        .map((item) => ({
+          at: item?.at ?? null,
+          type: item?.type ?? 'event',
+          label: item?.label ?? 'Zdarzenie',
+          status: item?.status ?? null,
+        }));
+
+      const latestMeasurementRecordedAtMs = getMeasurementRecordedAtMs(latestMeasurement);
+      const latestMeasurementAgeDays = latestMeasurementRecordedAtMs
+        ? Math.max(0, Math.floor((Date.now() - latestMeasurementRecordedAtMs) / (24 * 60 * 60 * 1000)))
+        : null;
+
+      const payload = {
+        aquarium: {
+          name: String(tank?.name ?? '').trim() || 'Akwarium',
+          liters: Number.isFinite(Number(tank?.liters)) ? Number(tank.liters) : null,
+          type: String(tank?.aquariumType ?? '').trim() || null,
+          startType: String(tank?.startType ?? '').trim() || null,
+          targetTemperatureC:
+            Number.isFinite(Number(tank?.targetTemperatureC)) ? Number(tank.targetTemperatureC) : null,
+          ambientTemperatureC:
+            Number.isFinite(Number(tank?.ambientTemperatureC)) ? Number(tank.ambientTemperatureC) : null,
+          stockSummary: {
+            fishCount: fishInTank.length,
+            plantCount: plantsInTank.length,
+          },
+          filtrationSummary: {
+            status: String(currentEquipmentAssessmentForContext?.filters?.status ?? '').trim() || null,
+            requiredFlowLh:
+              Number.isFinite(Number(currentEquipmentAssessmentForContext?.filters?.requiredFlowLh))
+                ? Number(currentEquipmentAssessmentForContext.filters.requiredFlowLh)
+                : null,
+            realFlowLh:
+              Number.isFinite(Number(currentEquipmentAssessmentForContext?.filters?.actualRealFlowLh))
+                ? Number(currentEquipmentAssessmentForContext.filters.actualRealFlowLh)
+                : null,
+          },
+        },
+        latestMeasurement:
+          latestMeasurement && measurementHistory.length > 0 ? measurementHistory[0] : null,
+        measurementHistory,
+        recentEvents,
+        analysisMeta: {
+          measurementCount: tankMeasurements.length,
+          latestMeasurementAgeDays,
+          hasTrendData: tankMeasurements.length >= 2,
+        },
+      };
+
+      const payloadJson = JSON.stringify(payload);
+      if (payloadJson.length <= 3600) {
+        return payloadJson;
+      }
+
+      const reducedPayload = {
+        ...payload,
+        measurementHistory: measurementHistory.slice(0, 5),
+        recentEvents: recentEvents.slice(0, 5),
+      };
+      const reducedJson = JSON.stringify(reducedPayload);
+      if (reducedJson.length <= 3600) {
+        return reducedJson;
+      }
+      return JSON.stringify({
+        ...reducedPayload,
+        measurementHistory: measurementHistory.slice(0, 3),
+        recentEvents: recentEvents.slice(0, 3),
+      });
+    };
+
+  const handleAnalyzeWaterHistoryWithAi = async () => {
+    if (historyAiBusy) {
+      return;
+    }
+    if (!hasAiAssistantAccess) {
+      alert(
+        aiAssistantUpgradePromptMessage ||
+          aiAssistantLockMessage ||
+          'Asystent AI jest dostepny w planie Pro.'
+      );
+      return;
+    }
+    if (!appSettings.aiConsentDataProcessing) {
+      setHistoryAiError(t('historyAiErrorConsentRequired'));
+      return;
+    }
+    if (!user?.getIdToken) {
+      setHistoryAiError(t('historyAiErrorSessionExpired'));
+      return;
+    }
+
+    const tank = selectedTank ?? tanks[0] ?? null;
+    if (!tank?.id) {
+      setHistoryAiError(t('historyAiErrorNoTank'));
+      return;
+    }
+
+    setHistoryAiBusy(true);
+    setHistoryAiError('');
+    const startedAt = Date.now();
+
+    const question = t('historyAiQuestionPrompt');
+    const additionalInfo = buildWaterHistoryAiPayload(tank);
+    const tankId = String(tank.id);
+
+    trackAiRequestStarted({
+      operation: 'chat',
+      source: 'history_measurements_section',
+      hasTankId: true,
+      questionLength: String(question ?? '').length,
+      additionalInfoLength: String(additionalInfo ?? '').length,
+    });
+
+    try {
+      const idToken = await user.getIdToken();
+      const response = await requestAiChat({
+        idToken: String(idToken ?? ''),
+        question,
+        additionalInfo,
+        tankId,
+        mode: 'water_history_analysis',
+        userLanguage: appSettings.language,
+        appLanguage: appSettings.language,
+        locale: appSettings.language,
+      });
+
+      setHistoryAiResult({
+        answer: String(response?.answer ?? '').trim(),
+        recommendations: normalizeArray(response?.recommendations).slice(0, 4),
+        warnings: normalizeArray(response?.warnings).slice(0, 4),
+      });
+      setHistoryAiAtLabel(new Date().toLocaleString());
+
+      trackAiRequestSuccess({
+        operation: 'chat',
+        source: 'history_measurements_section',
+        durationMs: Date.now() - startedAt,
+        diagnosticCode: response?.diagnosticCode ?? 'AIW_OK',
+        hasTankId: true,
+      });
+    } catch (rawError) {
+      const mappedError =
+        rawError instanceof AiChatRequestError
+          ? rawError
+          : new AiChatRequestError(
+              t('historyAiErrorUnexpected'),
+              'AIW_INTERNAL',
+              true
+            );
+      setHistoryAiError(mappedError.message || t('historyAiErrorUnexpected'));
+      trackAiRequestFailure(mappedError, {
+        operation: 'chat',
+        source: 'history_measurements_section',
+        durationMs: Date.now() - startedAt,
+        diagnosticCode: mappedError.code ?? 'AIW_INTERNAL',
+        httpStatus: mappedError.status ?? null,
+        hasTankId: true,
+        questionLength: String(question ?? '').length,
+        additionalInfoLength: String(additionalInfo ?? '').length,
+      });
+    } finally {
+      setHistoryAiBusy(false);
+    }
+  };
+
+  const handleOpenDiseaseAiAnalyzer = () => {
+    if (!hasAiAssistantAccess) {
+      alert(aiAssistantUpgradePromptMessage || aiAssistantLockMessage || 'Asystent AI jest dostepny w planie Pro.');
+      return;
+    }
+    const initialTankId = String(selectedTank?.id || tanks[0]?.id || '').trim();
+    setDiseaseAiTankId(initialTankId);
+    setDiseaseAiStockItemId('unknown');
+    setDiseaseAiDuration('unknown');
+    setDiseaseAiOtherFishAffected('unknown');
+    setDiseaseAiDescription('');
+    setDiseaseAiSelectedImage(null);
+    setDiseaseAiError('');
+    setDiseaseAiResult(null);
+    setIsDiseaseAiAnalyzerVisible(true);
+  };
+
+  const handlePickDiseaseAiImage = async (source) => {
+    if (!hasAiAssistantAccess) {
+      setDiseaseAiError('Asystent AI jest dostepny w planie Pro.');
+      return;
+    }
+    if (!appSettings.aiConsentDataProcessing || !appSettings.aiConsentImageAnalysis) {
+      setDiseaseAiError('Wlacz zgody AI, aby analizowac objawy ze zdjeciem.');
+      return;
+    }
+    setDiseaseAiBusy(true);
+    setDiseaseAiError('');
+    try {
+      const picked = await pickVisionImage(source);
+      if (!picked?.uri) {
+        return;
+      }
+      setDiseaseAiSelectedImage({
+        uri: String(picked.uri),
+        width: Number(picked.width) || 0,
+        height: Number(picked.height) || 0,
+        mimeType: String(picked.mimeType || 'image/jpeg'),
+      });
+    } catch (error) {
+      setDiseaseAiError(error instanceof Error ? error.message : 'Nie udalo sie dodac zdjecia.');
+    } finally {
+      setDiseaseAiBusy(false);
+    }
+  };
+
+  const handleAnalyzeDiseaseWithAi = async () => {
+    if (!hasAiAssistantAccess) {
+      setDiseaseAiError(aiAssistantUpgradePromptMessage || 'Asystent AI jest dostepny w planie Pro.');
+      return;
+    }
+    if (!appSettings.aiConsentDataProcessing) {
+      setDiseaseAiError('Wlacz zgode na przetwarzanie danych AI.');
+      return;
+    }
+    if (!user?.uid || !user?.getIdToken) {
+      setDiseaseAiError('Brak aktywnej sesji. Zaloguj sie ponownie.');
+      return;
+    }
+
+    const tank = diseaseAiSelectedTank;
+    if (!tank?.id) {
+      setDiseaseAiError('Wybierz akwarium do analizy.');
+      return;
+    }
+
+    const description = String(diseaseAiDescription ?? '').trim().slice(0, 1000);
+    const hasImage = Boolean(diseaseAiSelectedImage?.uri);
+    if (!description && !hasImage) {
+      setDiseaseAiError('Dodaj opis objawow albo zdjecie.');
+      return;
+    }
+    if (hasImage && !appSettings.aiConsentImageAnalysis) {
+      setDiseaseAiError('Wlacz zgode na analize obrazow AI.');
+      return;
+    }
+
+    setDiseaseAiBusy(true);
+    setDiseaseAiError('');
+    try {
+      const idToken = await user.getIdToken();
+      const selectedFishOption = diseaseAiStockFishOptions.find(
+        (item) => String(item.id) === String(diseaseAiStockItemId)
+      );
+      const compactCatalog = diseaseCatalog
+        .slice(0, 20)
+        .map((item) => {
+          const symptoms = normalizeArray(item?.symptoms)
+            .map((symptomId) => DISEASE_SYMPTOMS.find((entry) => entry.id === symptomId)?.label || symptomId)
+            .filter(Boolean)
+            .slice(0, 4)
+            .join(', ');
+          return `${item.id}: ${item.name}${symptoms ? ` (objawy: ${symptoms})` : ''}`;
+        })
+        .join('; ');
+      const latest = diseaseAiLatestMeasurement;
+      const waterLine = latest
+        ? `Ostatnie parametry: NO2 ${latest.no2 ?? '-'}, NO3 ${latest.no3 ?? '-'}, NH3/NH4 ${latest.nh3nh4 ?? '-'}, pH ${latest.ph ?? '-'}, GH ${latest.gh ?? '-'}, KH ${latest.kh ?? '-'}, temp ${latest.temperature ?? '-'}.`
+        : 'Brak aktualnych parametrow wody.';
+      const additionalInfo = [
+        `Akwarium: ${tank.name ?? 'Akwarium'}, litraz ${tank.liters ?? '-'} l.`,
+        selectedFishOption?.label
+          ? `Dotyczy gatunku/ryby: ${selectedFishOption.label}.`
+          : 'Dotyczy: nie wiem / kilka ryb.',
+        `Czas trwania objawow: ${
+          DISEASE_AI_DURATION_OPTIONS.find((item) => item.id === diseaseAiDuration)?.label || 'Nie wiem'
+        }.`,
+        `Czy inne ryby maja objawy: ${
+          DISEASE_AI_OTHER_FISH_OPTIONS.find((item) => item.id === diseaseAiOtherFishAffected)?.label || 'Nie wiem'
+        }.`,
+        waterLine,
+        `Katalog chorob (skrot): ${compactCatalog}`,
+      ]
+        .map((entry) => String(entry ?? '').trim())
+        .filter(Boolean)
+        .join('\n');
+
+      let resultPayload = null;
+      if (hasImage) {
+        const uploaded = await uploadVisionImageForUser(String(user.uid), diseaseAiSelectedImage);
+        const response = await requestAiVisionAnalyzeWithRetry(
+          {
+            idToken: String(idToken ?? ''),
+            imageUrl: uploaded.downloadUrl,
+            question:
+              description ||
+              'Przeanalizuj objawy ryby i podaj maksymalnie 3 mozliwe podejrzenia chorob z katalogu.',
+            additionalInfo,
+            tankId: String(tank.id),
+            mode: 'sick_fish',
+            userLanguage: appSettings.language,
+            appLanguage: appSettings.language,
+            locale: appSettings.language,
+          },
+          { maxAttempts: 2, retryDelayMs: 450 }
+        );
+        resultPayload = {
+          summary: String(response?.summary ?? '').trim(),
+          recommendations: Array.isArray(response?.recommendations)
+            ? response.recommendations.slice(0, 6)
+            : [],
+          verificationSteps: Array.isArray(response?.verificationSteps)
+            ? response.verificationSteps.slice(0, 6)
+            : [],
+          warnings: Array.isArray(response?.warnings) ? response.warnings.slice(0, 4) : [],
+          hypotheses: Array.isArray(response?.hypotheses) ? response.hypotheses.slice(0, 5) : [],
+          unreadableImageFallback: Boolean(response?.unreadableImageFallback),
+          imageUri: String(diseaseAiSelectedImage?.uri ?? ''),
+          mode: 'vision',
+        };
+      } else {
+        const response = await requestAiChat({
+          idToken: String(idToken ?? ''),
+          question:
+            description ||
+            'Przeanalizuj objawy ryby i podaj maksymalnie 3 mozliwe podejrzenia chorob z katalogu.',
+          additionalInfo,
+          tankId: String(tank.id),
+          mode: 'sick_fish',
+          userLanguage: appSettings.language,
+          appLanguage: appSettings.language,
+          locale: appSettings.language,
+        });
+        resultPayload = {
+          summary: String(response?.answer ?? '').trim(),
+          recommendations: Array.isArray(response?.recommendations)
+            ? response.recommendations.slice(0, 6)
+            : [],
+          verificationSteps: [],
+          warnings: Array.isArray(response?.warnings) ? response.warnings.slice(0, 4) : [],
+          hypotheses: [],
+          unreadableImageFallback: false,
+          imageUri: '',
+          mode: 'chat',
+        };
+      }
+
+      const suspectedDiseases = buildDiseaseAiSuspectedDiseases({
+        catalog: diseaseCatalog,
+        summary: resultPayload?.summary,
+        hypotheses: resultPayload?.hypotheses,
+      });
+      const warnings = dedupeTextList(
+        [DISEASE_AI_VET_WARNING, ...(resultPayload?.warnings ?? [])],
+        4
+      );
+
+      setDiseaseAiResult({
+        ...resultPayload,
+        warnings,
+        suspectedDiseases,
+        tankId: String(tank.id),
+        selectedFishLabel: selectedFishOption?.label || '',
+        selectedFishId: selectedFishOption?.id || null,
+      });
+    } catch (error) {
+      setDiseaseAiError(error instanceof Error ? error.message : 'Nie udalo sie uruchomic analizy AI.');
+    } finally {
+      setDiseaseAiBusy(false);
+    }
+  };
+
+  const handleSaveDiseaseAiSuspicion = async (suspectedItem) => {
+    if (!user?.uid || !diseaseAiSelectedTank?.id || diseaseAiSavingBusy) {
+      return;
+    }
+    const currentResult = diseaseAiResult;
+    if (!currentResult) {
+      return;
+    }
+
+    setDiseaseAiSavingBusy(true);
+    setDiseaseAiError('');
+    try {
+      const tank = diseaseAiSelectedTank;
+      const selectedDiseaseId = String(suspectedItem?.diseaseId ?? '').trim();
+      const matchedDisease =
+        diseaseCatalog.find((entry) => String(entry?.id ?? '') === selectedDiseaseId) ?? null;
+      const fallbackName = String(suspectedItem?.label ?? 'Niepewne objawy').trim();
+      const issueLabel = matchedDisease?.name || fallbackName || 'Niepewne objawy';
+      const confidenceValue = Number(suspectedItem?.confidence);
+      const confidenceLabel = String(
+        suspectedItem?.confidenceLabel || mapDiseaseAiConfidenceLabel(confidenceValue)
+      );
+      const verificationSteps = normalizeArray(currentResult?.verificationSteps)
+        .map((item) => String(item ?? '').trim())
+        .filter(Boolean)
+        .slice(0, 3);
+      const recommendations = normalizeArray(currentResult?.recommendations)
+        .map((item) => String(item ?? '').trim())
+        .filter(Boolean)
+        .slice(0, 4);
+      const treatmentPlan = dedupeTextList(
+        [...verificationSteps, ...recommendations],
+        8
+      );
+      const now = new Date();
+      const nextReviewAt = (() => {
+        const review = new Date(now);
+        review.setDate(review.getDate() + 1);
+        return review;
+      })();
+      const causes = dedupeTextList(
+        [
+          String(suspectedItem?.reason ?? '').trim(),
+          String(diseaseAiDescription ?? '').trim()
+            ? `Objawy od uzytkownika: ${String(diseaseAiDescription).trim().slice(0, 220)}`
+            : '',
+        ],
+        6
+      );
+      const caution = dedupeTextList(
+        [
+          'Podejrzenie AI - wynik orientacyjny. To nie jest potwierdzona diagnoza.',
+          ...(currentResult?.warnings ?? []),
+        ],
+        3
+      ).join(' ');
+
+      const payload = buildTankDiseaseCaseWritePayload(
+        {
+          userId: user.uid,
+          tankId: tank.id,
+          tankName: tank.name,
+          caseType: 'disease',
+          issueId: selectedDiseaseId || `ai_suspected_${Date.now()}`,
+          issueName: `Podejrzenie AI: ${issueLabel}`.slice(0, 220),
+          diseaseId: selectedDiseaseId || null,
+          diseaseName: issueLabel,
+          severity:
+            confidenceLabel === 'high'
+              ? 'high'
+              : confidenceLabel === 'low'
+                ? 'low'
+                : 'medium',
+          diseaseSummary: String(currentResult?.summary || '')
+            .slice(0, 2800)
+            .concat(' Wynik nie jest pewna diagnoza.')
+            .slice(0, 3000),
+          causes,
+          caution,
+          treatmentPlan,
+          schedule: buildDiagnosisSchedule(`ai-${Date.now()}`, {
+            h24: verificationSteps,
+            d7: recommendations,
+            d30: [],
+          }),
+          status: 'active',
+          createdAt: now,
+          startedAt: now,
+          nextReviewAt,
+        },
+        {
+          mode: 'create',
+          includeCreatedAtIfMissing: true,
+          includeUpdatedAt: false,
+        }
+      );
+
+      const validation = validateTankDiseaseCaseModelRuntime(payload);
+      if (!validation.ok) {
+        throw new Error(`Nieprawidlowy zapis podejrzenia: ${validation.issues.join(', ')}`);
+      }
+
+      await addDocWithTelemetry(
+        'tankDiseaseCases',
+        collection(db, 'tankDiseaseCases'),
+        payload,
+        {
+          userId: user.uid,
+          tankId: tank.id,
+          source: 'save_disease_ai_suspicion',
+        }
+      );
+
+      if (selectedTank?.id === tank.id) {
+        await fetchTankDiseaseCases(user.uid, tank.id);
+      }
+
+      alert('Podejrzenie zapisane w akwarium.');
+      setIsDiseaseAiAnalyzerVisible(false);
+    } catch (error) {
+      setDiseaseAiError(error instanceof Error ? error.message : 'Nie udalo sie zapisac podejrzenia.');
+    } finally {
+      setDiseaseAiSavingBusy(false);
+    }
+  };
+
+  const handleOpenPlantDiseaseAiAnalyzer = () => {
+    if (!hasAiAssistantAccess) {
+      alert(
+        aiAssistantUpgradePromptMessage ||
+          aiAssistantLockMessage ||
+          'Asystent AI jest dostepny w planie Pro.'
+      );
+      return;
+    }
+    const initialTankId = String(selectedTank?.id || tanks[0]?.id || '').trim();
+    setPlantDiseaseAiTankId(initialTankId);
+    setPlantDiseaseAiPlantItemId('unknown');
+    setPlantDiseaseAiDuration('unknown');
+    setPlantDiseaseAiMultipleAffected('unknown');
+    setPlantDiseaseAiDescription('');
+    setPlantDiseaseAiSelectedImage(null);
+    setPlantDiseaseAiError('');
+    setPlantDiseaseAiResult(null);
+    setIsPlantDiseaseAiAnalyzerVisible(true);
+  };
+
+  const handlePickPlantDiseaseAiImage = async (source) => {
+    if (!hasAiAssistantAccess) {
+      setPlantDiseaseAiError('Asystent AI jest dostepny w planie Pro.');
+      return;
+    }
+    if (!appSettings.aiConsentDataProcessing || !appSettings.aiConsentImageAnalysis) {
+      setPlantDiseaseAiError('Wlacz zgody AI, aby analizowac problemy roslin ze zdjeciem.');
+      return;
+    }
+    setPlantDiseaseAiBusy(true);
+    setPlantDiseaseAiError('');
+    try {
+      const picked = await pickVisionImage(source);
+      if (!picked?.uri) {
+        return;
+      }
+      setPlantDiseaseAiSelectedImage({
+        uri: String(picked.uri),
+        width: Number(picked.width) || 0,
+        height: Number(picked.height) || 0,
+        mimeType: String(picked.mimeType || 'image/jpeg'),
+      });
+    } catch (error) {
+      setPlantDiseaseAiError(error instanceof Error ? error.message : 'Nie udalo sie dodac zdjecia.');
+    } finally {
+      setPlantDiseaseAiBusy(false);
+    }
+  };
+
+  const handleAnalyzePlantDiseaseWithAi = async () => {
+    if (!hasAiAssistantAccess) {
+      setPlantDiseaseAiError(
+        aiAssistantUpgradePromptMessage || 'Asystent AI jest dostepny w planie Pro.'
+      );
+      return;
+    }
+    if (!appSettings.aiConsentDataProcessing) {
+      setPlantDiseaseAiError('Wlacz zgode na przetwarzanie danych AI.');
+      return;
+    }
+    if (!user?.uid || !user?.getIdToken) {
+      setPlantDiseaseAiError('Brak aktywnej sesji. Zaloguj sie ponownie.');
+      return;
+    }
+
+    const tank = plantDiseaseAiSelectedTank;
+    if (!tank?.id) {
+      setPlantDiseaseAiError('Wybierz akwarium do analizy.');
+      return;
+    }
+
+    const description = String(plantDiseaseAiDescription ?? '').trim().slice(0, 1000);
+    const hasImage = Boolean(plantDiseaseAiSelectedImage?.uri);
+    if (!description && !hasImage) {
+      setPlantDiseaseAiError('Dodaj opis problemu albo zdjecie.');
+      return;
+    }
+    if (hasImage && !appSettings.aiConsentImageAnalysis) {
+      setPlantDiseaseAiError('Wlacz zgode na analize obrazow AI.');
+      return;
+    }
+
+    setPlantDiseaseAiBusy(true);
+    setPlantDiseaseAiError('');
+    try {
+      const idToken = await user.getIdToken();
+      const selectedPlantOption = plantDiseaseAiPlantOptions.find(
+        (item) => String(item.id) === String(plantDiseaseAiPlantItemId)
+      );
+      const compactCatalog = plantDiseaseCatalog
+        .slice(0, 20)
+        .map((item) => {
+          const symptoms = normalizeArray(item?.symptoms)
+            .map(
+              (symptomId) =>
+                PLANT_DISEASE_SYMPTOMS.find((entry) => entry.id === symptomId)?.label ||
+                symptomId
+            )
+            .filter(Boolean)
+            .slice(0, 4)
+            .join(', ');
+          return `${item.id}: ${item.name}${symptoms ? ` (objawy: ${symptoms})` : ''}`;
+        })
+        .join('; ');
+      const latest = plantDiseaseAiLatestMeasurement;
+      const profile = plantDiseaseAiTankProfile || buildTankEnvironmentProfile(tank);
+      const fertilizationSummary = summarizePlantFertilization(
+        tank?.plantFertilizationEntries
+      );
+      const substrateLabels = getSubstrateLabels(
+        normalizeSubstrateTypes(tank?.substrateTypes ?? tank?.substrateType)
+      );
+      const plantsInTargetTank = normalizeArray(stockItems)
+        .filter(
+          (item) =>
+            String(item?.tankId ?? '') === String(tank.id) &&
+            String(item?.type ?? '').toLowerCase() === 'plant'
+        )
+        .map(
+          (item) =>
+            String(
+              item?.commonName ||
+                item?.name ||
+                item?.speciesName ||
+                item?.latinName ||
+                item?.scientificName ||
+                ''
+            ).trim()
+        )
+        .filter(Boolean)
+        .slice(0, 12)
+        .join(', ');
+      const waterLine = latest
+        ? `Ostatnie parametry: NO3 ${latest.no3 ?? '-'}, PO4 ${latest.po4 ?? '-'}, K ${latest.k ?? '-'}, Fe ${latest.fe ?? '-'}, pH ${latest.ph ?? '-'}, GH ${latest.gh ?? '-'}, KH ${latest.kh ?? '-'}, temp ${latest.temperature ?? '-'}.`
+        : 'Brak aktualnych parametrow wody.';
+      const additionalInfo = [
+        `Akwarium: ${tank.name ?? 'Akwarium'}, litraz ${tank.liters ?? '-'} l.`,
+        selectedPlantOption?.label
+          ? `Dotyczy rosliny: ${selectedPlantOption.label}.`
+          : 'Dotyczy: nie wiem / kilka roslin.',
+        `Czas trwania problemu: ${
+          DISEASE_AI_DURATION_OPTIONS.find((item) => item.id === plantDiseaseAiDuration)
+            ?.label || 'Nie wiem'
+        }.`,
+        `Czy problem dotyczy wielu roslin: ${
+          PLANT_AI_MULTIPLE_OPTIONS.find((item) => item.id === plantDiseaseAiMultipleAffected)
+            ?.label || 'Nie wiem'
+        }.`,
+        plantsInTargetTank ? `Rosliny w akwarium: ${plantsInTargetTank}.` : '',
+        waterLine,
+        `Oswietlenie: ${profile?.lightModelName || '-'}, czas swiecenia ${profile?.lightHours ?? '-'} h, lm/l ${profile?.lumensPerLiter ?? '-'}.`,
+        `CO2: ${latest?.co2 ?? '-'}, nawozenie: root tabs aktywne: ${
+          fertilizationSummary?.hasActiveRootTabs ? 'tak' : 'nie'
+        }, dni wsparcia: ${fertilizationSummary?.rootTabsSupportDaysLeft ?? '-'}.`,
+        substrateLabels ? `Podloze: ${substrateLabels}.` : '',
+        `Katalog problemow roslin (skrot): ${compactCatalog}`,
+      ]
+        .map((entry) => String(entry ?? '').trim())
+        .filter(Boolean)
+        .join('\n');
+
+      let resultPayload = null;
+      if (hasImage) {
+        const uploaded = await uploadVisionImageForUser(
+          String(user.uid),
+          plantDiseaseAiSelectedImage
+        );
+        const response = await requestAiVisionAnalyzeWithRetry(
+          {
+            idToken: String(idToken ?? ''),
+            imageUrl: uploaded.downloadUrl,
+            question:
+              description ||
+              'Przeanalizuj problem rosliny i podaj maksymalnie 3 mozliwe przyczyny z katalogu problemow roslin.',
+            additionalInfo,
+            tankId: String(tank.id),
+            mode: 'plant_problem_analysis',
+            userLanguage: appSettings.language,
+            appLanguage: appSettings.language,
+            locale: appSettings.language,
+          },
+          { maxAttempts: 2, retryDelayMs: 450 }
+        );
+        resultPayload = {
+          summary: String(response?.summary ?? '').trim(),
+          recommendations: Array.isArray(response?.recommendations)
+            ? response.recommendations.slice(0, 6)
+            : [],
+          verificationSteps: Array.isArray(response?.verificationSteps)
+            ? response.verificationSteps.slice(0, 6)
+            : [],
+          warnings: Array.isArray(response?.warnings) ? response.warnings.slice(0, 4) : [],
+          hypotheses: Array.isArray(response?.hypotheses) ? response.hypotheses.slice(0, 5) : [],
+          unreadableImageFallback: Boolean(response?.unreadableImageFallback),
+          imageUri: String(plantDiseaseAiSelectedImage?.uri ?? ''),
+          mode: 'vision',
+        };
+      } else {
+        const response = await requestAiChat({
+          idToken: String(idToken ?? ''),
+          question:
+            description ||
+            'Przeanalizuj problem rosliny i podaj maksymalnie 3 mozliwe przyczyny z katalogu problemow roslin.',
+          additionalInfo,
+          tankId: String(tank.id),
+          mode: 'plant_problem_analysis',
+          userLanguage: appSettings.language,
+          appLanguage: appSettings.language,
+          locale: appSettings.language,
+        });
+        resultPayload = {
+          summary: String(response?.answer ?? '').trim(),
+          recommendations: Array.isArray(response?.recommendations)
+            ? response.recommendations.slice(0, 6)
+            : [],
+          verificationSteps: [],
+          warnings: Array.isArray(response?.warnings) ? response.warnings.slice(0, 4) : [],
+          hypotheses: [],
+          unreadableImageFallback: false,
+          imageUri: '',
+          mode: 'chat',
+        };
+      }
+
+      const suspectedPlantIssues = buildPlantAiSuspectedIssues({
+        catalog: plantDiseaseCatalog,
+        summary: resultPayload?.summary,
+        hypotheses: resultPayload?.hypotheses,
+      });
+      const warnings = dedupeTextList(
+        [PLANT_AI_WARNING, ...(resultPayload?.warnings ?? [])],
+        4
+      );
+
+      setPlantDiseaseAiResult({
+        ...resultPayload,
+        warnings,
+        suspectedPlantIssues,
+        tankId: String(tank.id),
+        selectedPlantLabel: selectedPlantOption?.label || '',
+        selectedPlantId: selectedPlantOption?.id || null,
+      });
+    } catch (error) {
+      setPlantDiseaseAiError(
+        error instanceof Error ? error.message : 'Nie udalo sie uruchomic analizy AI.'
+      );
+    } finally {
+      setPlantDiseaseAiBusy(false);
+    }
+  };
+
+  const handleSavePlantDiseaseAiSuspicion = async (suspectedItem) => {
+    if (!user?.uid || !plantDiseaseAiSelectedTank?.id || plantDiseaseAiSavingBusy) {
+      return;
+    }
+    const currentResult = plantDiseaseAiResult;
+    if (!currentResult) {
+      return;
+    }
+
+    setPlantDiseaseAiSavingBusy(true);
+    setPlantDiseaseAiError('');
+    try {
+      const tank = plantDiseaseAiSelectedTank;
+      const selectedIssueId = String(suspectedItem?.plantIssueId ?? '').trim();
+      const matchedIssue =
+        plantDiseaseCatalog.find((entry) => String(entry?.id ?? '') === selectedIssueId) ?? null;
+      const fallbackName = String(suspectedItem?.label ?? 'Niepewny problem').trim();
+      const issueLabel = matchedIssue?.name || fallbackName || 'Niepewny problem';
+      const confidenceValue = Number(suspectedItem?.confidence);
+      const confidenceLabel = String(
+        suspectedItem?.confidenceLabel || mapDiseaseAiConfidenceLabel(confidenceValue)
+      );
+      const verificationSteps = normalizeArray(currentResult?.verificationSteps)
+        .map((item) => String(item ?? '').trim())
+        .filter(Boolean)
+        .slice(0, 3);
+      const recommendations = normalizeArray(currentResult?.recommendations)
+        .map((item) => String(item ?? '').trim())
+        .filter(Boolean)
+        .slice(0, 4);
+      const treatmentPlan = dedupeTextList([...verificationSteps, ...recommendations], 8);
+      const now = new Date();
+      const nextReviewAt = (() => {
+        const review = new Date(now);
+        review.setDate(review.getDate() + 2);
+        return review;
+      })();
+      const causes = dedupeTextList(
+        [
+          String(suspectedItem?.reason ?? '').trim(),
+          String(plantDiseaseAiDescription ?? '').trim()
+            ? `Opis od uzytkownika: ${String(plantDiseaseAiDescription).trim().slice(0, 220)}`
+            : '',
+        ],
+        6
+      );
+      const caution = dedupeTextList(
+        [
+          'Podejrzenie AI - wynik orientacyjny. To nie jest potwierdzony problem.',
+          ...(currentResult?.warnings ?? []),
+        ],
+        3
+      ).join(' ');
+
+      const payload = buildTankDiseaseCaseWritePayload(
+        {
+          userId: user.uid,
+          tankId: tank.id,
+          tankName: tank.name,
+          caseType: 'plant_disease',
+          issueId: selectedIssueId || `ai_plant_suspected_${Date.now()}`,
+          issueName: `Podejrzenie AI: ${issueLabel}`.slice(0, 220),
+          diseaseId: selectedIssueId || null,
+          diseaseName: issueLabel,
+          severity:
+            confidenceLabel === 'high'
+              ? 'high'
+              : confidenceLabel === 'low'
+                ? 'low'
+                : 'medium',
+          diseaseSummary: String(currentResult?.summary || '')
+            .slice(0, 2800)
+            .concat(' Wynik nie jest pewna diagnoza.')
+            .slice(0, 3000),
+          causes,
+          caution,
+          treatmentPlan,
+          schedule: buildDiagnosisSchedule(`ai-plant-${Date.now()}`, {
+            h24: verificationSteps,
+            d7: recommendations,
+            d30: [],
+          }),
+          status: 'active',
+          createdAt: now,
+          startedAt: now,
+          nextReviewAt,
+        },
+        {
+          mode: 'create',
+          includeCreatedAtIfMissing: true,
+          includeUpdatedAt: false,
+        }
+      );
+
+      const validation = validateTankDiseaseCaseModelRuntime(payload);
+      if (!validation.ok) {
+        throw new Error(`Nieprawidlowy zapis podejrzenia: ${validation.issues.join(', ')}`);
+      }
+
+      await addDocWithTelemetry(
+        'tankDiseaseCases',
+        collection(db, 'tankDiseaseCases'),
+        payload,
+        {
+          userId: user.uid,
+          tankId: tank.id,
+          source: 'save_plant_disease_ai_suspicion',
+        }
+      );
+
+      if (selectedTank?.id === tank.id) {
+        await fetchTankDiseaseCases(user.uid, tank.id);
+      }
+
+      alert('Podejrzenie problemu rosliny zapisane w akwarium.');
+      setIsPlantDiseaseAiAnalyzerVisible(false);
+    } catch (error) {
+      setPlantDiseaseAiError(
+        error instanceof Error ? error.message : 'Nie udalo sie zapisac podejrzenia.'
+      );
+    } finally {
+      setPlantDiseaseAiSavingBusy(false);
+    }
+  };
+
+  const handleOpenAlgaeAiAnalyzer = () => {
+    if (!hasAiAssistantAccess) {
+      alert(
+        aiAssistantUpgradePromptMessage ||
+          aiAssistantLockMessage ||
+          'Asystent AI jest dostepny w planie AI Pro.'
+      );
+      return;
+    }
+    const initialTankId = String(selectedTank?.id || tanks[0]?.id || '').trim();
+    setAlgaeAiTankId(initialTankId);
+    setAlgaeAiLocationTags([]);
+    setAlgaeAiAppearanceTags([]);
+    setAlgaeAiDescription('');
+    setAlgaeAiDuration('unknown');
+    setAlgaeAiSelectedImage(null);
+    setAlgaeAiError('');
+    setAlgaeAiResult(null);
+    setIsAlgaeAiAnalyzerVisible(true);
+  };
+
+  const handlePickAlgaeAiImage = async (source) => {
+    if (!hasAiAssistantAccess) {
+      setAlgaeAiError('Asystent AI jest dostepny w planie AI Pro.');
+      return;
+    }
+    if (!appSettings.aiConsentDataProcessing || !appSettings.aiConsentImageAnalysis) {
+      setAlgaeAiError('Wlacz zgody AI, aby analizowac glony ze zdjeciem.');
+      return;
+    }
+    setAlgaeAiBusy(true);
+    setAlgaeAiError('');
+    try {
+      const picked = await pickVisionImage(source);
+      if (!picked?.uri) {
+        return;
+      }
+      setAlgaeAiSelectedImage({
+        uri: String(picked.uri),
+        width: Number(picked.width) || 0,
+        height: Number(picked.height) || 0,
+        mimeType: String(picked.mimeType || 'image/jpeg'),
+      });
+    } catch (error) {
+      setAlgaeAiError(error instanceof Error ? error.message : 'Nie udalo sie dodac zdjecia.');
+    } finally {
+      setAlgaeAiBusy(false);
+    }
+  };
+
+  const toggleAlgaeAiTag = (kind, tagId) => {
+    if (!tagId) {
+      return;
+    }
+    const setter =
+      kind === 'location' ? setAlgaeAiLocationTags : setAlgaeAiAppearanceTags;
+    setter((prev) => {
+      const current = normalizeArray(prev).map((item) => String(item ?? '').trim());
+      if (current.includes(tagId)) {
+        return current.filter((entry) => entry !== tagId);
+      }
+      return [...current, tagId].slice(0, 8);
+    });
+  };
+
+  const handleAnalyzeAlgaeWithAi = async () => {
+    if (!hasAiAssistantAccess) {
+      setAlgaeAiError(
+        aiAssistantUpgradePromptMessage || 'Asystent AI jest dostepny w planie AI Pro.'
+      );
+      return;
+    }
+    if (!appSettings.aiConsentDataProcessing) {
+      setAlgaeAiError('Wlacz zgode na przetwarzanie danych AI.');
+      return;
+    }
+    if (!user?.uid || !user?.getIdToken) {
+      setAlgaeAiError('Brak aktywnej sesji. Zaloguj sie ponownie.');
+      return;
+    }
+
+    const tank = algaeAiSelectedTank;
+    if (!tank?.id) {
+      setAlgaeAiError('Wybierz akwarium do analizy.');
+      return;
+    }
+
+    const description = String(algaeAiDescription ?? '').trim().slice(0, 1000);
+    const hasImage = Boolean(algaeAiSelectedImage?.uri);
+    if (!description && !hasImage) {
+      setAlgaeAiError('Dodaj opis problemu albo zdjecie.');
+      return;
+    }
+    if (hasImage && !appSettings.aiConsentImageAnalysis) {
+      setAlgaeAiError('Wlacz zgode na analize obrazow AI.');
+      return;
+    }
+
+    setAlgaeAiBusy(true);
+    setAlgaeAiError('');
+    try {
+      const idToken = await user.getIdToken();
+      const compactCatalog = algaeCatalog
+        .slice(0, 20)
+        .map((item) => {
+          const symptoms = normalizeArray(item?.symptoms)
+            .map(
+              (symptomId) =>
+                ALGAE_SYMPTOMS.find((entry) => entry.id === symptomId)?.label ||
+                symptomId
+            )
+            .filter(Boolean)
+            .slice(0, 4)
+            .join(', ');
+          const causes = normalizeArray(item?.causes).slice(0, 2).join('; ');
+          return `${item.id}: ${item.name}${symptoms ? ` (objawy: ${symptoms})` : ''}${causes ? ` (przyczyny: ${causes})` : ''}`;
+        })
+        .join('; ');
+      const latest = algaeAiLatestMeasurement;
+      const profile = algaeAiTankProfile || buildTankEnvironmentProfile(tank);
+      const fishInTargetTank = normalizeArray(stockItems)
+        .filter(
+          (item) =>
+            String(item?.tankId ?? '') === String(tank.id) &&
+            String(item?.type ?? '').toLowerCase() === 'fish'
+        )
+        .reduce((sum, item) => sum + getFishQuantity(item), 0);
+      const substrateLabels = getSubstrateLabels(
+        normalizeSubstrateTypes(tank?.substrateTypes ?? tank?.substrateType)
+      );
+      const locationLabels = ALGAE_AI_LOCATION_OPTIONS.filter((item) =>
+        normalizeArray(algaeAiLocationTags).includes(item.id)
+      )
+        .map((item) => item.label)
+        .join(', ');
+      const appearanceLabels = ALGAE_AI_APPEARANCE_OPTIONS.filter((item) =>
+        normalizeArray(algaeAiAppearanceTags).includes(item.id)
+      )
+        .map((item) => item.label)
+        .join(', ');
+      const additionalInfo = [
+        `Akwarium: ${tank.name ?? 'Akwarium'}, litraz ${tank.liters ?? '-'} l.`,
+        `Lokalizacje glonow: ${locationLabels || 'nie podano'}.`,
+        `Wyglad glonow: ${appearanceLabels || 'nie podano'}.`,
+        `Czas trwania problemu: ${
+          DISEASE_AI_DURATION_OPTIONS.find((item) => item.id === algaeAiDuration)?.label || 'Nie wiem'
+        }.`,
+        latest
+          ? `Parametry: NO2 ${latest.no2 ?? '-'}, NO3 ${latest.no3 ?? '-'}, PO4 ${latest.po4 ?? '-'}, pH ${latest.ph ?? '-'}, GH ${latest.gh ?? '-'}, KH ${latest.kh ?? '-'}, temp ${latest.temperature ?? '-'}, CO2 ${latest.co2 ?? '-'}.`
+          : 'Brak aktualnych parametrow wody.',
+        `Oswietlenie: ${profile?.lightModelName || '-'}, czas swiecenia ${profile?.lightHours ?? '-'} h, lm/l ${profile?.lumensPerLiter ?? '-'}.`,
+        `Obsada ryb (szt): ${fishInTargetTank}.`,
+        substrateLabels ? `Podloze: ${substrateLabels}.` : '',
+        `Katalog glonow (skrot): ${compactCatalog}`,
+      ]
+        .map((entry) => String(entry ?? '').trim())
+        .filter(Boolean)
+        .join('\n');
+
+      trackAiRequestStarted({
+        source: 'algae_catalog_analysis',
+        mode: 'algae_analysis',
+        hasTankId: true,
+        hasImage: hasImage,
+        questionLength: description.length || 0,
+        additionalInfoLength: additionalInfo.length,
+      });
+
+      let resultPayload = null;
+      if (hasImage) {
+        const uploaded = await uploadVisionImageForUser(String(user.uid), algaeAiSelectedImage);
+        const response = await requestAiVisionAnalyzeWithRetry(
+          {
+            idToken: String(idToken ?? ''),
+            imageUrl: uploaded.downloadUrl,
+            question:
+              description ||
+              'Przeanalizuj glony i podaj maksymalnie 3 mozliwe typy glonow z katalogu.',
+            additionalInfo,
+            tankId: String(tank.id),
+            mode: 'algae_analysis',
+            userLanguage: appSettings.language,
+            appLanguage: appSettings.language,
+            locale: appSettings.language,
+          },
+          { maxAttempts: 2, retryDelayMs: 450 }
+        );
+        resultPayload = {
+          summary: String(response?.summary ?? '').trim(),
+          recommendations: Array.isArray(response?.recommendations)
+            ? response.recommendations.slice(0, 6)
+            : [],
+          verificationSteps: Array.isArray(response?.verificationSteps)
+            ? response.verificationSteps.slice(0, 6)
+            : [],
+          warnings: Array.isArray(response?.warnings) ? response.warnings.slice(0, 4) : [],
+          hypotheses: Array.isArray(response?.hypotheses) ? response.hypotheses.slice(0, 5) : [],
+          unreadableImageFallback: Boolean(response?.unreadableImageFallback),
+          imageUri: String(algaeAiSelectedImage?.uri ?? ''),
+          mode: 'vision',
+        };
+      } else {
+        const response = await requestAiChat({
+          idToken: String(idToken ?? ''),
+          question:
+            description ||
+            'Przeanalizuj glony i podaj maksymalnie 3 mozliwe typy glonow z katalogu.',
+          additionalInfo,
+          tankId: String(tank.id),
+          mode: 'algae_analysis',
+          userLanguage: appSettings.language,
+          appLanguage: appSettings.language,
+          locale: appSettings.language,
+        });
+        resultPayload = {
+          summary: String(response?.answer ?? '').trim(),
+          recommendations: Array.isArray(response?.recommendations)
+            ? response.recommendations.slice(0, 6)
+            : [],
+          verificationSteps: [],
+          warnings: Array.isArray(response?.warnings) ? response.warnings.slice(0, 4) : [],
+          hypotheses: [],
+          unreadableImageFallback: false,
+          imageUri: '',
+          mode: 'chat',
+        };
+      }
+
+      const suspectedAlgae = buildAlgaeAiSuspectedIssues({
+        catalog: algaeCatalog,
+        summary: resultPayload?.summary,
+        hypotheses: resultPayload?.hypotheses,
+      });
+      const warnings = dedupeTextList(
+        [ALGAE_AI_WARNING, ...(resultPayload?.warnings ?? [])],
+        4
+      );
+
+      setAlgaeAiResult({
+        ...resultPayload,
+        warnings,
+        suspectedAlgae,
+        tankId: String(tank.id),
+      });
+      trackAiRequestSuccess({
+        source: 'algae_catalog_analysis',
+        mode: 'algae_analysis',
+        hasImage: hasImage,
+      });
+    } catch (error) {
+      const mappedError =
+        error instanceof Error ? error : new Error('Nie udalo sie uruchomic analizy AI.');
+      setAlgaeAiError(mappedError.message || 'Nie udalo sie uruchomic analizy AI.');
+      trackAiRequestFailure(mappedError, {
+        source: 'algae_catalog_analysis',
+        mode: 'algae_analysis',
+      });
+    } finally {
+      setAlgaeAiBusy(false);
+    }
+  };
+
+  const handleSaveAlgaeAiSuspicion = async (suspectedItem) => {
+    if (!user?.uid || !algaeAiSelectedTank?.id || algaeAiSavingBusy) {
+      return;
+    }
+    const currentResult = algaeAiResult;
+    if (!currentResult) {
+      return;
+    }
+
+    setAlgaeAiSavingBusy(true);
+    setAlgaeAiError('');
+    try {
+      const tank = algaeAiSelectedTank;
+      const selectedAlgaeId = String(suspectedItem?.algaeId ?? '').trim();
+      const matchedIssue =
+        algaeCatalog.find((entry) => String(entry?.id ?? '') === selectedAlgaeId) ?? null;
+      const fallbackName = String(suspectedItem?.label ?? 'Niepewny typ glonu').trim();
+      const issueLabel = matchedIssue?.name || fallbackName || 'Niepewny typ glonu';
+      const confidenceValue = Number(suspectedItem?.confidence);
+      const confidenceLabel = String(
+        suspectedItem?.confidenceLabel || mapDiseaseAiConfidenceLabel(confidenceValue)
+      );
+      const verificationSteps = normalizeArray(currentResult?.verificationSteps)
+        .map((item) => String(item ?? '').trim())
+        .filter(Boolean)
+        .slice(0, 6);
+      const recommendations = normalizeArray(currentResult?.recommendations)
+        .map((item) => String(item ?? '').trim())
+        .filter(Boolean)
+        .slice(0, 6);
+      const treatmentPlan = dedupeTextList([...verificationSteps, ...recommendations], 10);
+      const now = new Date();
+      const nextReviewAt = (() => {
+        const review = new Date(now);
+        review.setDate(review.getDate() + 2);
+        return review;
+      })();
+      const causes = dedupeTextList(
+        [
+          String(suspectedItem?.reason ?? '').trim(),
+          String(algaeAiDescription ?? '').trim()
+            ? `Opis od uzytkownika: ${String(algaeAiDescription).trim().slice(0, 220)}`
+            : '',
+        ],
+        8
+      );
+      const caution = dedupeTextList(
+        [
+          'Podejrzenie AI - wynik orientacyjny. To nie jest potwierdzony typ glonu.',
+          ...(currentResult?.warnings ?? []),
+        ],
+        3
+      ).join(' ');
+
+      const payload = buildTankDiseaseCaseWritePayload(
+        {
+          userId: user.uid,
+          tankId: tank.id,
+          tankName: tank.name,
+          caseType: 'algae',
+          issueId: selectedAlgaeId || `ai_algae_suspected_${Date.now()}`,
+          issueName: `Podejrzenie AI: ${issueLabel}`.slice(0, 220),
+          diseaseId: selectedAlgaeId || null,
+          diseaseName: issueLabel,
+          severity:
+            confidenceLabel === 'high'
+              ? 'high'
+              : confidenceLabel === 'low'
+                ? 'low'
+                : 'medium',
+          diseaseSummary: String(currentResult?.summary || '')
+            .slice(0, 2800)
+            .concat(' Wynik nie jest pewna diagnoza.')
+            .slice(0, 3000),
+          causes,
+          caution,
+          treatmentPlan,
+          schedule: buildDiagnosisSchedule(`ai-algae-${Date.now()}`, {
+            h24: verificationSteps,
+            d7: recommendations,
+            d30: [],
+          }),
+          status: 'suspected',
+          source: 'ai',
+          suspectedAlgae: [
+            {
+              algaeId: selectedAlgaeId || null,
+              name: issueLabel,
+              confidence:
+                Number.isFinite(confidenceValue) && confidenceValue >= 0 && confidenceValue <= 1
+                  ? Math.round(confidenceValue * 100) / 100
+                  : 0.3,
+              confidenceLabel,
+              reason: String(suspectedItem?.reason ?? '').trim().slice(0, 800),
+            },
+          ],
+          locationTags: normalizeArray(algaeAiLocationTags)
+            .map((item) => String(item ?? '').trim())
+            .filter(Boolean)
+            .slice(0, 16),
+          appearanceTags: normalizeArray(algaeAiAppearanceTags)
+            .map((item) => String(item ?? '').trim())
+            .filter(Boolean)
+            .slice(0, 16),
+          userDescription: String(algaeAiDescription ?? '').trim().slice(0, 1000),
+          durationLabel:
+            DISEASE_AI_DURATION_OPTIONS.find((item) => item.id === algaeAiDuration)?.label ||
+            'Nie wiem',
+          imageUrls: String(currentResult?.imageUri ?? '').trim()
+            ? [String(currentResult.imageUri).trim()]
+            : [],
+          aiSummary: String(currentResult?.summary ?? '').trim().slice(0, 3000),
+          verificationSteps,
+          recommendations,
+          warnings: normalizeArray(currentResult?.warnings).slice(0, 8),
+          createdAt: now,
+          startedAt: now,
+          nextReviewAt,
+        },
+        {
+          mode: 'create',
+          includeCreatedAtIfMissing: true,
+          includeUpdatedAt: false,
+        }
+      );
+
+      const validation = validateTankDiseaseCaseModelRuntime(payload);
+      if (!validation.ok) {
+        throw new Error(`Nieprawidlowy zapis podejrzenia: ${validation.issues.join(', ')}`);
+      }
+
+      await addDocWithTelemetry(
+        'tankDiseaseCases',
+        collection(db, 'tankDiseaseCases'),
+        payload,
+        {
+          userId: user.uid,
+          tankId: tank.id,
+          source: 'save_algae_ai_suspicion',
+        }
+      );
+
+      if (selectedTank?.id === tank.id) {
+        await fetchTankDiseaseCases(user.uid, tank.id);
+      }
+      await fetchHomeData(user.uid);
+      alert('Podejrzenie problemu z glonami zapisane w akwarium.');
+      setIsAlgaeAiAnalyzerVisible(false);
+    } catch (error) {
+      setAlgaeAiError(
+        error instanceof Error ? error.message : 'Nie udalo sie zapisac podejrzenia.'
+      );
+    } finally {
+      setAlgaeAiSavingBusy(false);
+    }
+  };
+
   const handleAssignDiseaseToTank = async (disease, tank) => {
     if (!user?.uid || !tank || diseaseCaseBusy) {
       return;
@@ -20563,6 +22226,242 @@ export default function HomeScreen() {
     }
     return tanks.find((item) => String(item?.id ?? '') === preferredId) ?? null;
   }, [catalogAiContextTankId, selectedTank?.id, tanks]);
+  const diseaseAiSelectedTank = useMemo(() => {
+    const preferredId = String(diseaseAiTankId || selectedTank?.id || tanks[0]?.id || '').trim();
+    if (!preferredId) {
+      return null;
+    }
+    return tanks.find((item) => String(item?.id ?? '') === preferredId) ?? null;
+  }, [diseaseAiTankId, selectedTank?.id, tanks]);
+  const diseaseAiStockFishOptions = useMemo(() => {
+    if (!diseaseAiSelectedTank?.id) {
+      return [];
+    }
+    return normalizeArray(stockItems)
+      .filter(
+        (item) =>
+          String(item?.tankId ?? '') === String(diseaseAiSelectedTank.id) &&
+          String(item?.type ?? '').toLowerCase() === 'fish'
+      )
+      .map((item) => ({
+        id: String(item?.id ?? ''),
+        label: String(
+          item?.commonName ||
+            item?.name ||
+            item?.speciesName ||
+            item?.latinName ||
+            item?.scientificName ||
+            'Ryba'
+        ).trim(),
+      }))
+      .filter((item) => item.id && item.label)
+      .slice(0, 40);
+  }, [diseaseAiSelectedTank?.id, stockItems]);
+  const diseaseAiLatestMeasurement = useMemo(() => {
+    if (!diseaseAiSelectedTank?.id) {
+      return null;
+    }
+    return normalizeArray(measurements)
+      .filter((item) => String(item?.tankId ?? '') === String(diseaseAiSelectedTank.id))
+      .sort((left, right) => getMeasurementRecordedAtMs(right) - getMeasurementRecordedAtMs(left))[0] ?? null;
+  }, [diseaseAiSelectedTank?.id, measurements]);
+  const plantDiseaseAiSelectedTank = useMemo(() => {
+    const preferredId = String(
+      plantDiseaseAiTankId || selectedTank?.id || tanks[0]?.id || ''
+    ).trim();
+    if (!preferredId) {
+      return null;
+    }
+    return tanks.find((item) => String(item?.id ?? '') === preferredId) ?? null;
+  }, [plantDiseaseAiTankId, selectedTank?.id, tanks]);
+  const plantDiseaseAiPlantOptions = useMemo(() => {
+    if (!plantDiseaseAiSelectedTank?.id) {
+      return [];
+    }
+    return normalizeArray(stockItems)
+      .filter(
+        (item) =>
+          String(item?.tankId ?? '') === String(plantDiseaseAiSelectedTank.id) &&
+          String(item?.type ?? '').toLowerCase() === 'plant'
+      )
+      .map((item) => ({
+        id: String(item?.id ?? ''),
+        label: String(
+          item?.commonName ||
+            item?.name ||
+            item?.speciesName ||
+            item?.latinName ||
+            item?.scientificName ||
+            'Roslina'
+        ).trim(),
+      }))
+      .filter((item) => item.id && item.label)
+      .slice(0, 40);
+  }, [plantDiseaseAiSelectedTank?.id, stockItems]);
+  const plantDiseaseAiLatestMeasurement = useMemo(() => {
+    if (!plantDiseaseAiSelectedTank?.id) {
+      return null;
+    }
+    return normalizeArray(measurements)
+      .filter((item) => String(item?.tankId ?? '') === String(plantDiseaseAiSelectedTank.id))
+      .sort((left, right) => getMeasurementRecordedAtMs(right) - getMeasurementRecordedAtMs(left))[0] ?? null;
+  }, [plantDiseaseAiSelectedTank?.id, measurements]);
+  const plantDiseaseAiTankProfile = useMemo(() => {
+    if (!plantDiseaseAiSelectedTank) {
+      return null;
+    }
+    return buildTankEnvironmentProfile(plantDiseaseAiSelectedTank);
+  }, [plantDiseaseAiSelectedTank]);
+  const algaeAiSelectedTank = useMemo(() => {
+    const preferredId = String(algaeAiTankId || selectedTank?.id || tanks[0]?.id || '').trim();
+    if (!preferredId) {
+      return null;
+    }
+    return tanks.find((item) => String(item?.id ?? '') === preferredId) ?? null;
+  }, [algaeAiTankId, selectedTank?.id, tanks]);
+  const algaeAiLatestMeasurement = useMemo(() => {
+    if (!algaeAiSelectedTank?.id) {
+      return null;
+    }
+    return normalizeArray(measurements)
+      .filter((item) => String(item?.tankId ?? '') === String(algaeAiSelectedTank.id))
+      .sort((left, right) => getMeasurementRecordedAtMs(right) - getMeasurementRecordedAtMs(left))[0] ?? null;
+  }, [algaeAiSelectedTank?.id, measurements]);
+  const algaeAiTankProfile = useMemo(() => {
+    if (!algaeAiSelectedTank) {
+      return null;
+    }
+    return buildTankEnvironmentProfile(algaeAiSelectedTank);
+  }, [algaeAiSelectedTank]);
+  const activeAiSuspectedDiseaseIds = useMemo(() => {
+    return new Set(
+      normalizeArray(tankDiseaseCases)
+        .filter((item) => {
+          const caseType = String(item?.caseType ?? '').toLowerCase();
+          if (caseType !== 'disease') {
+            return false;
+          }
+          const status = String(item?.status ?? '').toLowerCase();
+          if (status && !isIssueCaseActiveStatus(status)) {
+            return false;
+          }
+          const marker = `${String(item?.issueName ?? '')} ${String(item?.caution ?? '')}`.toLowerCase();
+          return marker.includes('podejrzenie ai');
+        })
+        .map((item) => String(item?.diseaseId ?? '').trim())
+        .filter(Boolean)
+    );
+  }, [tankDiseaseCases]);
+  const activeAiSuspectedDiseaseCaseById = useMemo(() => {
+    const map = new Map();
+    normalizeArray(tankDiseaseCases)
+      .filter((item) => {
+        const caseType = String(item?.caseType ?? '').toLowerCase();
+        const status = String(item?.status ?? '').toLowerCase();
+        if (caseType !== 'disease' || (status && !isIssueCaseActiveStatus(status))) {
+          return false;
+        }
+        const marker = `${String(item?.issueName ?? '')} ${String(item?.caution ?? '')}`.toLowerCase();
+        return marker.includes('podejrzenie ai');
+      })
+      .forEach((item) => {
+        const diseaseId = String(item?.diseaseId ?? '').trim();
+        if (!diseaseId) {
+          return;
+        }
+        const existing = map.get(diseaseId);
+        if (!existing || getCreatedAtMs(item?.createdAt) > getCreatedAtMs(existing?.createdAt)) {
+          map.set(diseaseId, item);
+        }
+      });
+    return map;
+  }, [tankDiseaseCases]);
+  const activeAiSuspectedPlantIssueIds = useMemo(() => {
+    return new Set(
+      normalizeArray(tankDiseaseCases)
+        .filter((item) => {
+          const caseType = String(item?.caseType ?? '').toLowerCase();
+          if (caseType !== 'plant_disease') {
+            return false;
+          }
+          const status = String(item?.status ?? '').toLowerCase();
+          if (status && !isIssueCaseActiveStatus(status)) {
+            return false;
+          }
+          const marker = `${String(item?.issueName ?? '')} ${String(item?.caution ?? '')}`.toLowerCase();
+          return marker.includes('podejrzenie ai');
+        })
+        .map((item) => String(item?.diseaseId ?? '').trim())
+        .filter(Boolean)
+    );
+  }, [tankDiseaseCases]);
+  const activeAiSuspectedPlantIssueCaseById = useMemo(() => {
+    const map = new Map();
+    normalizeArray(tankDiseaseCases)
+      .filter((item) => {
+        const caseType = String(item?.caseType ?? '').toLowerCase();
+        const status = String(item?.status ?? '').toLowerCase();
+        if (caseType !== 'plant_disease' || (status && !isIssueCaseActiveStatus(status))) {
+          return false;
+        }
+        const marker = `${String(item?.issueName ?? '')} ${String(item?.caution ?? '')}`.toLowerCase();
+        return marker.includes('podejrzenie ai');
+      })
+      .forEach((item) => {
+        const issueId = String(item?.diseaseId ?? '').trim();
+        if (!issueId) {
+          return;
+        }
+        const existing = map.get(issueId);
+        if (!existing || getCreatedAtMs(item?.createdAt) > getCreatedAtMs(existing?.createdAt)) {
+          map.set(issueId, item);
+        }
+      });
+    return map;
+  }, [tankDiseaseCases]);
+  const activeAiSuspectedAlgaeIds = useMemo(() => {
+    return new Set(
+      normalizeArray(tankDiseaseCases)
+        .filter((item) => {
+          const caseType = String(item?.caseType ?? '').toLowerCase();
+          if (caseType !== 'algae') {
+            return false;
+          }
+          const status = String(item?.status ?? '').toLowerCase();
+          if (status && !isIssueCaseActiveStatus(status)) {
+            return false;
+          }
+          const marker = `${String(item?.issueName ?? '')} ${String(item?.caution ?? '')}`.toLowerCase();
+          return marker.includes('podejrzenie ai');
+        })
+        .map((item) => String(item?.diseaseId ?? item?.issueId ?? '').trim())
+        .filter(Boolean)
+    );
+  }, [tankDiseaseCases]);
+  const activeAiSuspectedAlgaeCaseById = useMemo(() => {
+    const map = new Map();
+    normalizeArray(tankDiseaseCases)
+      .filter((item) => {
+        const caseType = String(item?.caseType ?? '').toLowerCase();
+        const status = String(item?.status ?? '').toLowerCase();
+        if (caseType !== 'algae' || (status && !isIssueCaseActiveStatus(status))) {
+          return false;
+        }
+        const marker = `${String(item?.issueName ?? '')} ${String(item?.caution ?? '')}`.toLowerCase();
+        return marker.includes('podejrzenie ai');
+      })
+      .forEach((item) => {
+        const algaeId = String(item?.diseaseId ?? item?.issueId ?? '').trim();
+        if (!algaeId) {
+          return;
+        }
+        const existing = map.get(algaeId);
+        if (!existing || getCreatedAtMs(item?.createdAt) > getCreatedAtMs(existing?.createdAt)) {
+          map.set(algaeId, item);
+        }
+      });
+    return map;
+  }, [tankDiseaseCases]);
 
   const renderCatalogAiResultCard = (resultKey) => {
     const result = catalogAiResultByKey[resultKey];
@@ -22608,7 +24507,6 @@ export default function HomeScreen() {
   );
   const onboardingSectionSeverity = onboardingPanelModel.sectionSeverity;
   const reviewTabSeverity = 'none';
-  const aiTabSeverity = hasAiAssistantAccess ? 'none' : 'warning';
   const equipmentTabSeverity = 'none';
   const renderReviewSectionTitle = (title, severity = 'none') => (
     <View
@@ -23539,20 +25437,41 @@ export default function HomeScreen() {
                 style={{
                   borderWidth: 1,
                   borderColor:
-                    activeSection === 'ai' ? themeAccent : themeBorderStrong,
+                    activeSection === 'ai'
+                      ? (isLightTheme ? '#7a5b17' : '#f5dd96')
+                      : (isLightTheme ? '#c7a24a' : '#a88734'),
                   backgroundColor:
                     activeSection === 'ai'
-                      ? themeAccentStrongBg
-                      : themeChipBg,
+                      ? (isLightTheme ? '#b68a2b' : '#4a3a1a')
+                      : (isLightTheme ? '#fff4cf' : '#2f2614'),
                   borderRadius: 999,
                   paddingVertical: 8,
                   paddingHorizontal: 12,
                 }}>
-                {renderNavigationChipLabel(
-                  'AI',
-                  aiTabSeverity,
-                  activeSection === 'ai'
-                )}
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Text
+                    style={{
+                      color:
+                        activeSection === 'ai'
+                          ? '#ffffff'
+                          : (isLightTheme ? '#7a5b17' : '#f5dd96'),
+                      fontWeight: '700',
+                      fontSize: 12,
+                    }}>
+                    Asystent AI
+                  </Text>
+                  <Text
+                    style={{
+                      color:
+                        activeSection === 'ai'
+                          ? '#fff1c2'
+                          : (isLightTheme ? '#9a731d' : '#e8cb82'),
+                      fontWeight: '700',
+                      fontSize: 10,
+                    }}>
+                    PRO
+                  </Text>
+                </View>
               </Pressable>
               {activeDiseaseCases.length +
                 activePlantDiseaseCases.length +
@@ -24914,7 +26833,6 @@ export default function HomeScreen() {
               style={{
                 marginBottom: 18,
               }}>
-              {renderCatalogAiContextCard('plant-catalog')}
               <View
                 style={{
                   borderWidth: 1,
@@ -24947,7 +26865,6 @@ export default function HomeScreen() {
                 ) : (
                   menuVisiblePlantCatalog.map((plant) => {
                     const isExpanded = expandedPlantCatalogId === plant.id;
-                    const plantCatalogAiResultKey = `plant_catalog_${plant.id}`;
 
                     return (
                       <View
@@ -25043,83 +26960,7 @@ export default function HomeScreen() {
                                 {plant.notes}
                               </Text>
                             )}
-                            <Pressable
-                              onPress={() =>
-                                runCatalogAiChat({
-                                  resultKey: plantCatalogAiResultKey,
-                                  question: `Ocen, czy roslina "${plant.commonName ?? plant.name ?? 'Roslina'}" pasuje do wybranego akwarium i podaj plan wdrozenia.`,
-                                  contextDetails: [
-                                    `Roslina: ${plant.commonName ?? plant.name ?? ''} (${plant.latinName ?? ''})`,
-                                    `Zakres pH: ${formatRange(plant.phMin, plant.phMax)}`,
-                                    `Zakres GH: ${formatRange(plant.ghMin, plant.ghMax)}`,
-                                    `Zakres temperatury: ${formatRange(plant.tempMin, plant.tempMax, 'C')}`,
-                                    `Minimalny litraĹĽ: ${Math.max(0, Math.round(Number(plant.minLiters) || 0))} l`,
-                                  ]
-                                    .filter(Boolean)
-                                    .join('. '),
-                                  tankId: catalogAiSelectedTank?.id ?? null,
-                                })
-                              }
-                              disabled={catalogAiBusy}
-                              style={{
-                                borderWidth: 1,
-                                borderColor: themeBorderStrong,
-                                borderRadius: 8,
-                                paddingVertical: 8,
-                                paddingHorizontal: 10,
-                                marginTop: 10,
-                                backgroundColor: themeCardBg,
-                                opacity: catalogAiBusy ? 0.7 : 1,
-                              }}>
-                              <Text
-                                style={{
-                                  color: themeTextPrimary,
-                                  textAlign: 'center',
-                                  fontWeight: '700',
-                                  fontSize: 12,
-                                }}>
-                                {catalogAiBusy ? 'AI analizuje...' : 'Zapytaj AI o te rosline'}
-                              </Text>
-                            </Pressable>
-                            <Pressable
-                              onPress={() =>
-                                runCatalogAiVision({
-                                  resultKey: plantCatalogAiResultKey,
-                                  question: `Przeanalizuj zdjÄ™cie pod katem rosliny "${plant.commonName ?? plant.name ?? 'Roslina'}" i wskaz ryzyka oraz plan dziaĹ‚ania.`,
-                                  contextDetails: [
-                                    `Roslina: ${plant.commonName ?? plant.name ?? ''} (${plant.latinName ?? ''})`,
-                                    `Zakres pH: ${formatRange(plant.phMin, plant.phMax)}`,
-                                    `Zakres GH: ${formatRange(plant.ghMin, plant.ghMax)}`,
-                                    `Zakres temperatury: ${formatRange(plant.tempMin, plant.tempMax, 'C')}`,
-                                  ]
-                                    .filter(Boolean)
-                                    .join('. '),
-                                  tankId: catalogAiSelectedTank?.id ?? null,
-                                })
-                              }
-                              disabled={catalogAiBusy}
-                              style={{
-                                borderWidth: 1,
-                                borderColor: themeBorderStrong,
-                                borderRadius: 8,
-                                paddingVertical: 8,
-                                paddingHorizontal: 10,
-                                marginTop: 8,
-                                backgroundColor: themeCardBg,
-                                opacity: catalogAiBusy ? 0.7 : 1,
-                              }}>
-                              <Text
-                                style={{
-                                  color: themeTextPrimary,
-                                  textAlign: 'center',
-                                  fontWeight: '700',
-                                  fontSize: 12,
-                                }}>
-                                {catalogAiBusy ? 'AI analizuje...' : 'Analizuj zdjÄ™cie dla tej rosliny'}
-                              </Text>
-                            </Pressable>
-                            {renderCatalogAiResultCard(plantCatalogAiResultKey)}
-                            <Pressable
+<Pressable
                               onPress={() => handleAddCatalogPlantToAquarium(plant)}
                               disabled={stockBusy}
                               style={{
@@ -27238,7 +29079,48 @@ export default function HomeScreen() {
                   (weterynarz/ichtiopatolog).
                 </Text>
               </View>
-              {renderCatalogAiContextCard('disease-catalog')}
+              {false ? renderCatalogAiContextCard('disease-catalog') : null}
+              <View
+                style={{
+                  borderWidth: 1,
+                  borderColor: themeAccent,
+                  borderRadius: 10,
+                  padding: 12,
+                  marginBottom: 10,
+                  backgroundColor: themeAccentStrongBg,
+                }}>
+                <Text
+                  style={{
+                    color: themeAccentOnStrong,
+                    fontWeight: '700',
+                    fontSize: 14,
+                  }}>
+                  Nie wiesz, co dolega rybie?
+                </Text>
+                <Text style={{ color: themeAccentOnStrong, fontSize: 12, marginTop: 4 }}>
+                  Opisz objawy, dodaj zdjecie i sprawdz mozliwe przyczyny z AI.
+                </Text>
+                <Pressable
+                  onPress={handleOpenDiseaseAiAnalyzer}
+                  style={{
+                    marginTop: 8,
+                    borderWidth: 1,
+                    borderColor: themeAccent,
+                    borderRadius: 8,
+                    paddingVertical: 8,
+                    backgroundColor: themeAccent,
+                  }}>
+                  <Text
+                    style={{
+                      color: themeAccentOnStrong,
+                      textAlign: 'center',
+                      fontWeight: '700',
+                      fontSize: 12,
+                    }}>
+                    Sprawdz objawy z AI
+                  </Text>
+                </Pressable>
+              </View>
 
               <View
                 style={{
@@ -27373,6 +29255,23 @@ export default function HomeScreen() {
                             <Text style={{ color: themeTextPrimary, fontWeight: '700' }}>
                               {disease.name}
                             </Text>
+                            {activeAiSuspectedDiseaseIds.has(String(disease.id ?? '')) ? (
+                              <View
+                                style={{
+                                  marginTop: 4,
+                                  alignSelf: 'flex-start',
+                                  borderWidth: 1,
+                                  borderColor: themeWarning,
+                                  borderRadius: 999,
+                                  paddingHorizontal: 8,
+                                  paddingVertical: 2,
+                                  backgroundColor: themeWarningSoftBg,
+                                }}>
+                                <Text style={{ color: themeWarningText, fontSize: 11, fontWeight: '700' }}>
+                                  Podejrzenie AI
+                                </Text>
+                              </View>
+                            ) : null}
                             <Text
                               style={{
                                 color: themeTextMuted,
@@ -27459,6 +29358,64 @@ export default function HomeScreen() {
                             <Text style={{ color: themeWarningText, marginTop: 6, fontSize: 12 }}>
                               Uwaga: {disease.caution}
                             </Text>
+                            {(() => {
+                              const suspectedCase = activeAiSuspectedDiseaseCaseById.get(
+                                String(disease.id ?? '')
+                              );
+                              if (!suspectedCase?.id) {
+                                return null;
+                              }
+                              return (
+                                <View
+                                  style={{
+                                    marginTop: 8,
+                                    borderWidth: 1,
+                                    borderColor: themeWarning,
+                                    borderRadius: 8,
+                                    padding: 8,
+                                    backgroundColor: themeWarningSoftBg,
+                                  }}>
+                                  <Text style={{ color: themeWarningText, fontSize: 12, fontWeight: '700' }}>
+                                    Ta choroba zostala wskazana przez AI jako mozliwe podejrzenie w tym akwarium.
+                                  </Text>
+                                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                                    <Pressable
+                                      onPress={() => {
+                                        setExpandedDiseaseCaseId(String(suspectedCase.id));
+                                        setDiseaseMode('catalog');
+                                      }}
+                                      style={{
+                                        flex: 1,
+                                        borderWidth: 1,
+                                        borderColor: themeBorderStrong,
+                                        borderRadius: 8,
+                                        paddingVertical: 8,
+                                        backgroundColor: themeCardBg,
+                                      }}>
+                                      <Text style={{ color: themeTextPrimary, textAlign: 'center', fontSize: 12, fontWeight: '700' }}>
+                                        Otworz przypadek
+                                      </Text>
+                                    </Pressable>
+                                    <Pressable
+                                      onPress={() => handleCloseTankIssueCase(suspectedCase)}
+                                      disabled={diseaseCaseBusy}
+                                      style={{
+                                        flex: 1,
+                                        borderWidth: 1,
+                                        borderColor: themeWarning,
+                                        borderRadius: 8,
+                                        paddingVertical: 8,
+                                        backgroundColor: themeCardBg,
+                                        opacity: diseaseCaseBusy ? 0.7 : 1,
+                                      }}>
+                                      <Text style={{ color: themeWarningText, textAlign: 'center', fontSize: 12, fontWeight: '700' }}>
+                                        Zmien status
+                                      </Text>
+                                    </Pressable>
+                                  </View>
+                                </View>
+                              );
+                            })()}
                             <Pressable
                               onPress={() =>
                                 runCatalogAiChat({
@@ -28006,9 +29963,47 @@ export default function HomeScreen() {
                   stopniowo i obserwuj reakcje zbiornika.
                 </Text>
               </View>
-
-              {renderCatalogAiContextCard('plant-disease-catalog')}
-
+              <View
+                style={{
+                  borderWidth: 1,
+                  borderColor: themeAccent,
+                  borderRadius: 10,
+                  padding: 12,
+                  marginBottom: 10,
+                  backgroundColor: themeAccentStrongBg,
+                }}>
+                <Text
+                  style={{
+                    color: themeAccentOnStrong,
+                    fontWeight: '700',
+                    fontSize: 14,
+                  }}>
+                  Nie wiesz, co dzieje sie z roslina?
+                </Text>
+                <Text style={{ color: themeAccentOnStrong, fontSize: 12, marginTop: 4 }}>
+                  Opisz objawy, dodaj zdjecie i sprawdz mozliwe przyczyny z AI.
+                </Text>
+                <Pressable
+                  onPress={handleOpenPlantDiseaseAiAnalyzer}
+                  style={{
+                    marginTop: 8,
+                    borderWidth: 1,
+                    borderColor: themeAccent,
+                    borderRadius: 8,
+                    paddingVertical: 8,
+                    backgroundColor: themeAccent,
+                  }}>
+                  <Text
+                    style={{
+                      color: themeAccentOnStrong,
+                      textAlign: 'center',
+                      fontWeight: '700',
+                      fontSize: 12,
+                    }}>
+                    Sprawdz problem z AI
+                  </Text>
+                </Pressable>
+              </View>
               <View
                 style={{
                   flexDirection: 'row',
@@ -28093,7 +30088,6 @@ export default function HomeScreen() {
                   }}>
                   {plantDiseaseCatalog.map((disease) => {
                     const isExpanded = expandedPlantDiseaseCatalogId === disease.id;
-                    const plantDiseaseCatalogAiResultKey = `plant_disease_catalog_${disease.id}`;
                     const diseasePreviewImagePrimaryUri = String(
                       disease.imagePreviewUrl ?? disease.imageUrl ?? ''
                     ).trim();
@@ -28152,6 +30146,23 @@ export default function HomeScreen() {
                             <Text style={{ color: themeTextPrimary, fontWeight: '700' }}>
                               {disease.name}
                             </Text>
+                            {activeAiSuspectedPlantIssueIds.has(String(disease.id ?? '')) ? (
+                              <View
+                                style={{
+                                  marginTop: 4,
+                                  alignSelf: 'flex-start',
+                                  borderWidth: 1,
+                                  borderColor: themeWarning,
+                                  borderRadius: 999,
+                                  paddingHorizontal: 8,
+                                  paddingVertical: 2,
+                                  backgroundColor: themeWarningSoftBg,
+                                }}>
+                                <Text style={{ color: themeWarningText, fontSize: 11, fontWeight: '700' }}>
+                                  Podejrzenie AI
+                                </Text>
+                              </View>
+                            ) : null}
                             <Text
                               style={{
                                 color: themeTextMuted,
@@ -28238,82 +30249,65 @@ export default function HomeScreen() {
                             <Text style={{ color: themeWarningText, marginTop: 6, fontSize: 12 }}>
                               Uwaga: {disease.caution}
                             </Text>
-                            <Pressable
-                              onPress={() =>
-                                runCatalogAiChat({
-                                  resultKey: plantDiseaseCatalogAiResultKey,
-                                  question: `Przeanalizuj chorĂłbe roslin "${disease.name}" dla wybranego akwarium i podaj plan naprawczy.`,
-                                  contextDetails: [
-                                    `Objawy katalogowe: ${symptomSummary}`,
-                                    `Podsumowanie: ${disease.summary ?? ''}`,
-                                    `Proponowany srodek: ${disease.suggestedRemedy ?? ''}`,
-                                    `Uwagi: ${disease.caution ?? ''}`,
-                                  ]
-                                    .filter(Boolean)
-                                    .join('. '),
-                                  tankId: catalogAiSelectedTank?.id ?? null,
-                                })
+                            {(() => {
+                              const suspectedCase = activeAiSuspectedPlantIssueCaseById.get(
+                                String(disease.id ?? '')
+                              );
+                              if (!suspectedCase?.id) {
+                                return null;
                               }
-                              disabled={catalogAiBusy}
-                              style={{
-                                borderWidth: 1,
-                                borderColor: themeBorderStrong,
-                                borderRadius: 8,
-                                paddingVertical: 8,
-                                paddingHorizontal: 10,
-                                marginTop: 8,
-                                backgroundColor: themeCardBg,
-                                opacity: catalogAiBusy ? 0.7 : 1,
-                              }}>
-                              <Text
-                                style={{
-                                  color: themeTextPrimary,
-                                  textAlign: 'center',
-                                  fontWeight: '700',
-                                  fontSize: 12,
-                                }}>
-                                {catalogAiBusy ? 'AI analizuje...' : 'Zapytaj AI o te chorĂłbe'}
-                              </Text>
-                            </Pressable>
-                            <Pressable
-                              onPress={() =>
-                                runCatalogAiVision({
-                                  resultKey: plantDiseaseCatalogAiResultKey,
-                                  question: `Przeanalizuj zdjÄ™cie pod katem chorĂłby roslin "${disease.name}" i zaproponuj plan naprawczy.`,
-                                  contextDetails: [
-                                    `Objawy katalogowe: ${symptomSummary}`,
-                                    `Podsumowanie: ${disease.summary ?? ''}`,
-                                    `Proponowany srodek: ${disease.suggestedRemedy ?? ''}`,
-                                    `Uwagi: ${disease.caution ?? ''}`,
-                                  ]
-                                    .filter(Boolean)
-                                    .join('. '),
-                                  tankId: catalogAiSelectedTank?.id ?? null,
-                                })
-                              }
-                              disabled={catalogAiBusy}
-                              style={{
-                                borderWidth: 1,
-                                borderColor: themeBorderStrong,
-                                borderRadius: 8,
-                                paddingVertical: 8,
-                                paddingHorizontal: 10,
-                                marginTop: 8,
-                                backgroundColor: themeCardBg,
-                                opacity: catalogAiBusy ? 0.7 : 1,
-                              }}>
-                              <Text
-                                style={{
-                                  color: themeTextPrimary,
-                                  textAlign: 'center',
-                                  fontWeight: '700',
-                                  fontSize: 12,
-                                }}>
-                                {catalogAiBusy ? 'AI analizuje...' : 'Analizuj zdjÄ™cie dla tej chorĂłby'}
-                              </Text>
-                            </Pressable>
-                            {renderCatalogAiResultCard(plantDiseaseCatalogAiResultKey)}
-                            <Pressable
+                              return (
+                                <View
+                                  style={{
+                                    marginTop: 8,
+                                    borderWidth: 1,
+                                    borderColor: themeWarning,
+                                    borderRadius: 8,
+                                    padding: 8,
+                                    backgroundColor: themeWarningSoftBg,
+                                  }}>
+                                  <Text style={{ color: themeWarningText, fontSize: 12, fontWeight: '700' }}>
+                                    Ten problem zostal wskazany przez AI jako mozliwe podejrzenie w tym akwarium.
+                                  </Text>
+                                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                                    <Pressable
+                                      onPress={() => {
+                                        setExpandedPlantDiseaseCaseId(String(suspectedCase.id));
+                                        setPlantDiseaseMode('catalog');
+                                      }}
+                                      style={{
+                                        flex: 1,
+                                        borderWidth: 1,
+                                        borderColor: themeBorderStrong,
+                                        borderRadius: 8,
+                                        paddingVertical: 8,
+                                        backgroundColor: themeCardBg,
+                                      }}>
+                                      <Text style={{ color: themeTextPrimary, textAlign: 'center', fontSize: 12, fontWeight: '700' }}>
+                                        Otworz przypadek
+                                      </Text>
+                                    </Pressable>
+                                    <Pressable
+                                      onPress={() => handleCloseTankIssueCase(suspectedCase)}
+                                      disabled={diseaseCaseBusy}
+                                      style={{
+                                        flex: 1,
+                                        borderWidth: 1,
+                                        borderColor: themeWarning,
+                                        borderRadius: 8,
+                                        paddingVertical: 8,
+                                        backgroundColor: themeCardBg,
+                                        opacity: diseaseCaseBusy ? 0.7 : 1,
+                                      }}>
+                                      <Text style={{ color: themeWarningText, textAlign: 'center', fontSize: 12, fontWeight: '700' }}>
+                                        Zmien status
+                                      </Text>
+                                    </Pressable>
+                                  </View>
+                                </View>
+                              );
+                            })()}
+<Pressable
                               onPress={() => handleAddPlantDiseaseToAquarium(disease)}
                               style={{
                                 borderWidth: 1,
@@ -28753,6 +30747,47 @@ export default function HomeScreen() {
                   Dzialaj stopniowo i obserwuj ryby.
                 </Text>
               </View>
+              <View
+                style={{
+                  borderWidth: 1,
+                  borderColor: themeAccent,
+                  borderRadius: 10,
+                  padding: 12,
+                  marginBottom: 10,
+                  backgroundColor: themeAccentStrongBg,
+                }}>
+                <Text
+                  style={{
+                    color: themeAccentOnStrong,
+                    fontWeight: '700',
+                    fontSize: 14,
+                  }}>
+                  Nie wiesz, jaki to glon?
+                </Text>
+                <Text style={{ color: themeAccentOnStrong, fontSize: 12, marginTop: 4 }}>
+                  Dodaj zdjecie, opisz problem i sprawdz mozliwe przyczyny z AI.
+                </Text>
+                <Pressable
+                  onPress={handleOpenAlgaeAiAnalyzer}
+                  style={{
+                    marginTop: 8,
+                    borderWidth: 1,
+                    borderColor: themeAccent,
+                    borderRadius: 8,
+                    paddingVertical: 8,
+                    backgroundColor: themeAccent,
+                  }}>
+                  <Text
+                    style={{
+                      color: themeAccentOnStrong,
+                      textAlign: 'center',
+                      fontWeight: '700',
+                      fontSize: 12,
+                    }}>
+                    Sprawdz glony z AI
+                  </Text>
+                </Pressable>
+              </View>
 
               <View
                 style={{
@@ -28887,6 +30922,23 @@ export default function HomeScreen() {
                             <Text style={{ color: themeTextPrimary, fontWeight: '700' }}>
                               {algae.name}
                             </Text>
+                            {activeAiSuspectedAlgaeIds.has(String(algae.id ?? '')) ? (
+                              <View
+                                style={{
+                                  marginTop: 4,
+                                  alignSelf: 'flex-start',
+                                  borderWidth: 1,
+                                  borderColor: themeWarning,
+                                  borderRadius: 999,
+                                  paddingHorizontal: 8,
+                                  paddingVertical: 2,
+                                  backgroundColor: themeWarningSoftBg,
+                                }}>
+                                <Text style={{ color: themeWarningText, fontSize: 11, fontWeight: '700' }}>
+                                  Podejrzenie AI
+                                </Text>
+                              </View>
+                            ) : null}
                             <Text
                               style={{
                                 color: themeTextMuted,
@@ -28993,6 +31045,64 @@ export default function HomeScreen() {
                             <Text style={{ color: themeWarningText, marginTop: 6, fontSize: 12 }}>
                               Uwaga: {algae.caution}
                             </Text>
+                            {(() => {
+                              const suspectedCase = activeAiSuspectedAlgaeCaseById.get(
+                                String(algae.id ?? '')
+                              );
+                              if (!suspectedCase?.id) {
+                                return null;
+                              }
+                              return (
+                                <View
+                                  style={{
+                                    marginTop: 8,
+                                    borderWidth: 1,
+                                    borderColor: themeWarning,
+                                    borderRadius: 8,
+                                    padding: 8,
+                                    backgroundColor: themeWarningSoftBg,
+                                  }}>
+                                  <Text style={{ color: themeWarningText, fontSize: 12, fontWeight: '700' }}>
+                                    Ten glon zostal wskazany przez AI jako mozliwe podejrzenie w tym akwarium.
+                                  </Text>
+                                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                                    <Pressable
+                                      onPress={() => {
+                                        setExpandedAlgaeCaseId(String(suspectedCase.id));
+                                        setIsTankAlgaeExpanded(true);
+                                      }}
+                                      style={{
+                                        flex: 1,
+                                        borderWidth: 1,
+                                        borderColor: themeBorderStrong,
+                                        borderRadius: 8,
+                                        paddingVertical: 8,
+                                        backgroundColor: themeCardBg,
+                                      }}>
+                                      <Text style={{ color: themeTextPrimary, textAlign: 'center', fontSize: 12, fontWeight: '700' }}>
+                                        Otworz przypadek
+                                      </Text>
+                                    </Pressable>
+                                    <Pressable
+                                      onPress={() => handleCloseTankIssueCase(suspectedCase)}
+                                      disabled={diseaseCaseBusy}
+                                      style={{
+                                        flex: 1,
+                                        borderWidth: 1,
+                                        borderColor: themeWarning,
+                                        borderRadius: 8,
+                                        paddingVertical: 8,
+                                        backgroundColor: themeCardBg,
+                                        opacity: diseaseCaseBusy ? 0.7 : 1,
+                                      }}>
+                                      <Text style={{ color: themeWarningText, textAlign: 'center', fontSize: 12, fontWeight: '700' }}>
+                                        Zmien status
+                                      </Text>
+                                    </Pressable>
+                                  </View>
+                                </View>
+                              );
+                            })()}
                             <Pressable
                               onPress={() => handleAddAlgaeToAquarium(algae)}
                               style={{
@@ -33333,6 +35443,37 @@ export default function HomeScreen() {
                         {t('historyTabIssues')}
                       </Text>
                     </Pressable>
+                    <Pressable
+                      onPress={() => setHistorySectionTab('ai')}
+                      style={{
+                        flex: 1,
+                        borderWidth: 1,
+                        borderColor:
+                          historySectionTab === 'ai'
+                            ? themeAccent
+                            : themeBorder,
+                        backgroundColor: hasAiAssistantAccess
+                          ? historySectionTab === 'ai'
+                            ? themeAccentSoftBg
+                            : themeCardBg
+                          : themeCardBg,
+                        borderRadius: 999,
+                        paddingVertical: 8,
+                        paddingHorizontal: 10,
+                        alignItems: 'center',
+                        opacity: 1,
+                      }}>
+                      <Text
+                        style={{
+                          color: historySectionTab === 'ai'
+                            ? themeAccentOnStrong
+                            : themeTextPrimary,
+                          fontWeight: '700',
+                          fontSize: 12,
+                        }}>
+                        {t('historyTabAi')}
+                      </Text>
+                    </Pressable>
                   </View>
 
                   {historySectionTab === 'parameters' && (
@@ -34055,6 +36196,150 @@ export default function HomeScreen() {
                   </>
                   )}
 
+                  {historySectionTab === 'ai' && (
+                    <View
+                      style={{
+                        borderWidth: 1,
+                        borderColor: themeBorder,
+                        borderRadius: 10,
+                        padding: 12,
+                        backgroundColor: themeCardBg,
+                      }}>
+                      <Text
+                        style={{
+                          color: themeTextPrimary,
+                          fontWeight: '700',
+                          fontSize: 16,
+                        }}>
+                        {t('historyAiTrendTitle')}
+                      </Text>
+                      {!hasAiAssistantAccess ? (
+                        <Text style={{ color: themeWarningText, marginTop: 8, fontSize: 12 }}>
+                          {aiAssistantUpgradePromptMessage ||
+                            aiAssistantLockMessage ||
+                            'Asystent AI jest dostepny w planie Pro.'}
+                        </Text>
+                      ) : null}
+
+                      <Pressable
+                        onPress={handleToggleAiConsentDataProcessing}
+                        style={{
+                          marginTop: 10,
+                          borderWidth: 1,
+                          borderColor: appSettings.aiConsentDataProcessing
+                            ? themeAccent
+                            : themeBorderStrong,
+                          borderRadius: 8,
+                          paddingVertical: 8,
+                          paddingHorizontal: 10,
+                          backgroundColor: appSettings.aiConsentDataProcessing
+                            ? themeAccentSoftBg
+                            : themeCardBgAlt,
+                        }}>
+                        <Text style={{ color: themeTextPrimary, fontSize: 12 }}>
+                          [{appSettings.aiConsentDataProcessing ? 'X' : ' '}] {t('historyAiConsentDataProcessing')}
+                        </Text>
+                      </Pressable>
+
+                      <Pressable
+                        onPress={handleAnalyzeWaterHistoryWithAi}
+                        disabled={
+                          historyAiBusy ||
+                          !hasAiAssistantAccess ||
+                          !Boolean(appSettings.aiConsentDataProcessing)
+                        }
+                        style={{
+                          marginTop: 10,
+                          borderWidth: 1,
+                          borderColor: themeAccent,
+                          borderRadius: 8,
+                          paddingVertical: 8,
+                          paddingHorizontal: 10,
+                          backgroundColor: themeAccentSoftBg,
+                          alignItems: 'center',
+                          opacity:
+                            historyAiBusy ||
+                            !hasAiAssistantAccess ||
+                            !Boolean(appSettings.aiConsentDataProcessing)
+                              ? 0.7
+                              : 1,
+                        }}>
+                        <Text style={{ color: themeAccentOnStrong, fontWeight: '700', fontSize: 12 }}>
+                          {historyAiBusy ? t('historyAiLoading') : t('historyAiExplainButton')}
+                        </Text>
+                      </Pressable>
+
+                      {historyAiError ? (
+                        <Text style={{ color: themeWarningText, marginTop: 10, fontSize: 12 }}>
+                          {historyAiError}
+                        </Text>
+                      ) : null}
+
+                      {historyAiResult ? (
+                        <View
+                          style={{
+                            borderWidth: 1,
+                            borderColor: themeBorder,
+                            borderRadius: 8,
+                            padding: 10,
+                            marginTop: 10,
+                            backgroundColor: themeCardBgAlt,
+                          }}>
+                          <Text style={{ color: themeTextSecondary, fontSize: 11 }}>
+                            {t('historyAiUpdatedAt', { value: historyAiAtLabel || '-' })}
+                          </Text>
+                          <Text style={{ color: themeTextSecondary, marginTop: 6, fontSize: 12 }}>
+                            {String(historyAiResult?.answer ?? '').trim() || t('historyAiEmptyAnswer')}
+                          </Text>
+                          {normalizeArray(historyAiResult?.recommendations).length > 0 ? (
+                            <>
+                              <Text
+                                style={{
+                                  color: themeTextPrimary,
+                                  marginTop: 8,
+                                  fontWeight: '700',
+                                  fontSize: 12,
+                                }}>
+                                {t('historyAiActionsNowTitle')}
+                              </Text>
+                              {normalizeArray(historyAiResult?.recommendations)
+                                .slice(0, 4)
+                                .map((item, index) => (
+                                  <Text
+                                    key={`history-ai-rec-tab-${index}`}
+                                    style={{ color: themeTextSecondary, marginTop: 3, fontSize: 12 }}>
+                                    - {String(item ?? '').trim()}
+                                  </Text>
+                                ))}
+                            </>
+                          ) : null}
+                          {normalizeArray(historyAiResult?.warnings).length > 0 ? (
+                            <>
+                              <Text
+                                style={{
+                                  color: themeTextPrimary,
+                                  marginTop: 8,
+                                  fontWeight: '700',
+                                  fontSize: 12,
+                                }}>
+                                {t('historyAiWarningsTitle')}
+                              </Text>
+                              {normalizeArray(historyAiResult?.warnings)
+                                .slice(0, 4)
+                                .map((item, index) => (
+                                  <Text
+                                    key={`history-ai-warning-tab-${index}`}
+                                    style={{ color: themeWarningText, marginTop: 3, fontSize: 12 }}>
+                                    - {String(item ?? '').trim()}
+                                  </Text>
+                                ))}
+                            </>
+                          ) : null}
+                        </View>
+                      ) : null}
+                    </View>
+                  )}
+
                   {historySectionTab === 'issues' && (
                     <View
                       style={{
@@ -34199,6 +36484,1537 @@ export default function HomeScreen() {
           editingTankId === selectedTank.id)
           ? renderSingleSpeciesFishCatalogModal()
           : null}
+        {isDiseaseAiAnalyzerVisible ? (
+          <BottomSheetModal
+            visible
+            onClose={() => setIsDiseaseAiAnalyzerVisible(false)}
+            title="Analiza objawow ryby"
+            themeCardBg={themeCardBg}
+            themeBorder={themeBorder}
+            themeTextPrimary={themeTextPrimary}
+            themeCardBgAlt={themeCardBgAlt}
+            themeOverlay={themeOverlay}
+            themeDragHandle={themeDragHandle}
+            isLightTheme={isLightTheme}
+            maxWidth={640}
+            heightPercent={92}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 10 : 0}>
+            <ScrollView
+              style={{ flex: 1 }}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag"
+              contentContainerStyle={{
+                paddingHorizontal: 14,
+                paddingTop: 14,
+                paddingBottom: Math.max(insets.bottom + 18, 18),
+              }}>
+              <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 13 }}>
+                Wybierz akwarium
+              </Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                {tanks.map((tankItem) => {
+                  const isSelected =
+                    String(diseaseAiSelectedTank?.id ?? '') === String(tankItem?.id ?? '');
+                  return (
+                    <Pressable
+                      key={`disease-ai-tank-${tankItem.id}`}
+                      onPress={() => {
+                        setDiseaseAiTankId(String(tankItem.id));
+                        setDiseaseAiStockItemId('unknown');
+                      }}
+                      style={{
+                        borderWidth: 1,
+                        borderColor: isSelected ? themeAccent : themeBorderStrong,
+                        borderRadius: 999,
+                        paddingVertical: 6,
+                        paddingHorizontal: 10,
+                        backgroundColor: isSelected ? themeAccentStrongBg : themeCardBg,
+                      }}>
+                      <Text style={{ color: isSelected ? themeAccentOnStrong : themeTextPrimary, fontSize: 12 }}>
+                        {tankItem?.name ?? 'Akwarium'}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              <Text
+                style={{
+                  color: themeTextPrimary,
+                  fontWeight: '700',
+                  fontSize: 13,
+                  marginTop: 12,
+                }}>
+                Ktorej ryby dotyczy problem?
+              </Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                <Pressable
+                  onPress={() => setDiseaseAiStockItemId('unknown')}
+                  style={{
+                    borderWidth: 1,
+                    borderColor:
+                      String(diseaseAiStockItemId) === 'unknown'
+                        ? themeAccent
+                        : themeBorderStrong,
+                    borderRadius: 999,
+                    paddingVertical: 6,
+                    paddingHorizontal: 10,
+                    backgroundColor:
+                      String(diseaseAiStockItemId) === 'unknown'
+                        ? themeAccentStrongBg
+                        : themeCardBg,
+                  }}>
+                  <Text
+                    style={{
+                      color:
+                        String(diseaseAiStockItemId) === 'unknown'
+                          ? themeAccentOnStrong
+                          : themeTextPrimary,
+                      fontSize: 12,
+                    }}>
+                    Nie wiem / kilka ryb
+                  </Text>
+                </Pressable>
+                {diseaseAiStockFishOptions.map((item) => {
+                  const isSelected = String(diseaseAiStockItemId) === String(item.id);
+                  return (
+                    <Pressable
+                      key={`disease-ai-fish-${item.id}`}
+                      onPress={() => setDiseaseAiStockItemId(String(item.id))}
+                      style={{
+                        borderWidth: 1,
+                        borderColor: isSelected ? themeAccent : themeBorderStrong,
+                        borderRadius: 999,
+                        paddingVertical: 6,
+                        paddingHorizontal: 10,
+                        backgroundColor: isSelected ? themeAccentStrongBg : themeCardBg,
+                      }}>
+                      <Text style={{ color: isSelected ? themeAccentOnStrong : themeTextPrimary, fontSize: 12 }}>
+                        {item.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              <Text
+                style={{
+                  color: themeTextPrimary,
+                  fontWeight: '700',
+                  fontSize: 13,
+                  marginTop: 12,
+                }}>
+                Opisz objawy
+              </Text>
+              <TextInput
+                placeholder="Np. biale kropki, ocieranie, szybki oddech..."
+                placeholderTextColor={themePlaceholder}
+                value={diseaseAiDescription}
+                onChangeText={(value) => setDiseaseAiDescription(String(value ?? '').slice(0, 1000))}
+                multiline
+                maxLength={1000}
+                style={{
+                  marginTop: 8,
+                  borderWidth: 1,
+                  borderColor: themeInputBorder,
+                  borderRadius: 8,
+                  padding: 10,
+                  minHeight: 90,
+                  color: themeInputText,
+                  backgroundColor: themeInputBg,
+                  textAlignVertical: 'top',
+                }}
+              />
+              <Text style={{ color: themeTextMuted, fontSize: 11, marginTop: 4 }}>
+                {String(diseaseAiDescription ?? '').length}/1000
+              </Text>
+
+              <Text
+                style={{
+                  color: themeTextPrimary,
+                  fontWeight: '700',
+                  fontSize: 13,
+                  marginTop: 12,
+                }}>
+                Od kiedy wystepuja objawy?
+              </Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                {DISEASE_AI_DURATION_OPTIONS.map((option) => {
+                  const isSelected = String(diseaseAiDuration) === String(option.id);
+                  return (
+                    <Pressable
+                      key={`disease-ai-duration-${option.id}`}
+                      onPress={() => setDiseaseAiDuration(String(option.id))}
+                      style={{
+                        borderWidth: 1,
+                        borderColor: isSelected ? themeAccent : themeBorderStrong,
+                        borderRadius: 999,
+                        paddingVertical: 6,
+                        paddingHorizontal: 10,
+                        backgroundColor: isSelected ? themeAccentStrongBg : themeCardBg,
+                      }}>
+                      <Text style={{ color: isSelected ? themeAccentOnStrong : themeTextPrimary, fontSize: 12 }}>
+                        {option.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              <Text
+                style={{
+                  color: themeTextPrimary,
+                  fontWeight: '700',
+                  fontSize: 13,
+                  marginTop: 12,
+                }}>
+                Czy inne ryby tez maja objawy?
+              </Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                {DISEASE_AI_OTHER_FISH_OPTIONS.map((option) => {
+                  const isSelected = String(diseaseAiOtherFishAffected) === String(option.id);
+                  return (
+                    <Pressable
+                      key={`disease-ai-other-fish-${option.id}`}
+                      onPress={() => setDiseaseAiOtherFishAffected(String(option.id))}
+                      style={{
+                        borderWidth: 1,
+                        borderColor: isSelected ? themeAccent : themeBorderStrong,
+                        borderRadius: 999,
+                        paddingVertical: 6,
+                        paddingHorizontal: 10,
+                        backgroundColor: isSelected ? themeAccentStrongBg : themeCardBg,
+                      }}>
+                      <Text style={{ color: isSelected ? themeAccentOnStrong : themeTextPrimary, fontSize: 12 }}>
+                        {option.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              <Text
+                style={{
+                  color: themeTextPrimary,
+                  fontWeight: '700',
+                  fontSize: 13,
+                  marginTop: 12,
+                }}>
+                Zdjecie (opcjonalnie)
+              </Text>
+              <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                <Pressable
+                  onPress={() => handlePickDiseaseAiImage('gallery')}
+                  disabled={diseaseAiBusy}
+                  style={{
+                    flex: 1,
+                    borderWidth: 1,
+                    borderColor: themeBorderStrong,
+                    borderRadius: 8,
+                    paddingVertical: 8,
+                    backgroundColor: themeCardBg,
+                    opacity: diseaseAiBusy ? 0.7 : 1,
+                  }}>
+                  <Text style={{ color: themeTextPrimary, textAlign: 'center', fontWeight: '700', fontSize: 12 }}>
+                    Wybierz z galerii
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => handlePickDiseaseAiImage('camera')}
+                  disabled={diseaseAiBusy}
+                  style={{
+                    flex: 1,
+                    borderWidth: 1,
+                    borderColor: themeBorderStrong,
+                    borderRadius: 8,
+                    paddingVertical: 8,
+                    backgroundColor: themeCardBg,
+                    opacity: diseaseAiBusy ? 0.7 : 1,
+                  }}>
+                  <Text style={{ color: themeTextPrimary, textAlign: 'center', fontWeight: '700', fontSize: 12 }}>
+                    Zrob zdjecie
+                  </Text>
+                </Pressable>
+              </View>
+              {diseaseAiSelectedImage?.uri ? (
+                <View style={{ marginTop: 8 }}>
+                  <Image
+                    source={{ uri: String(diseaseAiSelectedImage.uri) }}
+                    resizeMode="cover"
+                    style={{
+                      width: '100%',
+                      height: 150,
+                      borderRadius: 8,
+                      borderWidth: 1,
+                      borderColor: themeBorder,
+                      backgroundColor: themeCardBg,
+                    }}
+                  />
+                  <Pressable
+                    onPress={() => setDiseaseAiSelectedImage(null)}
+                    style={{
+                      marginTop: 6,
+                      borderWidth: 1,
+                      borderColor: themeBorderStrong,
+                      borderRadius: 8,
+                      paddingVertical: 7,
+                      backgroundColor: themeCardBg,
+                    }}>
+                    <Text style={{ color: themeTextSecondary, textAlign: 'center', fontSize: 12 }}>
+                      Usun zdjecie
+                    </Text>
+                  </Pressable>
+                </View>
+              ) : null}
+
+              <View
+                style={{
+                  borderWidth: 1,
+                  borderColor: themeBorder,
+                  borderRadius: 8,
+                  padding: 10,
+                  marginTop: 12,
+                  backgroundColor: themeCardBgAlt,
+                }}>
+                <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+                  Ostatnie parametry wody
+                </Text>
+                {diseaseAiLatestMeasurement ? (
+                  <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
+                    NO2 {diseaseAiLatestMeasurement.no2 ?? '-'} | NO3 {diseaseAiLatestMeasurement.no3 ?? '-'} | NH3/NH4 {diseaseAiLatestMeasurement.nh3nh4 ?? '-'} | pH {diseaseAiLatestMeasurement.ph ?? '-'} | GH {diseaseAiLatestMeasurement.gh ?? '-'} | KH {diseaseAiLatestMeasurement.kh ?? '-'} | temp {diseaseAiLatestMeasurement.temperature ?? '-'}
+                  </Text>
+                ) : (
+                  <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
+                    Brak aktualnych pomiarow dla tego akwarium.
+                  </Text>
+                )}
+                {diseaseAiLatestMeasurement?.no2 === undefined ||
+                diseaseAiLatestMeasurement?.no3 === undefined ||
+                diseaseAiLatestMeasurement?.temperature === undefined ? (
+                  <Text style={{ color: themeWarningText, fontSize: 12, marginTop: 6 }}>
+                    Do dokladniejszej oceny warto uzupelnic NO2, NO3 i temperature.
+                  </Text>
+                ) : null}
+              </View>
+
+              {diseaseAiError ? (
+                <Text style={{ color: themeWarningText, fontSize: 12, marginTop: 10 }}>
+                  {diseaseAiError}
+                </Text>
+              ) : null}
+
+              <Pressable
+                onPress={handleAnalyzeDiseaseWithAi}
+                disabled={diseaseAiBusy}
+                style={{
+                  marginTop: 12,
+                  borderWidth: 1,
+                  borderColor: themeAccent,
+                  borderRadius: 8,
+                  paddingVertical: 10,
+                  backgroundColor: themeAccent,
+                  opacity: diseaseAiBusy ? 0.7 : 1,
+                }}>
+                <Text
+                  style={{
+                    color: themeAccentOnStrong,
+                    textAlign: 'center',
+                    fontWeight: '700',
+                    fontSize: 13,
+                  }}>
+                  {diseaseAiBusy ? 'AI analizuje...' : 'Sprawdz z AI'}
+                </Text>
+              </Pressable>
+
+              {diseaseAiResult ? (
+                <View
+                  style={{
+                    borderWidth: 1,
+                    borderColor: themeBorder,
+                    borderRadius: 10,
+                    padding: 10,
+                    marginTop: 12,
+                    backgroundColor: themeCardBg,
+                  }}>
+                  <Text style={{ color: themeTextPrimary, fontWeight: '700' }}>
+                    Mozliwe podejrzenia
+                  </Text>
+                  <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 6 }}>
+                    {String(diseaseAiResult?.summary ?? '').trim()}
+                  </Text>
+                  {normalizeArray(diseaseAiResult?.suspectedDiseases).slice(0, 3).map((item, index) => {
+                    const confidenceLabel = String(item?.confidenceLabel ?? 'medium');
+                    const hasCatalogLink = Boolean(String(item?.diseaseId ?? '').trim());
+                    return (
+                      <View
+                        key={`disease-ai-suspected-${index}-${String(item?.diseaseId ?? 'none')}`}
+                        style={{
+                          marginTop: 10,
+                          borderWidth: 1,
+                          borderColor: themeBorder,
+                          borderRadius: 8,
+                          padding: 8,
+                          backgroundColor: themeCardBgAlt,
+                        }}>
+                        <Text style={{ color: themeTextPrimary, fontWeight: '700' }}>
+                          {String(item?.label ?? 'Niepewne objawy')}
+                        </Text>
+                        <Text style={{ color: themeWarningText, fontSize: 12, marginTop: 2 }}>
+                          Podejrzenie AI - pewnosc {mapDiseaseAiConfidenceBadge(confidenceLabel)}
+                        </Text>
+                        <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
+                          {String(item?.reason ?? '')}
+                        </Text>
+                        <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                          {hasCatalogLink ? (
+                            <Pressable
+                              onPress={() => {
+                                const diseaseId = String(item?.diseaseId ?? '').trim();
+                                if (!diseaseId) {
+                                  return;
+                                }
+                                setDiseaseMode('catalog');
+                                setExpandedDiseaseCatalogId(diseaseId);
+                                setIsDiseaseAiAnalyzerVisible(false);
+                              }}
+                              style={{
+                                flex: 1,
+                                borderWidth: 1,
+                                borderColor: themeBorderStrong,
+                                borderRadius: 8,
+                                paddingVertical: 8,
+                                backgroundColor: themeCardBg,
+                              }}>
+                              <Text style={{ color: themeTextPrimary, textAlign: 'center', fontWeight: '700', fontSize: 12 }}>
+                                Otworz w katalogu
+                              </Text>
+                            </Pressable>
+                          ) : null}
+                          <Pressable
+                            onPress={() => handleSaveDiseaseAiSuspicion(item)}
+                            disabled={diseaseAiSavingBusy}
+                            style={{
+                              flex: 1,
+                              borderWidth: 1,
+                              borderColor: themeAccent,
+                              borderRadius: 8,
+                              paddingVertical: 8,
+                              backgroundColor: themeAccent,
+                              opacity: diseaseAiSavingBusy ? 0.7 : 1,
+                            }}>
+                            <Text style={{ color: themeAccentOnStrong, textAlign: 'center', fontWeight: '700', fontSize: 12 }}>
+                              {diseaseAiSavingBusy ? 'Zapisywanie...' : 'Zapisz jako podejrzenie'}
+                            </Text>
+                          </Pressable>
+                        </View>
+                        <Pressable
+                          onPress={() =>
+                            setDiseaseAiResult((prev) => {
+                              if (!prev) {
+                                return prev;
+                              }
+                              const nextSuspected = normalizeArray(prev.suspectedDiseases).filter(
+                                (entry) =>
+                                  String(entry?.diseaseId ?? '') !== String(item?.diseaseId ?? '') ||
+                                  String(entry?.label ?? '') !== String(item?.label ?? '')
+                              );
+                              return {
+                                ...prev,
+                                suspectedDiseases:
+                                  nextSuspected.length > 0
+                                    ? nextSuspected
+                                    : [
+                                        {
+                                          diseaseId: null,
+                                          label: 'Niepewne objawy',
+                                          confidence: 0.32,
+                                          confidenceLabel: 'low',
+                                          reason: 'Brak jednoznacznego dopasowania do katalogu chorob.',
+                                        },
+                                      ],
+                              };
+                            })
+                          }
+                          style={{
+                            marginTop: 8,
+                            borderWidth: 1,
+                            borderColor: themeBorderStrong,
+                            borderRadius: 8,
+                            paddingVertical: 7,
+                            backgroundColor: themeCardBg,
+                          }}>
+                          <Text style={{ color: themeTextSecondary, textAlign: 'center', fontSize: 12 }}>
+                            To nie pasuje
+                          </Text>
+                        </Pressable>
+                      </View>
+                    );
+                  })}
+
+                  {normalizeArray(diseaseAiResult?.verificationSteps).length > 0 ? (
+                    <>
+                      <Text style={{ color: themeTextPrimary, fontWeight: '700', marginTop: 10, fontSize: 12 }}>
+                        Co sprawdzic teraz
+                      </Text>
+                      {normalizeArray(diseaseAiResult?.verificationSteps).slice(0, 6).map((step, index) => (
+                        <Text
+                          key={`disease-ai-verification-${index}`}
+                          style={{ color: themeTextSecondary, fontSize: 12, marginTop: 3 }}>
+                          - {String(step ?? '')}
+                        </Text>
+                      ))}
+                    </>
+                  ) : null}
+
+                  {normalizeArray(diseaseAiResult?.recommendations).length > 0 ? (
+                    <>
+                      <Text style={{ color: themeTextPrimary, fontWeight: '700', marginTop: 10, fontSize: 12 }}>
+                        Bezpieczne dzialania
+                      </Text>
+                      {normalizeArray(diseaseAiResult?.recommendations).slice(0, 6).map((step, index) => (
+                        <Text
+                          key={`disease-ai-recommendation-${index}`}
+                          style={{ color: themeTextSecondary, fontSize: 12, marginTop: 3 }}>
+                          - {String(step ?? '')}
+                        </Text>
+                      ))}
+                    </>
+                  ) : null}
+
+                  {normalizeArray(diseaseAiResult?.warnings).length > 0 ? (
+                    <>
+                      {normalizeArray(diseaseAiResult?.warnings).slice(0, 4).map((warning, index) => (
+                        <Text
+                          key={`disease-ai-warning-${index}`}
+                          style={{ color: themeWarningText, fontSize: 12, marginTop: 6 }}>
+                          {String(warning ?? '')}
+                        </Text>
+                      ))}
+                    </>
+                  ) : (
+                    <Text style={{ color: themeWarningText, fontSize: 12, marginTop: 8 }}>
+                      {DISEASE_AI_VET_WARNING}
+                    </Text>
+                  )}
+                </View>
+              ) : null}
+            </ScrollView>
+          </BottomSheetModal>
+        ) : null}
+        {isPlantDiseaseAiAnalyzerVisible ? (
+          <BottomSheetModal
+            visible
+            onClose={() => setIsPlantDiseaseAiAnalyzerVisible(false)}
+            title="Analiza problemu rosliny"
+            themeCardBg={themeCardBg}
+            themeBorder={themeBorder}
+            themeTextPrimary={themeTextPrimary}
+            themeCardBgAlt={themeCardBgAlt}
+            themeOverlay={themeOverlay}
+            themeDragHandle={themeDragHandle}
+            isLightTheme={isLightTheme}
+            maxWidth={640}
+            heightPercent={92}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 10 : 0}>
+            <ScrollView
+              style={{ flex: 1 }}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag"
+              contentContainerStyle={{
+                paddingHorizontal: 14,
+                paddingTop: 14,
+                paddingBottom: Math.max(insets.bottom + 18, 18),
+              }}>
+              <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 13 }}>
+                Wybierz akwarium
+              </Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                {tanks.map((tankItem) => {
+                  const isSelected =
+                    String(plantDiseaseAiSelectedTank?.id ?? '') === String(tankItem?.id ?? '');
+                  return (
+                    <Pressable
+                      key={`plant-disease-ai-tank-${tankItem.id}`}
+                      onPress={() => {
+                        setPlantDiseaseAiTankId(String(tankItem.id));
+                        setPlantDiseaseAiPlantItemId('unknown');
+                      }}
+                      style={{
+                        borderWidth: 1,
+                        borderColor: isSelected ? themeAccent : themeBorderStrong,
+                        borderRadius: 999,
+                        paddingVertical: 6,
+                        paddingHorizontal: 10,
+                        backgroundColor: isSelected ? themeAccentStrongBg : themeCardBg,
+                      }}>
+                      <Text style={{ color: isSelected ? themeAccentOnStrong : themeTextPrimary, fontSize: 12 }}>
+                        {tankItem?.name ?? 'Akwarium'}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              <Text
+                style={{
+                  color: themeTextPrimary,
+                  fontWeight: '700',
+                  fontSize: 13,
+                  marginTop: 12,
+                }}>
+                Ktorej rosliny dotyczy problem?
+              </Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                <Pressable
+                  onPress={() => setPlantDiseaseAiPlantItemId('unknown')}
+                  style={{
+                    borderWidth: 1,
+                    borderColor:
+                      String(plantDiseaseAiPlantItemId) === 'unknown'
+                        ? themeAccent
+                        : themeBorderStrong,
+                    borderRadius: 999,
+                    paddingVertical: 6,
+                    paddingHorizontal: 10,
+                    backgroundColor:
+                      String(plantDiseaseAiPlantItemId) === 'unknown'
+                        ? themeAccentStrongBg
+                        : themeCardBg,
+                  }}>
+                  <Text
+                    style={{
+                      color:
+                        String(plantDiseaseAiPlantItemId) === 'unknown'
+                          ? themeAccentOnStrong
+                          : themeTextPrimary,
+                      fontSize: 12,
+                    }}>
+                    Nie wiem / kilka roslin
+                  </Text>
+                </Pressable>
+                {plantDiseaseAiPlantOptions.map((item) => {
+                  const isSelected = String(plantDiseaseAiPlantItemId) === String(item.id);
+                  return (
+                    <Pressable
+                      key={`plant-disease-ai-plant-${item.id}`}
+                      onPress={() => setPlantDiseaseAiPlantItemId(String(item.id))}
+                      style={{
+                        borderWidth: 1,
+                        borderColor: isSelected ? themeAccent : themeBorderStrong,
+                        borderRadius: 999,
+                        paddingVertical: 6,
+                        paddingHorizontal: 10,
+                        backgroundColor: isSelected ? themeAccentStrongBg : themeCardBg,
+                      }}>
+                      <Text style={{ color: isSelected ? themeAccentOnStrong : themeTextPrimary, fontSize: 12 }}>
+                        {item.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              <Text
+                style={{
+                  color: themeTextPrimary,
+                  fontWeight: '700',
+                  fontSize: 13,
+                  marginTop: 12,
+                }}>
+                Opisz problem
+              </Text>
+              <TextInput
+                placeholder="Np. zolknace liscie, dziury, czarne koncowki, slaby wzrost..."
+                placeholderTextColor={themePlaceholder}
+                value={plantDiseaseAiDescription}
+                onChangeText={(value) =>
+                  setPlantDiseaseAiDescription(String(value ?? '').slice(0, 1000))
+                }
+                multiline
+                maxLength={1000}
+                style={{
+                  marginTop: 8,
+                  borderWidth: 1,
+                  borderColor: themeInputBorder,
+                  borderRadius: 8,
+                  padding: 10,
+                  minHeight: 90,
+                  color: themeInputText,
+                  backgroundColor: themeInputBg,
+                  textAlignVertical: 'top',
+                }}
+              />
+              <Text style={{ color: themeTextMuted, fontSize: 11, marginTop: 4 }}>
+                {String(plantDiseaseAiDescription ?? '').length}/1000
+              </Text>
+
+              <Text
+                style={{
+                  color: themeTextPrimary,
+                  fontWeight: '700',
+                  fontSize: 13,
+                  marginTop: 12,
+                }}>
+                Od kiedy wystepuje problem?
+              </Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                {DISEASE_AI_DURATION_OPTIONS.map((option) => {
+                  const isSelected = String(plantDiseaseAiDuration) === String(option.id);
+                  return (
+                    <Pressable
+                      key={`plant-disease-ai-duration-${option.id}`}
+                      onPress={() => setPlantDiseaseAiDuration(String(option.id))}
+                      style={{
+                        borderWidth: 1,
+                        borderColor: isSelected ? themeAccent : themeBorderStrong,
+                        borderRadius: 999,
+                        paddingVertical: 6,
+                        paddingHorizontal: 10,
+                        backgroundColor: isSelected ? themeAccentStrongBg : themeCardBg,
+                      }}>
+                      <Text style={{ color: isSelected ? themeAccentOnStrong : themeTextPrimary, fontSize: 12 }}>
+                        {option.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              <Text
+                style={{
+                  color: themeTextPrimary,
+                  fontWeight: '700',
+                  fontSize: 13,
+                  marginTop: 12,
+                }}>
+                Czy problem dotyczy wielu roslin?
+              </Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                {PLANT_AI_MULTIPLE_OPTIONS.map((option) => {
+                  const isSelected = String(plantDiseaseAiMultipleAffected) === String(option.id);
+                  return (
+                    <Pressable
+                      key={`plant-disease-ai-multiple-${option.id}`}
+                      onPress={() => setPlantDiseaseAiMultipleAffected(String(option.id))}
+                      style={{
+                        borderWidth: 1,
+                        borderColor: isSelected ? themeAccent : themeBorderStrong,
+                        borderRadius: 999,
+                        paddingVertical: 6,
+                        paddingHorizontal: 10,
+                        backgroundColor: isSelected ? themeAccentStrongBg : themeCardBg,
+                      }}>
+                      <Text style={{ color: isSelected ? themeAccentOnStrong : themeTextPrimary, fontSize: 12 }}>
+                        {option.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              <Text
+                style={{
+                  color: themeTextPrimary,
+                  fontWeight: '700',
+                  fontSize: 13,
+                  marginTop: 12,
+                }}>
+                Zdjecie (opcjonalnie)
+              </Text>
+              <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                <Pressable
+                  onPress={() => handlePickPlantDiseaseAiImage('gallery')}
+                  disabled={plantDiseaseAiBusy}
+                  style={{
+                    flex: 1,
+                    borderWidth: 1,
+                    borderColor: themeBorderStrong,
+                    borderRadius: 8,
+                    paddingVertical: 8,
+                    backgroundColor: themeCardBg,
+                    opacity: plantDiseaseAiBusy ? 0.7 : 1,
+                  }}>
+                  <Text style={{ color: themeTextPrimary, textAlign: 'center', fontWeight: '700', fontSize: 12 }}>
+                    Wybierz z galerii
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => handlePickPlantDiseaseAiImage('camera')}
+                  disabled={plantDiseaseAiBusy}
+                  style={{
+                    flex: 1,
+                    borderWidth: 1,
+                    borderColor: themeBorderStrong,
+                    borderRadius: 8,
+                    paddingVertical: 8,
+                    backgroundColor: themeCardBg,
+                    opacity: plantDiseaseAiBusy ? 0.7 : 1,
+                  }}>
+                  <Text style={{ color: themeTextPrimary, textAlign: 'center', fontWeight: '700', fontSize: 12 }}>
+                    Zrob zdjecie
+                  </Text>
+                </Pressable>
+              </View>
+              {plantDiseaseAiSelectedImage?.uri ? (
+                <View style={{ marginTop: 8 }}>
+                  <Image
+                    source={{ uri: String(plantDiseaseAiSelectedImage.uri) }}
+                    resizeMode="cover"
+                    style={{
+                      width: '100%',
+                      height: 150,
+                      borderRadius: 8,
+                      borderWidth: 1,
+                      borderColor: themeBorder,
+                      backgroundColor: themeCardBg,
+                    }}
+                  />
+                  <Pressable
+                    onPress={() => setPlantDiseaseAiSelectedImage(null)}
+                    style={{
+                      marginTop: 6,
+                      borderWidth: 1,
+                      borderColor: themeBorderStrong,
+                      borderRadius: 8,
+                      paddingVertical: 7,
+                      backgroundColor: themeCardBg,
+                    }}>
+                    <Text style={{ color: themeTextSecondary, textAlign: 'center', fontSize: 12 }}>
+                      Usun zdjecie
+                    </Text>
+                  </Pressable>
+                </View>
+              ) : null}
+
+              <View
+                style={{
+                  borderWidth: 1,
+                  borderColor: themeBorder,
+                  borderRadius: 8,
+                  padding: 10,
+                  marginTop: 12,
+                  backgroundColor: themeCardBgAlt,
+                }}>
+                <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+                  Dane akwarium i warunki
+                </Text>
+                {plantDiseaseAiLatestMeasurement ? (
+                  <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
+                    NO3 {plantDiseaseAiLatestMeasurement.no3 ?? '-'} | PO4 {plantDiseaseAiLatestMeasurement.po4 ?? '-'} | K {plantDiseaseAiLatestMeasurement.k ?? '-'} | Fe {plantDiseaseAiLatestMeasurement.fe ?? '-'} | pH {plantDiseaseAiLatestMeasurement.ph ?? '-'} | GH {plantDiseaseAiLatestMeasurement.gh ?? '-'} | KH {plantDiseaseAiLatestMeasurement.kh ?? '-'} | temp {plantDiseaseAiLatestMeasurement.temperature ?? '-'} | CO2 {plantDiseaseAiLatestMeasurement.co2 ?? '-'}
+                  </Text>
+                ) : (
+                  <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
+                    Brak aktualnych pomiarow dla tego akwarium.
+                  </Text>
+                )}
+                <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
+                  Oswietlenie: {plantDiseaseAiTankProfile?.lightModelName ?? '-'} | czas swiecenia {plantDiseaseAiTankProfile?.lightHours ?? '-'} h | lm/l {plantDiseaseAiTankProfile?.lumensPerLiter ?? '-'}
+                </Text>
+                <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
+                  Podloze: {getSubstrateLabels(normalizeSubstrateTypes(plantDiseaseAiSelectedTank?.substrateTypes ?? plantDiseaseAiSelectedTank?.substrateType)) || '-'}
+                </Text>
+                <Text style={{ color: themeWarningText, fontSize: 12, marginTop: 6 }}>
+                  Do dokladniejszej oceny warto uzupelnic NO3, PO4, czas swiecenia i informacje o nawozeniu.
+                </Text>
+              </View>
+
+              {plantDiseaseAiError ? (
+                <Text style={{ color: themeWarningText, fontSize: 12, marginTop: 10 }}>
+                  {plantDiseaseAiError}
+                </Text>
+              ) : null}
+
+              <Pressable
+                onPress={handleAnalyzePlantDiseaseWithAi}
+                disabled={plantDiseaseAiBusy}
+                style={{
+                  marginTop: 12,
+                  borderWidth: 1,
+                  borderColor: themeAccent,
+                  borderRadius: 8,
+                  paddingVertical: 10,
+                  backgroundColor: themeAccent,
+                  opacity: plantDiseaseAiBusy ? 0.7 : 1,
+                }}>
+                <Text
+                  style={{
+                    color: themeAccentOnStrong,
+                    textAlign: 'center',
+                    fontWeight: '700',
+                    fontSize: 13,
+                  }}>
+                  {plantDiseaseAiBusy ? 'AI analizuje...' : 'Sprawdz z AI'}
+                </Text>
+              </Pressable>
+
+              {plantDiseaseAiResult ? (
+                <View
+                  style={{
+                    borderWidth: 1,
+                    borderColor: themeBorder,
+                    borderRadius: 10,
+                    padding: 10,
+                    marginTop: 12,
+                    backgroundColor: themeCardBg,
+                  }}>
+                  <Text style={{ color: themeTextPrimary, fontWeight: '700' }}>
+                    Mozliwe przyczyny
+                  </Text>
+                  <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 6 }}>
+                    {String(plantDiseaseAiResult?.summary ?? '').trim()}
+                  </Text>
+                  {normalizeArray(plantDiseaseAiResult?.suspectedPlantIssues)
+                    .slice(0, 3)
+                    .map((item, index) => {
+                      const confidenceLabel = String(item?.confidenceLabel ?? 'medium');
+                      const hasCatalogLink = Boolean(String(item?.plantIssueId ?? '').trim());
+                      return (
+                        <View
+                          key={`plant-ai-suspected-${index}-${String(item?.plantIssueId ?? 'none')}`}
+                          style={{
+                            marginTop: 10,
+                            borderWidth: 1,
+                            borderColor: themeBorder,
+                            borderRadius: 8,
+                            padding: 8,
+                            backgroundColor: themeCardBgAlt,
+                          }}>
+                          <Text style={{ color: themeTextPrimary, fontWeight: '700' }}>
+                            {String(item?.label ?? 'Niepewny problem')}
+                          </Text>
+                          <Text style={{ color: themeWarningText, fontSize: 12, marginTop: 2 }}>
+                            Podejrzenie AI - pewnosc {mapDiseaseAiConfidenceBadge(confidenceLabel)}
+                          </Text>
+                          <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
+                            {String(item?.reason ?? '')}
+                          </Text>
+                          <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                            {hasCatalogLink ? (
+                              <Pressable
+                                onPress={() => {
+                                  const issueId = String(item?.plantIssueId ?? '').trim();
+                                  if (!issueId) {
+                                    return;
+                                  }
+                                  setPlantDiseaseMode('catalog');
+                                  setExpandedPlantDiseaseCatalogId(issueId);
+                                  setIsPlantDiseaseAiAnalyzerVisible(false);
+                                }}
+                                style={{
+                                  flex: 1,
+                                  borderWidth: 1,
+                                  borderColor: themeBorderStrong,
+                                  borderRadius: 8,
+                                  paddingVertical: 8,
+                                  backgroundColor: themeCardBg,
+                                }}>
+                                <Text style={{ color: themeTextPrimary, textAlign: 'center', fontWeight: '700', fontSize: 12 }}>
+                                  Otworz w katalogu
+                                </Text>
+                              </Pressable>
+                            ) : null}
+                            <Pressable
+                              onPress={() => handleSavePlantDiseaseAiSuspicion(item)}
+                              disabled={plantDiseaseAiSavingBusy}
+                              style={{
+                                flex: 1,
+                                borderWidth: 1,
+                                borderColor: themeAccent,
+                                borderRadius: 8,
+                                paddingVertical: 8,
+                                backgroundColor: themeAccent,
+                                opacity: plantDiseaseAiSavingBusy ? 0.7 : 1,
+                              }}>
+                              <Text style={{ color: themeAccentOnStrong, textAlign: 'center', fontWeight: '700', fontSize: 12 }}>
+                                {plantDiseaseAiSavingBusy ? 'Zapisywanie...' : 'Zapisz jako podejrzenie'}
+                              </Text>
+                            </Pressable>
+                          </View>
+                          <Pressable
+                            onPress={() =>
+                              setPlantDiseaseAiResult((prev) => {
+                                if (!prev) {
+                                  return prev;
+                                }
+                                const nextSuspected = normalizeArray(prev.suspectedPlantIssues).filter(
+                                  (entry) =>
+                                    String(entry?.plantIssueId ?? '') !==
+                                      String(item?.plantIssueId ?? '') ||
+                                    String(entry?.label ?? '') !== String(item?.label ?? '')
+                                );
+                                return {
+                                  ...prev,
+                                  suspectedPlantIssues:
+                                    nextSuspected.length > 0
+                                      ? nextSuspected
+                                      : [
+                                          {
+                                            plantIssueId: null,
+                                            label: 'Niepewny problem',
+                                            confidence: 0.32,
+                                            confidenceLabel: 'low',
+                                            reason:
+                                              'Brak jednoznacznego dopasowania do katalogu problemow roslin.',
+                                          },
+                                        ],
+                                };
+                              })
+                            }
+                            style={{
+                              marginTop: 8,
+                              borderWidth: 1,
+                              borderColor: themeBorderStrong,
+                              borderRadius: 8,
+                              paddingVertical: 7,
+                              backgroundColor: themeCardBg,
+                            }}>
+                            <Text style={{ color: themeTextSecondary, textAlign: 'center', fontSize: 12 }}>
+                              To nie pasuje
+                            </Text>
+                          </Pressable>
+                        </View>
+                      );
+                    })}
+
+                  {normalizeArray(plantDiseaseAiResult?.verificationSteps).length > 0 ? (
+                    <>
+                      <Text style={{ color: themeTextPrimary, fontWeight: '700', marginTop: 10, fontSize: 12 }}>
+                        Co sprawdzic teraz
+                      </Text>
+                      {normalizeArray(plantDiseaseAiResult?.verificationSteps)
+                        .slice(0, 6)
+                        .map((step, index) => (
+                          <Text
+                            key={`plant-ai-verification-${index}`}
+                            style={{ color: themeTextSecondary, fontSize: 12, marginTop: 3 }}>
+                            - {String(step ?? '')}
+                          </Text>
+                        ))}
+                    </>
+                  ) : null}
+
+                  {normalizeArray(plantDiseaseAiResult?.recommendations).length > 0 ? (
+                    <>
+                      <Text style={{ color: themeTextPrimary, fontWeight: '700', marginTop: 10, fontSize: 12 }}>
+                        Bezpieczne dzialania
+                      </Text>
+                      {normalizeArray(plantDiseaseAiResult?.recommendations)
+                        .slice(0, 6)
+                        .map((step, index) => (
+                          <Text
+                            key={`plant-ai-recommendation-${index}`}
+                            style={{ color: themeTextSecondary, fontSize: 12, marginTop: 3 }}>
+                            - {String(step ?? '')}
+                          </Text>
+                        ))}
+                    </>
+                  ) : null}
+
+                  {normalizeArray(plantDiseaseAiResult?.warnings).length > 0 ? (
+                    normalizeArray(plantDiseaseAiResult?.warnings)
+                      .slice(0, 4)
+                      .map((warning, index) => (
+                        <Text
+                          key={`plant-ai-warning-${index}`}
+                          style={{ color: themeWarningText, fontSize: 12, marginTop: 6 }}>
+                          {String(warning ?? '')}
+                        </Text>
+                      ))
+                  ) : (
+                    <Text style={{ color: themeWarningText, fontSize: 12, marginTop: 8 }}>
+                      {PLANT_AI_WARNING}
+                    </Text>
+                  )}
+                </View>
+              ) : null}
+            </ScrollView>
+          </BottomSheetModal>
+        ) : null}
+        {isAlgaeAiAnalyzerVisible ? (
+          <BottomSheetModal
+            visible
+            onClose={() => setIsAlgaeAiAnalyzerVisible(false)}
+            title="Analiza glonow"
+            themeCardBg={themeCardBg}
+            themeBorder={themeBorder}
+            themeTextPrimary={themeTextPrimary}
+            themeCardBgAlt={themeCardBgAlt}
+            themeOverlay={themeOverlay}
+            themeDragHandle={themeDragHandle}
+            isLightTheme={isLightTheme}
+            maxWidth={640}
+            heightPercent={92}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 10 : 0}>
+            <ScrollView
+              style={{ flex: 1 }}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag"
+              contentContainerStyle={{
+                paddingHorizontal: 14,
+                paddingTop: 14,
+                paddingBottom: Math.max(insets.bottom + 18, 18),
+              }}>
+              <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 13 }}>
+                Wybierz akwarium
+              </Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                {tanks.map((tankItem) => {
+                  const isSelected =
+                    String(algaeAiSelectedTank?.id ?? '') === String(tankItem?.id ?? '');
+                  return (
+                    <Pressable
+                      key={`algae-ai-tank-${tankItem.id}`}
+                      onPress={() => setAlgaeAiTankId(String(tankItem.id))}
+                      style={{
+                        borderWidth: 1,
+                        borderColor: isSelected ? themeAccent : themeBorderStrong,
+                        borderRadius: 999,
+                        paddingVertical: 6,
+                        paddingHorizontal: 10,
+                        backgroundColor: isSelected ? themeAccentStrongBg : themeCardBg,
+                      }}>
+                      <Text style={{ color: isSelected ? themeAccentOnStrong : themeTextPrimary, fontSize: 12 }}>
+                        {tankItem?.name ?? 'Akwarium'}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              <Text
+                style={{
+                  color: themeTextPrimary,
+                  fontWeight: '700',
+                  fontSize: 13,
+                  marginTop: 12,
+                }}>
+                Gdzie wystepuja glony?
+              </Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                {ALGAE_AI_LOCATION_OPTIONS.map((option) => {
+                  const isSelected = normalizeArray(algaeAiLocationTags).includes(option.id);
+                  return (
+                    <Pressable
+                      key={`algae-ai-location-${option.id}`}
+                      onPress={() => toggleAlgaeAiTag('location', option.id)}
+                      style={{
+                        borderWidth: 1,
+                        borderColor: isSelected ? themeAccent : themeBorderStrong,
+                        borderRadius: 999,
+                        paddingVertical: 6,
+                        paddingHorizontal: 10,
+                        backgroundColor: isSelected ? themeAccentStrongBg : themeCardBg,
+                      }}>
+                      <Text style={{ color: isSelected ? themeAccentOnStrong : themeTextPrimary, fontSize: 12 }}>
+                        {option.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              <Text
+                style={{
+                  color: themeTextPrimary,
+                  fontWeight: '700',
+                  fontSize: 13,
+                  marginTop: 12,
+                }}>
+                Wyglad glonow
+              </Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                {ALGAE_AI_APPEARANCE_OPTIONS.map((option) => {
+                  const isSelected = normalizeArray(algaeAiAppearanceTags).includes(option.id);
+                  return (
+                    <Pressable
+                      key={`algae-ai-appearance-${option.id}`}
+                      onPress={() => toggleAlgaeAiTag('appearance', option.id)}
+                      style={{
+                        borderWidth: 1,
+                        borderColor: isSelected ? themeAccent : themeBorderStrong,
+                        borderRadius: 999,
+                        paddingVertical: 6,
+                        paddingHorizontal: 10,
+                        backgroundColor: isSelected ? themeAccentStrongBg : themeCardBg,
+                      }}>
+                      <Text style={{ color: isSelected ? themeAccentOnStrong : themeTextPrimary, fontSize: 12 }}>
+                        {option.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              <Text
+                style={{
+                  color: themeTextPrimary,
+                  fontWeight: '700',
+                  fontSize: 13,
+                  marginTop: 12,
+                }}>
+                Opisz problem
+              </Text>
+              <TextInput
+                placeholder="Np. zielony nalot na szybach, czarne pedzelki, nitki na lisciach..."
+                placeholderTextColor={themePlaceholder}
+                value={algaeAiDescription}
+                onChangeText={(value) => setAlgaeAiDescription(String(value ?? '').slice(0, 1000))}
+                multiline
+                maxLength={1000}
+                style={{
+                  marginTop: 8,
+                  borderWidth: 1,
+                  borderColor: themeBorderStrong,
+                  borderRadius: 8,
+                  paddingHorizontal: 10,
+                  paddingTop: 10,
+                  minHeight: 90,
+                  color: themeTextPrimary,
+                  backgroundColor: themeCardBg,
+                  textAlignVertical: 'top',
+                }}
+              />
+              <Text style={{ color: themeTextMuted, fontSize: 11, marginTop: 4 }}>
+                {String(algaeAiDescription ?? '').length}/1000
+              </Text>
+
+              <Text
+                style={{
+                  color: themeTextPrimary,
+                  fontWeight: '700',
+                  fontSize: 13,
+                  marginTop: 12,
+                }}>
+                Od kiedy wystepuje problem?
+              </Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                {DISEASE_AI_DURATION_OPTIONS.map((option) => {
+                  const isSelected = algaeAiDuration === option.id;
+                  return (
+                    <Pressable
+                      key={`algae-ai-duration-${option.id}`}
+                      onPress={() => setAlgaeAiDuration(option.id)}
+                      style={{
+                        borderWidth: 1,
+                        borderColor: isSelected ? themeAccent : themeBorderStrong,
+                        borderRadius: 999,
+                        paddingVertical: 6,
+                        paddingHorizontal: 10,
+                        backgroundColor: isSelected ? themeAccentStrongBg : themeCardBg,
+                      }}>
+                      <Text style={{ color: isSelected ? themeAccentOnStrong : themeTextPrimary, fontSize: 12 }}>
+                        {option.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              <Text
+                style={{
+                  color: themeTextPrimary,
+                  fontWeight: '700',
+                  fontSize: 13,
+                  marginTop: 12,
+                }}>
+                Zdjecie (opcjonalnie)
+              </Text>
+              <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                <Pressable
+                  onPress={() => handlePickAlgaeAiImage('gallery')}
+                  disabled={algaeAiBusy}
+                  style={{
+                    flex: 1,
+                    borderWidth: 1,
+                    borderColor: themeBorderStrong,
+                    borderRadius: 8,
+                    paddingVertical: 8,
+                    backgroundColor: themeCardBg,
+                    opacity: algaeAiBusy ? 0.7 : 1,
+                  }}>
+                  <Text style={{ color: themeTextPrimary, textAlign: 'center', fontWeight: '700', fontSize: 12 }}>
+                    Wybierz z galerii
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => handlePickAlgaeAiImage('camera')}
+                  disabled={algaeAiBusy}
+                  style={{
+                    flex: 1,
+                    borderWidth: 1,
+                    borderColor: themeBorderStrong,
+                    borderRadius: 8,
+                    paddingVertical: 8,
+                    backgroundColor: themeCardBg,
+                    opacity: algaeAiBusy ? 0.7 : 1,
+                  }}>
+                  <Text style={{ color: themeTextPrimary, textAlign: 'center', fontWeight: '700', fontSize: 12 }}>
+                    Zrob zdjecie
+                  </Text>
+                </Pressable>
+              </View>
+              {algaeAiSelectedImage?.uri ? (
+                <View style={{ marginTop: 8 }}>
+                  <Image
+                    source={{ uri: String(algaeAiSelectedImage.uri) }}
+                    resizeMode="cover"
+                    style={{
+                      width: '100%',
+                      height: 150,
+                      borderRadius: 8,
+                      borderWidth: 1,
+                      borderColor: themeBorder,
+                      backgroundColor: themeCardBg,
+                    }}
+                  />
+                  <Pressable
+                    onPress={() => setAlgaeAiSelectedImage(null)}
+                    style={{
+                      marginTop: 6,
+                      borderWidth: 1,
+                      borderColor: themeBorderStrong,
+                      borderRadius: 8,
+                      paddingVertical: 7,
+                      backgroundColor: themeCardBg,
+                    }}>
+                    <Text style={{ color: themeTextSecondary, textAlign: 'center', fontSize: 12 }}>
+                      Usun zdjecie
+                    </Text>
+                  </Pressable>
+                </View>
+              ) : null}
+
+              <View
+                style={{
+                  borderWidth: 1,
+                  borderColor: themeBorder,
+                  borderRadius: 8,
+                  padding: 10,
+                  marginTop: 12,
+                  backgroundColor: themeCardBgAlt,
+                }}>
+                <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+                  Dane akwarium i warunki
+                </Text>
+                {algaeAiLatestMeasurement ? (
+                  <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
+                    NO3 {algaeAiLatestMeasurement.no3 ?? '-'} | PO4 {algaeAiLatestMeasurement.po4 ?? '-'} | pH {algaeAiLatestMeasurement.ph ?? '-'} | GH {algaeAiLatestMeasurement.gh ?? '-'} | KH {algaeAiLatestMeasurement.kh ?? '-'} | temp {algaeAiLatestMeasurement.temperature ?? '-'} | CO2 {algaeAiLatestMeasurement.co2 ?? '-'}
+                  </Text>
+                ) : (
+                  <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
+                    Brak aktualnych pomiarow dla tego akwarium.
+                  </Text>
+                )}
+                <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
+                  Oswietlenie: {algaeAiTankProfile?.lightModelName ?? '-'} | czas swiecenia {algaeAiTankProfile?.lightHours ?? '-'} h | lm/l {algaeAiTankProfile?.lumensPerLiter ?? '-'}
+                </Text>
+                <Text style={{ color: themeWarningText, fontSize: 12, marginTop: 6 }}>
+                  Do dokladniejszej oceny warto uzupelnic NO3, PO4, czas swiecenia i informacje o nawozeniu.
+                </Text>
+              </View>
+
+              {algaeAiError ? (
+                <Text style={{ color: themeWarningText, fontSize: 12, marginTop: 10 }}>
+                  {algaeAiError}
+                </Text>
+              ) : null}
+
+              <Pressable
+                onPress={handleAnalyzeAlgaeWithAi}
+                disabled={algaeAiBusy}
+                style={{
+                  marginTop: 12,
+                  borderWidth: 1,
+                  borderColor: themeAccent,
+                  borderRadius: 8,
+                  paddingVertical: 10,
+                  backgroundColor: themeAccent,
+                  opacity: algaeAiBusy ? 0.7 : 1,
+                }}>
+                <Text
+                  style={{
+                    color: themeAccentOnStrong,
+                    textAlign: 'center',
+                    fontWeight: '700',
+                    fontSize: 13,
+                  }}>
+                  {algaeAiBusy ? 'AI analizuje...' : 'Sprawdz z AI'}
+                </Text>
+              </Pressable>
+
+              {algaeAiResult ? (
+                <View
+                  style={{
+                    borderWidth: 1,
+                    borderColor: themeBorder,
+                    borderRadius: 10,
+                    padding: 10,
+                    marginTop: 12,
+                    backgroundColor: themeCardBg,
+                  }}>
+                  <Text style={{ color: themeTextPrimary, fontWeight: '700' }}>
+                    Mozliwe typy glonow
+                  </Text>
+                  <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 6 }}>
+                    {String(algaeAiResult?.summary ?? '').trim()}
+                  </Text>
+                  {normalizeArray(algaeAiResult?.suspectedAlgae).slice(0, 3).map((item, index) => {
+                    const confidenceLabel = String(item?.confidenceLabel ?? 'medium');
+                    const hasCatalogLink = Boolean(String(item?.algaeId ?? '').trim());
+                    return (
+                      <View
+                        key={`algae-ai-suspected-${index}-${String(item?.algaeId ?? 'none')}`}
+                        style={{
+                          marginTop: 10,
+                          borderWidth: 1,
+                          borderColor: themeBorder,
+                          borderRadius: 8,
+                          padding: 8,
+                          backgroundColor: themeCardBgAlt,
+                        }}>
+                        <Text style={{ color: themeTextPrimary, fontWeight: '700' }}>
+                          {String(item?.label ?? 'Niepewny typ glonu')}
+                        </Text>
+                        <Text style={{ color: themeWarningText, fontSize: 12, marginTop: 2 }}>
+                          Podejrzenie AI - pewnosc {mapDiseaseAiConfidenceBadge(confidenceLabel)}
+                        </Text>
+                        <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
+                          {String(item?.reason ?? '')}
+                        </Text>
+                        <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                          {hasCatalogLink ? (
+                            <Pressable
+                              onPress={() => {
+                                const algaeId = String(item?.algaeId ?? '').trim();
+                                if (!algaeId) {
+                                  return;
+                                }
+                                setAlgaeMode('catalog');
+                                setExpandedAlgaeCatalogId(algaeId);
+                                setIsAlgaeAiAnalyzerVisible(false);
+                              }}
+                              style={{
+                                flex: 1,
+                                borderWidth: 1,
+                                borderColor: themeBorderStrong,
+                                borderRadius: 8,
+                                paddingVertical: 8,
+                                backgroundColor: themeCardBg,
+                              }}>
+                              <Text style={{ color: themeTextPrimary, textAlign: 'center', fontWeight: '700', fontSize: 12 }}>
+                                Otworz w katalogu
+                              </Text>
+                            </Pressable>
+                          ) : null}
+                          <Pressable
+                            onPress={() => handleSaveAlgaeAiSuspicion(item)}
+                            disabled={algaeAiSavingBusy}
+                            style={{
+                              flex: 1,
+                              borderWidth: 1,
+                              borderColor: themeAccent,
+                              borderRadius: 8,
+                              paddingVertical: 8,
+                              backgroundColor: themeAccent,
+                              opacity: algaeAiSavingBusy ? 0.7 : 1,
+                            }}>
+                            <Text style={{ color: themeAccentOnStrong, textAlign: 'center', fontWeight: '700', fontSize: 12 }}>
+                              {algaeAiSavingBusy ? 'Zapisywanie...' : 'Zapisz jako podejrzenie'}
+                            </Text>
+                          </Pressable>
+                        </View>
+                        <Pressable
+                          onPress={() =>
+                            setAlgaeAiResult((prev) => {
+                              if (!prev) {
+                                return prev;
+                              }
+                              const nextSuspected = normalizeArray(prev.suspectedAlgae).filter(
+                                (entry) =>
+                                  String(entry?.algaeId ?? '') !== String(item?.algaeId ?? '') ||
+                                  String(entry?.label ?? '') !== String(item?.label ?? '')
+                              );
+                              return {
+                                ...prev,
+                                suspectedAlgae:
+                                  nextSuspected.length > 0
+                                    ? nextSuspected
+                                    : [
+                                        {
+                                          algaeId: null,
+                                          label: 'Niepewny typ glonu',
+                                          confidence: 0.32,
+                                          confidenceLabel: 'low',
+                                          reason: 'Brak jednoznacznego dopasowania do katalogu glonow.',
+                                        },
+                                      ],
+                              };
+                            })
+                          }
+                          style={{
+                            marginTop: 8,
+                            borderWidth: 1,
+                            borderColor: themeBorderStrong,
+                            borderRadius: 8,
+                            paddingVertical: 7,
+                            backgroundColor: themeCardBg,
+                          }}>
+                          <Text style={{ color: themeTextSecondary, textAlign: 'center', fontSize: 12 }}>
+                            To nie pasuje
+                          </Text>
+                        </Pressable>
+                      </View>
+                    );
+                  })}
+
+                  {normalizeArray(algaeAiResult?.verificationSteps).length > 0 ? (
+                    <>
+                      <Text style={{ color: themeTextPrimary, fontWeight: '700', marginTop: 10, fontSize: 12 }}>
+                        Co sprawdzic teraz
+                      </Text>
+                      {normalizeArray(algaeAiResult?.verificationSteps).slice(0, 6).map((step, index) => (
+                        <Text
+                          key={`algae-ai-verification-${index}`}
+                          style={{ color: themeTextSecondary, fontSize: 12, marginTop: 3 }}>
+                          - {String(step ?? '')}
+                        </Text>
+                      ))}
+                    </>
+                  ) : null}
+
+                  {normalizeArray(algaeAiResult?.recommendations).length > 0 ? (
+                    <>
+                      <Text style={{ color: themeTextPrimary, fontWeight: '700', marginTop: 10, fontSize: 12 }}>
+                        Bezpieczne dzialania
+                      </Text>
+                      {normalizeArray(algaeAiResult?.recommendations).slice(0, 6).map((step, index) => (
+                        <Text
+                          key={`algae-ai-recommendation-${index}`}
+                          style={{ color: themeTextSecondary, fontSize: 12, marginTop: 3 }}>
+                          - {String(step ?? '')}
+                        </Text>
+                      ))}
+                    </>
+                  ) : null}
+
+                  {normalizeArray(algaeAiResult?.warnings).length > 0 ? (
+                    normalizeArray(algaeAiResult?.warnings).slice(0, 4).map((warning, index) => (
+                      <Text
+                        key={`algae-ai-warning-${index}`}
+                        style={{ color: themeWarningText, fontSize: 12, marginTop: 6 }}>
+                        {String(warning ?? '')}
+                      </Text>
+                    ))
+                  ) : (
+                    <Text style={{ color: themeWarningText, fontSize: 12, marginTop: 8 }}>
+                      {ALGAE_AI_WARNING}
+                    </Text>
+                  )}
+                </View>
+              ) : null}
+            </ScrollView>
+          </BottomSheetModal>
+        ) : null}
         {isDeleteAccountReauthModalVisible ? (
           <BottomSheetModal
             visible

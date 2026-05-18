@@ -548,6 +548,80 @@ test('tank disease case can be closed only by owner', async () => {
   );
 });
 
+test('owner can create and update AI algae suspicion in tankDiseaseCases', async () => {
+  const dbA = asUser('user_a');
+  const dbB = asUser('user_b');
+  const caseRef = doc(dbA, 'tankDiseaseCases', 'algae_ai_case_1');
+  const createdAt = new Date('2026-05-10T09:00:00.000Z');
+
+  await assertSucceeds(
+    setDoc(caseRef, {
+      userId: 'user_a',
+      tankId: 'tank_a',
+      tankName: 'Akwarium A',
+      caseType: 'algae',
+      issueId: 'ai_algae_1',
+      issueName: 'Podejrzenie AI: Krasnorosty',
+      diseaseId: null,
+      diseaseName: 'Krasnorosty',
+      severity: 'medium',
+      diseaseSummary: 'Mozliwe podejrzenie glonow na podstawie opisu i kontekstu.',
+      causes: ['Niestabilne CO2', 'Za dlugi czas swiecenia'],
+      caution: 'Podejrzenie AI - wynik orientacyjny.',
+      treatmentPlan: ['Sprawdz NO3 i PO4', 'Skoryguj czas swiecenia'],
+      schedule: [],
+      status: 'suspected',
+      source: 'ai',
+      suspectedAlgae: [
+        {
+          algaeId: null,
+          name: 'Krasnorosty',
+          confidence: 0.62,
+          confidenceLabel: 'medium',
+          reason: 'Czarne kepki na lisciach i dekoracjach.',
+        },
+      ],
+      locationTags: ['plants', 'hardscape'],
+      appearanceTags: ['black_brush_tufts'],
+      userDescription: 'Czarne kepki na lisciach i korzeniu.',
+      durationLabel: '2-3 dni',
+      imageUrls: ['https://example.com/algae-photo-1.jpg'],
+      aiSummary: 'AI wskazuje mozliwe krasnorosty.',
+      verificationSteps: ['Zweryfikuj NO3 i PO4', 'Sprawdz cyrkulacje'],
+      recommendations: ['Usun mechanicznie glony', 'Ogranicz karmienie'],
+      warnings: ['Wynik orientacyjny, to nie jest pewna diagnoza.'],
+      createdAt,
+      startedAt: createdAt,
+      nextReviewAt: new Date('2026-05-12T09:00:00.000Z'),
+      updatedAt: createdAt,
+    })
+  );
+
+  await assertSucceeds(
+    updateDoc(caseRef, {
+      status: 'adjusting',
+      updatedAt: new Date('2026-05-11T09:00:00.000Z'),
+    })
+  );
+
+  await assertSucceeds(
+    updateDoc(caseRef, {
+      status: 'resolved',
+      closedAt: new Date('2026-05-12T09:00:00.000Z'),
+      resolvedAt: new Date('2026-05-12T09:00:00.000Z'),
+      closedReason: 'resolved',
+      updatedAt: new Date('2026-05-12T09:00:00.000Z'),
+    })
+  );
+
+  await assertFails(
+    updateDoc(doc(dbB, 'tankDiseaseCases', 'algae_ai_case_1'), {
+      status: 'dismissed',
+      updatedAt: new Date('2026-05-12T10:00:00.000Z'),
+    })
+  );
+});
+
 test('non-admin cannot write fish catalog, admin can write', async () => {
   const userDb = asUser('user_a');
   const adminDb = asAdmin('admin_a');

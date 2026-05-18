@@ -110,6 +110,26 @@ const TRANSLATIONS = {
     chartAccessLevelFree: 'Plan Free: wykresy niedostepne.',
     chartAccessLevelPremium: 'Plan Premium: wykresy podstawowe.',
     chartAccessLevelPro: 'Plan Pro: wykresy zaawansowane.',
+    historyAiExplainButton: 'Wyjasnij pomiary z AI',
+    historyAiLoading: 'AI analizuje...',
+    historyAiRetry: 'Sprobuj ponownie',
+    historyAiTrendTitle: 'AI wskazuje trend',
+    historyTabAi: 'Wyjasnij pomiary z AI',
+    historyAiConsentDataProcessing: 'Uzywanie danych akwarium do odpowiedzi AI',
+    historyAiActionsNowTitle: 'Co zrobic teraz',
+    historyAiWarningsTitle: 'Warto sprawdzic',
+    historyAiUpdatedAt: 'Analiza AI: {value}',
+    historyAiEmptyAnswer:
+      'Analiza moze byc mniej dokladna, bo brakuje danych lub sa nieaktualne.',
+    historyAiQuestionPrompt:
+      'Wyjasnij pomiary wody, wskaz trend i podaj najwazniejsze kroki na teraz oraz co zmierzyc kolejnym razem.',
+    historyAiErrorConsentRequired:
+      'Aby korzystac z AI, wlacz zgode na przetwarzanie danych AI.',
+    historyAiErrorSessionExpired:
+      'Brak aktywnej sesji. Zaloguj sie ponownie i sprobuj jeszcze raz.',
+    historyAiErrorNoTank: 'Wybierz akwarium, aby uruchomic analize historii.',
+    historyAiErrorUnexpected:
+      'Nie udalo sie przeanalizowac historii pomiarow. Sprobuj ponownie.',
     subscriptionAlertsSimple: 'Plan Free: alerty proste.',
     subscriptionAlertsExtended: 'Plan Premium: alerty rozszerzone.',
     subscriptionAlertsSmart: 'Plan Pro: alerty inteligentne.',
@@ -594,6 +614,26 @@ const TRANSLATIONS = {
     chartAccessLevelFree: 'Free plan: charts unavailable.',
     chartAccessLevelPremium: 'Premium plan: basic charts.',
     chartAccessLevelPro: 'Pro plan: advanced charts.',
+    historyAiExplainButton: 'Explain measurements with AI',
+    historyAiLoading: 'AI is analyzing...',
+    historyAiRetry: 'Try again',
+    historyAiTrendTitle: 'AI indicates trend',
+    historyTabAi: 'Explain measurements with AI',
+    historyAiConsentDataProcessing: 'Use aquarium data for AI responses',
+    historyAiActionsNowTitle: 'What to do now',
+    historyAiWarningsTitle: 'Worth checking',
+    historyAiUpdatedAt: 'AI analysis: {value}',
+    historyAiEmptyAnswer:
+      'The analysis may be less accurate because data is missing or outdated.',
+    historyAiQuestionPrompt:
+      'Explain water measurements, indicate trend, and provide the most important next steps plus what to measure next time.',
+    historyAiErrorConsentRequired:
+      'To use AI, enable consent for AI data processing.',
+    historyAiErrorSessionExpired:
+      'No active session. Sign in again and retry.',
+    historyAiErrorNoTank: 'Choose an aquarium to analyze measurement history.',
+    historyAiErrorUnexpected:
+      'Could not analyze measurement history. Please try again.',
     subscriptionAlertsSimple: 'Free plan: simple alerts.',
     subscriptionAlertsExtended: 'Premium plan: extended alerts.',
     subscriptionAlertsSmart: 'Pro plan: smart alerts.',
@@ -1076,6 +1116,27 @@ const TRANSLATIONS = {
     chartAccessLevelFree: 'Free-Plan: keine Diagramme.',
     chartAccessLevelPremium: 'Premium-Plan: Basisdiagramme.',
     chartAccessLevelPro: 'Pro-Plan: erweiterte Diagramme.',
+    historyAiExplainButton: 'Messwerte mit KI erklaren',
+    historyAiLoading: 'KI analysiert...',
+    historyAiRetry: 'Erneut versuchen',
+    historyAiTrendTitle: 'KI zeigt den Trend',
+    historyTabAi: 'Messwerte mit KI erklaren',
+    historyAiConsentDataProcessing: 'Aquariumdaten fur KI-Antworten verwenden',
+    historyAiActionsNowTitle: 'Was jetzt tun',
+    historyAiWarningsTitle: 'Wert zu prufen',
+    historyAiUpdatedAt: 'KI-Analyse: {value}',
+    historyAiEmptyAnswer:
+      'Die Analyse kann ungenauer sein, weil Daten fehlen oder veraltet sind.',
+    historyAiQuestionPrompt:
+      'Erklare die Wasserwerte, zeige den Trend und nenne die wichtigsten Schritte jetzt sowie was als Nachstes gemessen werden sollte.',
+    historyAiErrorConsentRequired:
+      'Um KI zu nutzen, aktiviere die Einwilligung zur KI-Datenverarbeitung.',
+    historyAiErrorSessionExpired:
+      'Keine aktive Sitzung. Bitte erneut anmelden und wiederholen.',
+    historyAiErrorNoTank:
+      'Wahle ein Aquarium, um die Messhistorie zu analysieren.',
+    historyAiErrorUnexpected:
+      'Die Messhistorie konnte nicht analysiert werden. Bitte erneut versuchen.',
     subscriptionAlertsSimple: 'Free-Plan: einfache Warnungen.',
     subscriptionAlertsExtended: 'Premium-Plan: erweiterte Warnungen.',
     subscriptionAlertsSmart: 'Pro-Plan: intelligente Warnungen.',

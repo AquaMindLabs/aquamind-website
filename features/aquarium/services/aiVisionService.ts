@@ -113,6 +113,10 @@ type AiVisionAnalyzePayload = {
   question?: string;
   additionalInfo?: string;
   tankId?: string | null;
+  mode?: string;
+  locale?: string;
+  userLanguage?: string;
+  appLanguage?: string;
   timeoutMs?: number;
 };
 
@@ -250,6 +254,10 @@ export async function requestAiVisionAnalyze({
   question = '',
   additionalInfo = '',
   tankId = null,
+  mode = '',
+  locale = '',
+  userLanguage = '',
+  appLanguage = '',
   timeoutMs = DEFAULT_AI_TIMEOUT_MS,
 }: AiVisionAnalyzePayload): Promise<AiVisionResponse> {
   const token = toSafeString(idToken, 4096);
@@ -257,6 +265,10 @@ export async function requestAiVisionAnalyze({
   const safeQuestion = sanitizeTextForAi(question, 4000);
   const safeTankId = toSafeString(tankId, 128);
   const safeAdditionalInfo = sanitizeTextForAi(additionalInfo, 4000);
+  const safeMode = toSafeString(mode, 64);
+  const safeLocale = toSafeString(locale, 24);
+  const safeUserLanguage = toSafeString(userLanguage, 24);
+  const safeAppLanguage = toSafeString(appLanguage, 24);
 
   if (!token) {
     throw new AiChatRequestError(
@@ -306,6 +318,10 @@ export async function requestAiVisionAnalyze({
         additionalInfo: safeAdditionalInfo,
         tankId: safeTankId || undefined,
         imageUrl: safeImageUrl,
+        mode: safeMode || undefined,
+        locale: safeLocale || undefined,
+        userLanguage: safeUserLanguage || undefined,
+        appLanguage: safeAppLanguage || undefined,
       }),
       signal: controller.signal,
     });

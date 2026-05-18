@@ -25,6 +25,12 @@ service cloud.firestore {
       return !(field in data) || (data[field] is string && data[field].size() <= maxLen);
     }
 
+    function optionalStringOrNull(data, field, maxLen) {
+      return !(field in data) ||
+        data[field] == null ||
+        (data[field] is string && data[field].size() <= maxLen);
+    }
+
     function optionalTimestamp(data, field) {
       return !(field in data) || data[field] is timestamp || data[field] == null;
     }
@@ -140,7 +146,14 @@ service cloud.firestore {
     }
 
     function validIssueStatus(value) {
-      return value == 'active' || value == 'resolved' || value == 'removed';
+      return value == 'active' ||
+        value == 'resolved' ||
+        value == 'removed' ||
+        value == 'suspected' ||
+        value == 'observing' ||
+        value == 'adjusting' ||
+        value == 'confirmed' ||
+        value == 'dismissed';
     }
 
     function validSeverity(value) {
@@ -472,7 +485,20 @@ service cloud.firestore {
           'startedAt',
           'nextReviewAt',
           'closedAt',
-          'closedReason'
+          'closedReason',
+          'source',
+          'suspectedAlgae',
+          'locationTags',
+          'appearanceTags',
+          'userDescription',
+          'durationLabel',
+          'imageUrls',
+          'aiSummary',
+          'verificationSteps',
+          'recommendations',
+          'warnings',
+          'resolvedAt',
+          'updatedAt'
         ]) &&
         isOwnerData(data) &&
         data.tankId is string &&
@@ -488,9 +514,12 @@ service cloud.firestore {
         data.issueName is string &&
         data.issueName.size() >= 1 &&
         data.issueName.size() <= 200 &&
-        data.diseaseId is string &&
-        data.diseaseId.size() >= 1 &&
-        data.diseaseId.size() <= 120 &&
+        (
+          (data.diseaseId is string &&
+            data.diseaseId.size() >= 1 &&
+            data.diseaseId.size() <= 120) ||
+          data.diseaseId == null
+        ) &&
         data.diseaseName is string &&
         data.diseaseName.size() >= 1 &&
         data.diseaseName.size() <= 200 &&
@@ -510,7 +539,20 @@ service cloud.firestore {
         data.startedAt is timestamp &&
         data.nextReviewAt is timestamp &&
         optionalTimestamp(data, 'closedAt') &&
-        optionalString(data, 'closedReason', 80);
+        optionalString(data, 'closedReason', 80) &&
+        optionalString(data, 'source', 24) &&
+        optionalList(data, 'suspectedAlgae', 10) &&
+        optionalList(data, 'locationTags', 16) &&
+        optionalList(data, 'appearanceTags', 16) &&
+        optionalString(data, 'userDescription', 1000) &&
+        optionalString(data, 'durationLabel', 80) &&
+        optionalList(data, 'imageUrls', 12) &&
+        optionalString(data, 'aiSummary', 3000) &&
+        optionalList(data, 'verificationSteps', 12) &&
+        optionalList(data, 'recommendations', 12) &&
+        optionalList(data, 'warnings', 8) &&
+        optionalTimestamp(data, 'resolvedAt') &&
+        optionalTimestamp(data, 'updatedAt');
     }
 
     function isValidRequestDoc(data, expectedType) {

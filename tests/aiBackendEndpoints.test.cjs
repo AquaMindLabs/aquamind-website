@@ -88,6 +88,41 @@ function createAiProvider() {
       if (request.question === 'force-provider-error') {
         throw new Error('provider_down');
       }
+      if (request.question === 'force-invalid-json') {
+        return null;
+      }
+      if (request.mode === 'water_history_analysis') {
+        const additionalInfo = String(request.additionalInfo ?? '');
+        const hasLimitedTrendData =
+          additionalInfo.includes('"measurementCount":1') ||
+          additionalInfo.includes('"measurementCount":0');
+        const hasStaleDataHint =
+          additionalInfo.includes('"latestMeasurementAgeDays":') &&
+          additionalInfo.match(/"latestMeasurementAgeDays":\s*([3-9]\d|[1-9]\d{2,})/);
+        return {
+          answer: hasLimitedTrendData
+            ? 'Za malo pomiarow do oceny trendu. Mozliwa jest jedynie ostrozna interpretacja aktualnego pomiaru.'
+            : `Trend pomiarow: ${request.question}`,
+          recommendations: [
+            'Zrob kontrolny pomiar NO2, NO3 i temperatury.',
+            'Porownaj wynik po 24-48h bez gwaltownych zmian.',
+          ],
+          warnings: hasStaleDataHint
+            ? ['Analiza moze byc mniej aktualna z powodu starych pomiarow.']
+            : [],
+        };
+      }
+      if (request.mode === 'algae_analysis') {
+        return {
+          answer:
+            'AI wskazuje trend glonowy: mozliwy problem z nadmiarem swiatla lub niestabilnym CO2. To nie jest pewna diagnoza.',
+          recommendations: [
+            'Zweryfikuj NO3 i PO4 oraz czas swiecenia.',
+            'Sprawdz cyrkulacje i ogranicz karmienie na 2-3 dni.',
+          ],
+          warnings: ['Wynik jest orientacyjny i wymaga potwierdzenia pomiarami.'],
+        };
+      }
       return {
         answer: `Odpowiedz AI: ${request.question}`,
         recommendations: ['Zrob pomiar kontrolny za 24h.'],
@@ -110,6 +145,9 @@ function createAiProvider() {
           actionPlan: [],
           warnings: [],
         };
+      }
+      if (request.question === 'force-invalid-json') {
+        return null;
       }
       return {
         summary: 'Analiza obrazu zakonczona.',
@@ -190,9 +228,113 @@ test('POST /ai/vision/analyze returns readable fallback for unreadable image', a
     assert.equal(response.status, 200);
     assert.equal(payload.ok, true);
     assert.equal(payload.diagnosticCode, 'AIW_OK');
-    assert.match(payload.data.summary, /nieczytelny/i);
+    assert.match(payload.data.summary, /nie udalo sie poprawnie przeanalizowac zdjecia/i);
     assert.ok(Array.isArray(payload.data.hypotheses));
     assert.equal(payload.data.hypotheses.length, 0);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('POST /ai/chat returns localized veterinary warning for english language', async () => {
+  const { server, baseUrl } = await startServerForTest();
+  try {
+    const response = await fetch(`${baseUrl}/ai/chat`, {
+      method: 'POST',
+      headers: buildHeaders('token-user-a'),
+      body: JSON.stringify({
+        question: 'My fish is gasping and maybe sick. What should I do?',
+        tankId: 'tank_a',
+        userLanguage: 'en',
+      }),
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.diagnosticCode, 'AIW_OK');
+    assert.ok(Array.isArray(payload.data.warnings));
+    assert.equal(
+      payload.data.warnings.includes('This is not veterinary advice.'),
+      true
+    );
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('POST /ai/chat returns fallback payload when provider response is invalid', async () => {
+  const { server, baseUrl } = await startServerForTest();
+  try {
+    const response = await fetch(`${baseUrl}/ai/chat`, {
+      method: 'POST',
+      headers: buildHeaders('token-user-a'),
+      body: JSON.stringify({
+        question: 'force-invalid-json',
+        tankId: 'tank_a',
+        userLanguage: 'en',
+      }),
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.diagnosticCode, 'AIW_OK');
+    assert.match(payload.data.answer, /could not process the ai response/i);
+    assert.ok(Array.isArray(payload.data.recommendations));
+    assert.ok(payload.data.recommendations.length > 0);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('POST /ai/chat handles algae_analysis mode', async () => {
+  const { server, baseUrl } = await startServerForTest();
+  try {
+    const response = await fetch(`${baseUrl}/ai/chat`, {
+      method: 'POST',
+      headers: buildHeaders('token-user-a'),
+      body: JSON.stringify({
+        question: 'Mam czarne kepki na lisciach i korzeniu. Co to moze byc?',
+        mode: 'algae_analysis',
+        tankId: 'tank_a',
+      }),
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.diagnosticCode, 'AIW_OK');
+    assert.match(String(payload?.data?.answer ?? ''), /glon|swiatl|CO2/i);
+    assert.ok(Array.isArray(payload?.data?.recommendations));
+    assert.ok(payload.data.recommendations.length > 0);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('POST /ai/vision/analyze returns localized veterinary warning for english language', async () => {
+  const { server, baseUrl } = await startServerForTest();
+  try {
+    const response = await fetch(`${baseUrl}/ai/vision/analyze`, {
+      method: 'POST',
+      headers: buildHeaders('token-user-a'),
+      body: JSON.stringify({
+        question: 'fish gasping at surface',
+        imageUrl: 'https://example.com/test-image.jpg',
+        tankId: 'tank_a',
+        userLanguage: 'en',
+      }),
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.diagnosticCode, 'AIW_OK');
+    assert.equal(
+      payload.data.warnings.includes('This is not veterinary advice.'),
+      true
+    );
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -271,6 +413,36 @@ test('POST /ai/chat returns scoped user response', async () => {
     assert.match(payload.data.answer, /Odpowiedz AI/);
     assert.equal(payload.data.contextSummary.selectedTank.id, 'tank_a');
     assert.equal(payload.data.contextSummary.tankCount, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('POST /ai/chat supports water_history_analysis mode', async () => {
+  const { server, baseUrl } = await startServerForTest();
+  try {
+    const response = await fetch(`${baseUrl}/ai/chat`, {
+      method: 'POST',
+      headers: buildHeaders('token-user-a'),
+      body: JSON.stringify({
+        question: 'Wyjasnij trend pomiarow.',
+        tankId: 'tank_a',
+        mode: 'water_history_analysis',
+        additionalInfo: JSON.stringify({
+          analysisMeta: {
+            measurementCount: 1,
+            latestMeasurementAgeDays: 45,
+          },
+        }),
+      }),
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.diagnosticCode, 'AIW_OK');
+    assert.match(payload.data.answer, /za malo pomiarow/i);
+    assert.ok(Array.isArray(payload.data.recommendations));
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

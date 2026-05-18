@@ -16,6 +16,8 @@ const MAX_IMAGE_BASE64_LENGTH = 2_000_000;
 const MAX_ITEMS_PER_COLLECTION = 80;
 const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
 const DEFAULT_OPENAI_MODEL = 'gpt-4.1-mini';
+const MAX_AI_CONTEXT_CHARS = 7000;
+const DEFAULT_RESPONSE_LANGUAGE = 'pl';
 
 class AiBackendError extends Error {
   constructor(code, message, httpStatus = 500) {
@@ -52,6 +54,519 @@ function isObjectRecord(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+function toFiniteNumber(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function toArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function toIso(value) {
+  const parsed = new Date(String(value ?? '')).getTime();
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return new Date(parsed).toISOString();
+}
+
+function normalizeLanguageCode(value) {
+  const raw = toSafeString(value, 24).toLowerCase();
+  if (!raw) {
+    return '';
+  }
+  if (raw.startsWith('pl')) {
+    return 'pl';
+  }
+  if (raw.startsWith('en')) {
+    return 'en';
+  }
+  if (raw.startsWith('de')) {
+    return 'de';
+  }
+  return '';
+}
+
+function validateLocale(value) {
+  return normalizeLanguageCode(value) || DEFAULT_RESPONSE_LANGUAGE;
+}
+
+function resolveResponseLanguage(request, context = null) {
+  const candidates = [
+    request?.userLanguage,
+    request?.locale,
+    request?.appLanguage,
+    context?.userSettings?.language,
+    context?.locale,
+  ];
+  for (const candidate of candidates) {
+    const normalized = normalizeLanguageCode(candidate);
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return DEFAULT_RESPONSE_LANGUAGE;
+}
+
+function getLocalizedTexts(language) {
+  const lang = normalizeLanguageCode(language) || DEFAULT_RESPONSE_LANGUAGE;
+  if (lang === 'en') {
+    return {
+      vetWarning: 'This is not veterinary advice.',
+      chatFallbackAnswer:
+        'Could not process the AI response correctly. Please try again or clarify your question.',
+      chatFallbackRecommendation:
+        'Check whether the aquarium has basic data filled in: volume, stock, equipment, and water parameters.',
+      visionFallbackSummary:
+        'Could not analyze the image correctly. Try a clearer photo or describe what you want to verify.',
+      visionFallbackSteps: [
+        'Take a photo in good lighting.',
+        'Make sure the problematic area is sharp and clearly visible.',
+        'Add current water parameters if available.',
+      ],
+      noUsefulVisionSummary:
+        'Could not analyze the image correctly. Try a clearer photo or describe what you want to verify.',
+      unclearVisionSummary:
+        'No clear diagnosis can be made from this image alone.',
+      unknownHypothesisLabel: 'Unknown hypothesis',
+    };
+  }
+  if (lang === 'de') {
+    return {
+      vetWarning: 'Dies ist keine tieraerztliche Beratung.',
+      chatFallbackAnswer:
+        'Die KI-Antwort konnte nicht korrekt verarbeitet werden. Bitte versuche es erneut oder praezisiere die Frage.',
+      chatFallbackRecommendation:
+        'Pruefe, ob im Aquarium die Basisdaten ergaenzt sind: Volumen, Besatz, Technik und Wasserwerte.',
+      visionFallbackSummary:
+        'Das Bild konnte nicht korrekt analysiert werden. Fuege ein schaerferes Bild hinzu oder beschreibe genauer, was geprueft werden soll.',
+      visionFallbackSteps: [
+        'Mache ein Foto bei gutem Licht.',
+        'Stelle sicher, dass der problematische Bereich scharf und gut sichtbar ist.',
+        'Ergaenze aktuelle Wasserwerte, falls verfuegbar.',
+      ],
+      noUsefulVisionSummary:
+        'Das Bild konnte nicht korrekt analysiert werden. Fuege ein schaerferes Bild hinzu oder beschreibe genauer, was geprueft werden soll.',
+      unclearVisionSummary:
+        'Auf Basis dieses Bildes ist keine eindeutige Einschaetzung moeglich.',
+      unknownHypothesisLabel: 'Unklare Hypothese',
+    };
+  }
+  return {
+    vetWarning: 'To nie jest porada weterynaryjna.',
+    chatFallbackAnswer:
+      'Nie udalo sie poprawnie przetworzyc odpowiedzi AI. Sprobuj ponownie albo doprecyzuj pytanie.',
+    chatFallbackRecommendation:
+      'Sprawdz, czy w akwarium sa uzupelnione podstawowe dane: litraz, obsada, sprzet i parametry wody.',
+    visionFallbackSummary:
+      'Nie udalo sie poprawnie przeanalizowac zdjecia. Sprobuj dodac wyrazniejsze zdjecie albo dopisz, co dokladnie chcesz sprawdzic.',
+    visionFallbackSteps: [
+      'Zrob zdjecie w dobrym swietle.',
+      'Upewnij sie, ze problematyczny obszar jest ostry i dobrze widoczny.',
+      'Uzupelnij aktualne parametry wody, jesli sa dostepne.',
+    ],
+    noUsefulVisionSummary:
+      'Nie udalo sie poprawnie przeanalizowac zdjecia. Sprobuj dodac wyrazniejsze zdjecie albo dopisz, co dokladnie chcesz sprawdzic.',
+    unclearVisionSummary:
+      'Brak jednoznacznej diagnozy na podstawie obrazu.',
+    unknownHypothesisLabel: 'Nieokreslona hipoteza',
+  };
+}
+
+function pickByLanguage(language, variants) {
+  const lang = normalizeLanguageCode(language) || DEFAULT_RESPONSE_LANGUAGE;
+  if (lang === 'en') {
+    return variants.en;
+  }
+  if (lang === 'de') {
+    return variants.de;
+  }
+  return variants.pl;
+}
+
+function normalizeStringArray(value, maxItems, maxItemLength = 250) {
+  const seen = new Set();
+  const output = [];
+  const list = Array.isArray(value) ? value : [];
+  for (const item of list) {
+    const normalized = toSafeString(item, maxItemLength);
+    if (!normalized) {
+      continue;
+    }
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    output.push(normalized);
+    if (output.length >= maxItems) {
+      break;
+    }
+  }
+  return output;
+}
+
+function pickStockLabel(item) {
+  return (
+    toSafeString(item?.commonName, 120) ||
+    toSafeString(item?.speciesName, 120) ||
+    toSafeString(item?.scientificName, 120) ||
+    toSafeString(item?.name, 120) ||
+    'pozycja'
+  );
+}
+
+function pickStockType(item) {
+  const normalized = toSafeString(item?.type, 32).toLowerCase();
+  return normalized || 'other';
+}
+
+function normalizeEquipmentItems(value) {
+  if (Array.isArray(value)) {
+    return value.filter((item) => isObjectRecord(item));
+  }
+  if (isObjectRecord(value)) {
+    return [value];
+  }
+  return [];
+}
+
+function mapMeasurement(item) {
+  return {
+    measuredAt: toIso(item?.measuredAt ?? item?.createdAt),
+    ph: toFiniteNumber(item?.ph),
+    no2: toFiniteNumber(item?.no2),
+    no3: toFiniteNumber(item?.no3),
+    nh3: toFiniteNumber(item?.nh3),
+    nh4: toFiniteNumber(item?.nh4),
+    gh: toFiniteNumber(item?.gh),
+    kh: toFiniteNumber(item?.kh),
+    temperature: toFiniteNumber(item?.temperature),
+  };
+}
+
+function mapEquipmentEntry(item) {
+  return {
+    name:
+      toSafeString(item?.modelName, 120) ||
+      toSafeString(item?.name, 120) ||
+      toSafeString(item?.typeLabel, 120) ||
+      'sprzet',
+    powerW: toFiniteNumber(item?.powerW ?? item?.power ?? item?.wattage),
+    flowLph: toFiniteNumber(item?.flowLph ?? item?.realFlowLph ?? item?.ratedFlowLph),
+  };
+}
+
+function hasVeterinaryRiskKeywords(value) {
+  const text = toSafeString(value, 4000).toLowerCase();
+  if (!text) {
+    return false;
+  }
+  return [
+    'disease',
+    'treat',
+    'treatment',
+    'medicine',
+    'medication',
+    'parasite',
+    'wound',
+    'dead fish',
+    'gasping',
+    'rubbing',
+    'krank',
+    'behandlung',
+    'medik',
+    'wunde',
+    'tot',
+    'parasit',
+    'chor',
+    'lecze',
+    'leczy',
+    'martw',
+    'padl',
+    'padla',
+    'padn',
+    'lek',
+    'antybiot',
+    'dziwn',
+    'osowial',
+    'ociera',
+    'oddech',
+    'duszn',
+    'kropk',
+    'pasozyt',
+    'plywa bokiem',
+  ].some((token) => text.includes(token));
+}
+
+function buildAquariumAiContext({ request, userData, contextSummary }) {
+  const tanks = toArray(userData?.tanks);
+  const measurements = toArray(userData?.measurements);
+  const stockItems = toArray(userData?.stockItems);
+  const issueCases = toArray(userData?.issueCases);
+
+  const selectedTankId =
+    toSafeString(request?.tankId, 128) ||
+    toSafeString(contextSummary?.selectedTank?.id, 128) ||
+    toSafeString(tanks[0]?.id, 128) ||
+    null;
+  const selectedTank =
+    tanks.find((tank) => toSafeString(tank?.id, 128) === selectedTankId) ?? tanks[0] ?? null;
+
+  const scopedMeasurements = selectedTankId
+    ? measurements.filter((item) => toSafeString(item?.tankId, 128) === selectedTankId)
+    : measurements;
+  const scopedStockItems = selectedTankId
+    ? stockItems.filter((item) => toSafeString(item?.tankId, 128) === selectedTankId)
+    : stockItems;
+  const scopedIssues = selectedTankId
+    ? issueCases.filter((item) => toSafeString(item?.tankId, 128) === selectedTankId)
+    : issueCases;
+
+  const latestMeasurements = scopedMeasurements.slice(0, 5).map(mapMeasurement);
+  const currentWater = latestMeasurements[0] ?? {
+    measuredAt: null,
+    ph: null,
+    no2: null,
+    no3: null,
+    nh3: null,
+    nh4: null,
+    gh: null,
+    kh: null,
+    temperature: null,
+  };
+
+  const stockNormalized = scopedStockItems.slice(0, 30).map((item) => ({
+    type: pickStockType(item),
+    label: pickStockLabel(item),
+    quantity: Number.isFinite(Number(item?.quantity)) ? Number(item.quantity) : 1,
+  }));
+  const fish = stockNormalized.filter((item) => item.type === 'fish').slice(0, 12);
+  const plants = stockNormalized.filter((item) => item.type === 'plant').slice(0, 12);
+  const inverts = stockNormalized
+    .filter((item) => item.type.includes('shrimp') || item.type.includes('snail'))
+    .slice(0, 8);
+  const otherStock = stockNormalized
+    .filter((item) => !['fish', 'plant'].includes(item.type) && !item.type.includes('shrimp'))
+    .slice(0, 8);
+
+  const heaters = normalizeEquipmentItems(
+    selectedTank?.heaterEquipments ?? selectedTank?.heaterEquipment
+  )
+    .map(mapEquipmentEntry)
+    .slice(0, 8);
+  const filters = normalizeEquipmentItems(
+    selectedTank?.filterEquipments ?? selectedTank?.filterEquipment
+  )
+    .map(mapEquipmentEntry)
+    .slice(0, 8);
+  const lights = [
+    {
+      name:
+        toSafeString(selectedTank?.lightModelName, 120) ||
+        toSafeString(selectedTank?.lightModelId, 120) ||
+        '',
+      powerW: toFiniteNumber(selectedTank?.lightPowerW ?? selectedTank?.lightWattage),
+    },
+  ].filter((item) => item.name || item.powerW !== null);
+
+  const mainProblems = [
+    ...toArray(contextSummary?.activeIssues?.highlights).map((item) => ({
+      source: 'active_issue',
+      label:
+        toSafeString(item?.type, 120) || toSafeString(item?.status, 80) || 'aktywny problem',
+      openedAt: toSafeString(item?.openedAt, 64) || null,
+    })),
+    ...toArray(contextSummary?.actionCalendarHighlights?.highlights)
+      .filter((item) => toSafeString(item?.status, 32) === 'overdue')
+      .map((item) => ({
+        source: 'action_calendar',
+        label: `Zalegle: ${toSafeString(item?.label, 120) || 'akcja'}`,
+        openedAt: toSafeString(item?.dueAt, 64) || null,
+      })),
+  ].slice(0, 8);
+
+  const recentEvents = [
+    ...scopedIssues.slice(0, 6).map((item) => ({
+      type: 'issue_case',
+      label:
+        toSafeString(item?.diseaseType, 120) ||
+        toSafeString(item?.issueType, 120) ||
+        toSafeString(item?.name, 120) ||
+        'zdarzenie',
+      at: toIso(item?.updatedAt ?? item?.createdAt),
+    })),
+    ...toArray(contextSummary?.actionCalendarHighlights?.highlights).slice(0, 6).map((item) => ({
+      type: 'calendar_action',
+      label:
+        toSafeString(item?.label, 120) || toSafeString(item?.key, 120) || 'akcja kalendarza',
+      at: toSafeString(item?.dueAt, 64) || null,
+      status: toSafeString(item?.status, 32) || null,
+    })),
+  ].slice(0, 10);
+
+  const detailedRecommendations = toArray(contextSummary?.actionCalendarHighlights?.highlights)
+    .map((item) => {
+      const label = toSafeString(item?.label, 120);
+      const status = toSafeString(item?.status, 32);
+      if (!label) {
+        return '';
+      }
+      return status ? `${label}: ${status}` : label;
+    })
+    .filter(Boolean)
+    .slice(0, 8);
+
+  return {
+    version: 2,
+    locale:
+      normalizeLanguageCode(request?.locale) ||
+      normalizeLanguageCode(contextSummary?.locale) ||
+      '',
+    userSettings: {
+      language:
+        normalizeLanguageCode(request?.userLanguage) ||
+        normalizeLanguageCode(request?.appLanguage) ||
+        normalizeLanguageCode(contextSummary?.userSettings?.language) ||
+        normalizeLanguageCode(contextSummary?.locale) ||
+        '',
+    },
+    aquarium: {
+      tankId: selectedTankId,
+      name: toSafeString(selectedTank?.name, 120) || '',
+      liters: toFiniteNumber(selectedTank?.liters),
+      aquariumType: toSafeString(selectedTank?.aquariumType, 64) || '',
+      startType: toSafeString(selectedTank?.startType, 64) || '',
+      targetTemperatureC: toFiniteNumber(
+        selectedTank?.targetTemperature ??
+          selectedTank?.targetTemperatureC ??
+          selectedTank?.waterTemperatureTarget
+      ),
+      ambientTemperatureC: toFiniteNumber(
+        selectedTank?.ambientTemperature ??
+          selectedTank?.ambientTemperatureC ??
+          selectedTank?.roomTemperature
+      ),
+      hasPlants: Boolean(selectedTank?.hasPlants),
+      hasHidingPlaces: Boolean(selectedTank?.hasHidingPlaces),
+    },
+    currentWater,
+    recentMeasurements: latestMeasurements,
+    stock: {
+      fish,
+      plants,
+      invertebrates: inverts,
+      other: otherStock,
+      totals: {
+        fishCount: fish.reduce((sum, item) => sum + (item.quantity || 0), 0),
+        plantCount: plants.reduce((sum, item) => sum + (item.quantity || 0), 0),
+        itemCount: stockNormalized.length,
+      },
+    },
+    equipment: {
+      heaters,
+      filters,
+      lights,
+    },
+    appAnalysis: {
+      activeIssueCount: Number(contextSummary?.activeIssueCount) || 0,
+      stockCount: Number(contextSummary?.stockCount) || 0,
+      measurementCount: Number(contextSummary?.measurementCount) || 0,
+      overdueActions:
+        Number(contextSummary?.actionCalendarHighlights?.overdueCount) || 0,
+    },
+    mainProblems,
+    recentEvents,
+    detailedRecommendations,
+    missingData: {
+      noTank: !selectedTankId,
+      noMeasurements: latestMeasurements.length === 0,
+      noStock: stockNormalized.length === 0,
+      noEquipment: heaters.length + filters.length + lights.length === 0,
+    },
+  };
+}
+
+function limitAiContext(context, maxChars = MAX_AI_CONTEXT_CHARS) {
+  const safeMax = Number.isFinite(Number(maxChars)) && Number(maxChars) > 500
+    ? Number(maxChars)
+    : MAX_AI_CONTEXT_CHARS;
+  const next = isObjectRecord(context) ? JSON.parse(JSON.stringify(context)) : {};
+  const estimate = () => JSON.stringify(next).length;
+  const apply = (updater) => {
+    if (estimate() <= safeMax) {
+      return;
+    }
+    updater();
+  };
+
+  // 1) stale events
+  apply(() => {
+    const events = toArray(next.recentEvents);
+    if (events.length > 5) {
+      next.recentEvents = events.slice(0, 5);
+    } else if (events.length > 3) {
+      next.recentEvents = events.slice(0, 3);
+    } else {
+      next.recentEvents = [];
+    }
+  });
+
+  // 2) old measurements
+  apply(() => {
+    const measurements = toArray(next.recentMeasurements);
+    if (measurements.length > 5) {
+      next.recentMeasurements = measurements.slice(0, 5);
+    } else if (measurements.length > 3) {
+      next.recentMeasurements = measurements.slice(0, 3);
+    } else if (measurements.length > 1) {
+      next.recentMeasurements = measurements.slice(0, 1);
+    }
+  });
+
+  // 3) plants
+  apply(() => {
+    if (isObjectRecord(next.stock)) {
+      next.stock.plants = [];
+      if (isObjectRecord(next.stock.totals)) {
+        next.stock.totals.plantCount = 0;
+      }
+    }
+  });
+
+  // 4) detailed recommendations
+  apply(() => {
+    next.detailedRecommendations = [];
+  });
+
+  // 5) additional descriptions
+  apply(() => {
+    if (isObjectRecord(next.aquarium)) {
+      delete next.aquarium.description;
+      delete next.aquarium.notes;
+    }
+    next.mainProblems = toArray(next.mainProblems).map((item) => ({
+      source: toSafeString(item?.source, 40),
+      label: toSafeString(item?.label, 100),
+      openedAt: toSafeString(item?.openedAt, 40) || null,
+    }));
+  });
+
+  next.meta = {
+    ...(isObjectRecord(next.meta) ? next.meta : {}),
+    contextCharLength: estimate(),
+    trimmed: estimate() > safeMax || Boolean(next.meta?.trimmed),
+  };
+
+  return next;
+}
+
+function stringifyAiContext(aiContext, maxChars = MAX_AI_CONTEXT_CHARS) {
+  const limited = limitAiContext(aiContext, maxChars);
+  return JSON.stringify(limited);
+}
+
 function parseBearerToken(headers = {}) {
   const authorization = toSafeString(headers.authorization, 4096);
   if (!authorization) {
@@ -63,23 +578,21 @@ function parseBearerToken(headers = {}) {
   return authorization.slice(7).trim();
 }
 
-function validateLocale(value) {
-  const locale = toSafeString(value, 16).toLowerCase();
-  if (!locale) {
-    return 'pl';
-  }
-  if (locale === 'pl' || locale === 'en' || locale === 'de') {
-    return locale;
-  }
-  return 'pl';
-}
-
 function validateOptionalTankId(value) {
   const tankId = toSafeString(value, 128);
   if (!tankId) {
     return null;
   }
   return tankId;
+}
+
+function validateOptionalMode(value, fallbackMode) {
+  const mode = toSafeString(value, 64).toLowerCase();
+  return mode || fallbackMode;
+}
+
+function validateOptionalLanguage(value) {
+  return normalizeLanguageCode(value) || '';
 }
 
 function validateChatRequest(payload) {
@@ -107,6 +620,9 @@ function validateChatRequest(payload) {
     additionalInfo,
     tankId: validateOptionalTankId(payload.tankId),
     locale: validateLocale(payload.locale),
+    userLanguage: validateOptionalLanguage(payload.userLanguage),
+    appLanguage: validateOptionalLanguage(payload.appLanguage),
+    mode: validateOptionalMode(payload.mode, 'general'),
   };
 }
 
@@ -147,6 +663,9 @@ function validateVisionRequest(payload) {
     imageBase64: imageBase64 || null,
     tankId: validateOptionalTankId(payload.tankId),
     locale: validateLocale(payload.locale),
+    userLanguage: validateOptionalLanguage(payload.userLanguage),
+    appLanguage: validateOptionalLanguage(payload.appLanguage),
+    mode: validateOptionalMode(payload.mode, 'photo_analysis'),
   };
 }
 
@@ -238,38 +757,117 @@ function buildUserDataSummary(data, requestedTankId = null) {
 }
 
 function buildRuleBasedChatAnswer(request, summary) {
+  const language = resolveResponseLanguage(request, summary);
+  const tankName =
+    toSafeString(summary?.selectedTank?.name, 120) ||
+    toSafeString(summary?.aquarium?.name, 120) ||
+    'bez nazwy';
+  const tankLiters =
+    toFiniteNumber(summary?.selectedTank?.liters) ??
+    toFiniteNumber(summary?.aquarium?.liters);
+  const latestCore =
+    isObjectRecord(summary?.latestCoreMeasurements) ? summary.latestCoreMeasurements : summary?.currentWater;
+  const measurementCount =
+    Number(summary?.measurementCount) ||
+    Number(summary?.appAnalysis?.measurementCount) ||
+    toArray(summary?.recentMeasurements).length;
+  const fishCount =
+    Number(summary?.fishCount) ||
+    Number(summary?.stock?.totals?.fishCount) ||
+    0;
+  const plantCount =
+    Number(summary?.plantCount) ||
+    Number(summary?.stock?.totals?.plantCount) ||
+    0;
+  const stockCount =
+    Number(summary?.stockCount) ||
+    Number(summary?.stock?.totals?.itemCount) ||
+    fishCount + plantCount;
+  const activeIssueCount =
+    Number(summary?.activeIssueCount) ||
+    Number(summary?.appAnalysis?.activeIssueCount) ||
+    0;
+
   const lines = [];
-  if (summary.selectedTank) {
+  if (tankName || tankLiters !== null) {
     lines.push(
-      `Kontekst: akwarium "${summary.selectedTank.name || 'bez nazwy'}" (${Number.isFinite(summary.selectedTank.liters) ? `${summary.selectedTank.liters} l` : 'litraz nieznany'}).`
+      pickByLanguage(language, {
+        pl: `Kontekst: akwarium "${tankName}" (${Number.isFinite(tankLiters) ? `${tankLiters} l` : 'litraz nieznany'}).`,
+        en: `Context: aquarium "${tankName}" (${Number.isFinite(tankLiters) ? `${tankLiters} l` : 'unknown volume'}).`,
+        de: `Kontext: Aquarium "${tankName}" (${Number.isFinite(tankLiters) ? `${tankLiters} l` : 'Volumen unbekannt'}).`,
+      })
     );
   } else {
-    lines.push('Kontekst: brak aktywnego akwarium w danych.');
+    lines.push(
+      pickByLanguage(language, {
+        pl: 'Kontekst: brak aktywnego akwarium w danych.',
+        en: 'Context: no active aquarium in data.',
+        de: 'Kontext: kein aktives Aquarium in den Daten.',
+      })
+    );
   }
 
   lines.push(
-    `Dane: pomiary=${summary.measurementCount}, obsada=${summary.stockCount} (ryby=${summary.fishCount}, rosliny=${summary.plantCount}), aktywne problemy=${summary.activeIssueCount}.`
+    pickByLanguage(language, {
+      pl: `Dane: pomiary=${measurementCount}, obsada=${stockCount} (ryby=${fishCount}, rosliny=${plantCount}), aktywne problemy=${activeIssueCount}.`,
+      en: `Data: measurements=${measurementCount}, stock=${stockCount} (fish=${fishCount}, plants=${plantCount}), active issues=${activeIssueCount}.`,
+      de: `Daten: Messungen=${measurementCount}, Besatz=${stockCount} (Fische=${fishCount}, Pflanzen=${plantCount}), aktive Probleme=${activeIssueCount}.`,
+    })
   );
 
-  if (summary.latestCoreMeasurements?.measuredAt) {
+  if (latestCore?.measuredAt) {
     lines.push(
-      `Ostatni pomiar: pH=${Number.isFinite(summary.latestCoreMeasurements.ph) ? summary.latestCoreMeasurements.ph : 'brak'}, NO2=${Number.isFinite(summary.latestCoreMeasurements.no2) ? summary.latestCoreMeasurements.no2 : 'brak'}, NO3=${Number.isFinite(summary.latestCoreMeasurements.no3) ? summary.latestCoreMeasurements.no3 : 'brak'}, temp=${Number.isFinite(summary.latestCoreMeasurements.temperature) ? summary.latestCoreMeasurements.temperature : 'brak'}.`
+      pickByLanguage(language, {
+        pl: `Ostatni pomiar: pH=${Number.isFinite(latestCore.ph) ? latestCore.ph : 'brak'}, NO2=${Number.isFinite(latestCore.no2) ? latestCore.no2 : 'brak'}, NO3=${Number.isFinite(latestCore.no3) ? latestCore.no3 : 'brak'}, temp=${Number.isFinite(latestCore.temperature) ? latestCore.temperature : 'brak'}.`,
+        en: `Latest measurement: pH=${Number.isFinite(latestCore.ph) ? latestCore.ph : 'missing'}, NO2=${Number.isFinite(latestCore.no2) ? latestCore.no2 : 'missing'}, NO3=${Number.isFinite(latestCore.no3) ? latestCore.no3 : 'missing'}, temp=${Number.isFinite(latestCore.temperature) ? latestCore.temperature : 'missing'}.`,
+        de: `Letzte Messung: pH=${Number.isFinite(latestCore.ph) ? latestCore.ph : 'fehlt'}, NO2=${Number.isFinite(latestCore.no2) ? latestCore.no2 : 'fehlt'}, NO3=${Number.isFinite(latestCore.no3) ? latestCore.no3 : 'fehlt'}, Temp=${Number.isFinite(latestCore.temperature) ? latestCore.temperature : 'fehlt'}.`,
+      })
     );
   } else {
-    lines.push('Brak aktualnego pomiaru - najpierw wykonaj podstawowy test wody.');
+    lines.push(
+      pickByLanguage(language, {
+        pl: 'Brak aktualnego pomiaru - najpierw wykonaj podstawowy test wody.',
+        en: 'No recent measurement - run a basic water test first.',
+        de: 'Keine aktuelle Messung - zuerst einen grundlegenden Wassertest machen.',
+      })
+    );
   }
 
-  lines.push(`Pytanie uzytkownika: "${request.question}"`);
+  lines.push(
+    pickByLanguage(language, {
+      pl: `Pytanie uzytkownika: "${request.question}"`,
+      en: `User question: "${request.question}"`,
+      de: `Frage des Nutzers: "${request.question}"`,
+    })
+  );
 
   const recommendations = [];
-  if (!summary.latestCoreMeasurements?.measuredAt) {
-    recommendations.push('Dodaj pomiar pH, NO2, NO3 i temperatury przed kolejna decyzja.');
+  if (!latestCore?.measuredAt) {
+    recommendations.push(
+      pickByLanguage(language, {
+        pl: 'Dodaj pomiar pH, NO2, NO3 i temperatury przed kolejna decyzja.',
+        en: 'Add pH, NO2, NO3, and temperature measurements before the next decision.',
+        de: 'Ergaenze pH-, NO2-, NO3- und Temperaturmessungen vor der naechsten Entscheidung.',
+      })
+    );
   }
-  if (summary.activeIssueCount > 0) {
-    recommendations.push('Priorytet: domknij aktywne przypadki (choroby/glony) przed duzymi zmianami obsady.');
+  if (activeIssueCount > 0) {
+    recommendations.push(
+      pickByLanguage(language, {
+        pl: 'Priorytet: domknij aktywne przypadki (choroby/glony) przed duzymi zmianami obsady.',
+        en: 'Priority: close active issue cases (disease/algae) before major stocking changes.',
+        de: 'Prioritaet: aktive Problemfaelle (Krankheit/Algen) vor groesseren Besatz-Aenderungen abschliessen.',
+      })
+    );
   }
   if (recommendations.length === 0) {
-    recommendations.push('Wprowadzaj zmiany stopniowo i potwierdzaj efekty kolejnym pomiarem po 24-48h.');
+    recommendations.push(
+      pickByLanguage(language, {
+        pl: 'Wprowadzaj zmiany stopniowo i potwierdzaj efekty kolejnym pomiarem po 24-48h.',
+        en: 'Apply changes gradually and verify the effect with another measurement after 24-48h.',
+        de: 'Fuehre Aenderungen schrittweise durch und pruefe den Effekt mit einer weiteren Messung nach 24-48h.',
+      })
+    );
   }
 
   return {
@@ -280,6 +878,8 @@ function buildRuleBasedChatAnswer(request, summary) {
 }
 
 function buildRuleBasedVisionAnswer(request, summary) {
+  const language = resolveResponseLanguage(request, summary);
+  const texts = getLocalizedTexts(language);
   const text = `${request.question || ''} ${request.additionalInfo || ''}`.toLowerCase();
   const looksUnreadable =
     text.includes('nieczytel') ||
@@ -305,7 +905,7 @@ function buildRuleBasedVisionAnswer(request, summary) {
         'Powtorz analize obrazu.',
         'Zweryfikuj parametry testami wody.',
       ],
-      warnings: ['To nie jest porada weterynaryjna.'],
+      warnings: [texts.vetWarning],
     };
   }
 
@@ -358,7 +958,7 @@ function buildRuleBasedVisionAnswer(request, summary) {
   ];
 
   const recommendations = [];
-  if (summary.activeIssueCount > 0) {
+  if ((Number(summary?.activeIssueCount) || Number(summary?.appAnalysis?.activeIssueCount) || 0) > 0) {
     recommendations.push('Najpierw domknij aktywne przypadki leczenia/ograniczania glonow.');
   }
   recommendations.push('Wykonaj dokumentacje zdjeciowa przed i po zmianach.');
@@ -375,7 +975,7 @@ function buildRuleBasedVisionAnswer(request, summary) {
     verificationSteps,
     recommendations,
     actionPlan,
-    warnings: ['To nie jest porada weterynaryjna.'],
+    warnings: [texts.vetWarning],
   };
 }
 
@@ -417,6 +1017,50 @@ function extractProviderOutputText(responsePayload) {
   return chunks.join('\n').trim();
 }
 
+function extractFirstJsonObjectSlice(text) {
+  const source = String(text ?? '');
+  for (let start = 0; start < source.length; start += 1) {
+    if (source[start] !== '{') {
+      continue;
+    }
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let index = start; index < source.length; index += 1) {
+      const char = source[index];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (char === '\\') {
+          escaped = true;
+          continue;
+        }
+        if (char === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (char === '"') {
+        inString = true;
+        continue;
+      }
+      if (char === '{') {
+        depth += 1;
+      } else if (char === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          return source.slice(start, index + 1);
+        }
+      }
+    }
+  }
+  return null;
+}
+
 function parseJsonObjectFromText(textValue) {
   const rawText = toSafeString(textValue, 16000);
   if (!rawText) {
@@ -431,18 +1075,15 @@ function parseJsonObjectFromText(textValue) {
   try {
     return JSON.parse(withoutFence);
   } catch {
-    // Try best-effort extraction from mixed text responses.
+    // fall through
   }
 
-  const startIndex = withoutFence.indexOf('{');
-  const endIndex = withoutFence.lastIndexOf('}');
-  if (startIndex < 0 || endIndex <= startIndex) {
+  const extracted = extractFirstJsonObjectSlice(withoutFence);
+  if (!extracted) {
     return null;
   }
-
-  const candidate = withoutFence.slice(startIndex, endIndex + 1);
   try {
-    return JSON.parse(candidate);
+    return JSON.parse(extracted);
   } catch {
     return null;
   }
@@ -512,11 +1153,7 @@ function createOpenAiResponsesProvider({
     const outputText = extractProviderOutputText(responsePayload);
     const parsed = parseJsonObjectFromText(outputText);
     if (!isObjectRecord(parsed)) {
-      throw createAiBackendError(
-        AI_DIAGNOSTIC_CODES.PROVIDER_ERROR,
-        'Provider AI zwrocil nieprawidlowy format odpowiedzi.',
-        502
-      );
+      return {};
     }
 
     return parsed;
@@ -524,15 +1161,100 @@ function createOpenAiResponsesProvider({
 
   return {
     async generateChat({ request, contextSummary }) {
-      const contextJson = toSafeString(JSON.stringify(contextSummary ?? {}), 7000);
+      const resolvedLanguage = resolveResponseLanguage(request, contextSummary);
+      const contextJson = stringifyAiContext(contextSummary, MAX_AI_CONTEXT_CHARS);
+      const chatMode = toSafeString(request?.mode, 64) || 'general';
       const userPrompt = [
-        'Zwroc TYLKO poprawny JSON z polami: answer, recommendations, warnings.',
-        'answer: string (max 1200 znakow).',
-        'recommendations: string[] (0-6 krotkich punktow).',
-        'warnings: string[] (0-4, zawrzyj ostrzezenie: "To nie jest porada weterynaryjna." gdy to adekwatne).',
-        `Pytanie uzytkownika: ${request.question}`,
-        request.additionalInfo ? `Dodatkowe informacje: ${request.additionalInfo}` : '',
-        `Kontekst akwarium (JSON): ${contextJson}`,
+        `Jezyk odpowiedzi: ${resolvedLanguage}`,
+        'Zwroc TYLKO poprawny JSON bez markdownu i bez dodatkowego tekstu.',
+        '',
+        'Dozwolone pola odpowiedzi:',
+        '{',
+        '  "answer": string,',
+        '  "recommendations": string[],',
+        '  "warnings": string[]',
+        '}',
+        '',
+        'Limity:',
+        '- answer: string, max 1200 znakow,',
+        '- recommendations: string[], 0-6 krotkich punktow, bez dublowania,',
+        '- warnings: string[], 0-4 krotkie ostrzezenia.',
+        '',
+        'Zasady ogolne:',
+        '- Odpowiadaj w jezyku wskazanym w "Jezyk odpowiedzi".',
+        '- Klucze JSON zostaw bez zmian.',
+        '- Tresc pol answer, recommendations i warnings przetlumacz na jezyk odpowiedzi.',
+        '- Odpowiedz oprzyj wylacznie o dane z kontekstu i pytanie uzytkownika.',
+        '- Nie wymyslaj brakujacych parametrow, pomiarow, faktow, obsady, sprzetu ani dat.',
+        '- Jesli brakuje waznych danych, napisz to w answer i dodaj praktyczne kroki jak te dane uzupelnic.',
+        '- Jesli problemow jest kilka, wskaz maksymalnie 3 najwazniejsze i ustaw je wedlug pilnosci.',
+        '- W recommendations umieszczaj najpierw dzialania najpilniejsze, potem kroki kontrolne.',
+        '- Nie strasz uzytkownika bez podstaw.',
+        '- Nie obiecuj pewnego efektu.',
+        '- Nie zalecaj pelnego restartu akwarium jako pierwszej opcji.',
+        '- Nie zalecaj gwaltownych zmian parametrow wody bez wyraznej potrzeby.',
+        '- Nie zalecaj mycia calego filtra pod kranem.',
+        '- Jesli zalecasz podmiane wody, domyslnie sugeruj czesciowa podmiane, chyba ze kontekst wskazuje na sytuacje krytyczna.',
+        '',
+        'Zasady dla problemow z woda:',
+        '- Priorytetyzuj bezpieczne kroki: testy, czesciowa podmiana wody, napowietrzanie, ograniczenie karmienia, sprawdzenie filtra.',
+        '- Jesli brakuje NO2, NO3, pH, GH, KH lub temperatury, wskaz, ktore dane warto uzupelnic.',
+        '- Nie zgaduj wartosci parametrow.',
+        '',
+        'Zasady dla chorob, leczenia i objawow ryb:',
+        '- Nie stawiaj pewnej diagnozy.',
+        '- Nie zalecaj lekow jako pierwszego kroku bez wystarczajacych danych.',
+        '- Najpierw ocen jakosc wody, tlen, temperature, ostatnie zmiany, filtracje i zachowanie innych ryb.',
+        '- Jesli pytanie dotyczy choroby, leczenia, martwych ryb, lekow, ran, pasozytow, ospowatych kropek, dziwnego zachowania, dyszenia, ocierania, plywania bokiem albo naglych zgonow, dodaj w warnings ostrzezenie weterynaryjne w jezyku odpowiedzi.',
+        '',
+        'Zasady dla obsady:',
+        '- Jesli pytanie dotyczy obsady, ocen: litraz, liczebnosc stad, temperament, ryzyko zjedzenia/podjadania, krewetki, strefy plywania, zgodnosc parametrow i potencjalne konflikty.',
+        '- Nie zakladaj zgodnosci tylko dlatego, ze gatunki sa popularne.',
+        '- Nie zakladaj niezgodnosci tylko dlatego, ze pochodza z innych biotopow, jesli parametry i zachowanie sa zgodne.',
+        '- Jesli obsada jest mozliwa, ale niedoskonala, napisz to jasno.',
+        '',
+        'Zasady dla sprzetu:',
+        '- Jesli pytanie dotyczy filtra, ocen przeplyw, realny obieg, mozliwy za slaby przeplyw i mozliwy zbyt silny nurt.',
+        '- Jesli pytanie dotyczy grzalki, ocen moc wzgledem litrazu, temperatury docelowej i temperatury otoczenia, jesli sa w kontekscie.',
+        '- Nie wymyslaj danych technicznych sprzetu, jesli nie ma ich w kontekscie.',
+        '',
+        `Tryb rozmowy: ${chatMode}`,
+        '',
+        'Jesli tryb rozmowy istnieje, zastosuj dodatkowo:',
+        '- what_now / improvement_plan: najpierw co zrobic teraz, potem co sprawdzic pozniej.',
+        '- stock_check: skup sie na obsadzie.',
+        '- interpret_parameters / water_parameters: skup sie na parametrach wody i brakach danych.',
+        '- water_history_analysis: skup sie na historii pomiarow, trendach i kontekscie zdarzen w akwarium.',
+        '- sick_fish: bez pewnej diagnozy, najpierw jakosc wody, tlen, temperatura, filtracja i zachowanie ryb; dodaj ostrzezenie weterynaryjne.',
+        '- algae_problem / algae_analysis: skup sie na swietle, czasie swiecenia, NO3/PO4, nawozeniu, CO2, karmieniu, filtracji i stabilnosci.',
+        '- general: odpowiedz normalnie, praktycznie i krotko.',
+        '',
+        'Jesli tryb to water_history_analysis:',
+        '- Ocen trend na podstawie serii pomiarow, nie tylko ostatniego wpisu.',
+        '- Jesli sa mniej niz 2 pomiary, napisz wprost, ze trendu nie da sie wiarygodnie ocenic i zinterpretuj tylko aktualny pomiar.',
+        '- Jesli pomiary sa stare, ostrzez, ze analiza moze byc nieaktualna.',
+        '- W answer podaj krotko: ocena trendu + maksymalnie 3 najwazniejsze obserwacje + brakujace dane.',
+        '- W recommendations podaj: co zrobic teraz i co zmierzyc przy kolejnym pomiarze.',
+        '- W warnings dodaj pilne ostrzezenia i ostroznosc przy gwaltownych zmianach pH/KH/GH.',
+        '- Przy wysokim NO2 lub NH3/NH4 traktuj sytuacje jako pilna: test, czesciowa podmiana, napowietrzanie, ograniczenie karmienia, sprawdzenie filtra.',
+        '- Przy rosnacym NO3 zasugeruj sprawdzenie karmienia, obsady, podmian i filtracji.',
+        '- Nie zalecaj lekow i nie zalecaj restartu akwarium jako pierwszej opcji.',
+        '',
+        'Jesli tryb to algae_analysis lub algae_problem:',
+        '- W answer podaj krotkie podsumowanie, co najbardziej pasuje i dlaczego.',
+        '- Wskaz maksymalnie 3 mozliwe typy glonow lub przyczyny, nigdy jako pewna diagnoza.',
+        '- Priorytetowo podaj bezpieczne kroki: testy NO3/PO4, kontrola swiatla, cyrkulacji, karmienia i podmian.',
+        '- Nie zalecaj chemii ani restartu akwarium jako pierwszego kroku.',
+        '- Jesli brakuje danych lub zdjecie jest slabej jakosci, napisz to jasno i zaproponuj plan weryfikacji.',
+        '',
+        'Pytanie uzytkownika:',
+        request.question,
+        '',
+        'Dodatkowe informacje uzytkownika:',
+        request.additionalInfo || '(brak)',
+        '',
+        'Kontekst akwarium JSON:',
+        contextJson,
       ]
         .filter(Boolean)
         .join('\n');
@@ -543,7 +1265,20 @@ function createOpenAiResponsesProvider({
           content: [
             {
               type: 'input_text',
-              text: 'You are an aquarium assistant. Return strict JSON only. Do not include markdown.',
+              text: [
+                'Jestes asystentem akwarystycznym w aplikacji mobilnej.',
+                'Odpowiadaj w jezyku wskazanym w polu "Jezyk odpowiedzi".',
+                'Jesli jezyk odpowiedzi nie jest dostepny, odpowiedz po polsku.',
+                'Zwracaj wylacznie poprawny JSON zgodny z wymaganym schematem.',
+                'Nie uzywaj markdownu.',
+                'Nie dodawaj pol spoza schematu.',
+                'Nie wymyslaj parametrow, pomiarow, obsady, sprzetu, dat, objawow ani faktow, ktorych nie ma w kontekscie.',
+                'Nie stawiaj pewnych diagnoz.',
+                'Mozesz wskazywac mozliwe przyczyny, jesli jasno oznaczysz je jako hipotezy lub mozliwosci.',
+                'Odpowiadaj praktycznie, zwiezle i bez lania wody.',
+                'Priorytetyzuj bezpieczne dzialania.',
+                'Nie strasz uzytkownika bez podstaw.',
+              ].join(' '),
             },
           ],
         },
@@ -560,23 +1295,84 @@ function createOpenAiResponsesProvider({
     },
 
     async analyzeVision({ request, contextSummary }) {
-      const contextJson = toSafeString(JSON.stringify(contextSummary ?? {}), 7000);
+      const resolvedLanguage = resolveResponseLanguage(request, contextSummary);
+      const contextJson = stringifyAiContext(contextSummary, MAX_AI_CONTEXT_CHARS);
       const imageInput =
         request.imageUrl ||
         (request.imageBase64 ? `data:image/jpeg;base64,${request.imageBase64}` : '');
+      const visionMode = toSafeString(request?.mode, 64) || 'photo_analysis';
 
       const textPrompt = [
-        'Zwroc TYLKO poprawny JSON z polami: summary, hypotheses, verificationSteps, recommendations, actionPlan, warnings.',
-        'summary: string (max 800 znakow).',
-        'hypotheses: [{ key: string, label: string, confidence: number 0..1 }] (max 5).',
-        'verificationSteps: string[] (max 6).',
-        'recommendations: string[] (max 6).',
-        'actionPlan: string[] (max 6).',
-        'warnings: string[] (max 4).',
-        'Jesli obraz jest nieczytelny, nadal zwroc JSON z bezpiecznym fallback summary.',
-        request.question ? `Pytanie uzytkownika: ${request.question}` : '',
-        request.additionalInfo ? `Dodatkowe informacje: ${request.additionalInfo}` : '',
-        `Kontekst akwarium (JSON): ${contextJson}`,
+        `Jezyk odpowiedzi: ${resolvedLanguage}`,
+        'Zwroc TYLKO poprawny JSON bez markdownu i bez dodatkowego tekstu.',
+        '',
+        'Dozwolone pola odpowiedzi:',
+        '{',
+        '  "summary": string,',
+        '  "hypotheses": [',
+        '    { "key": string, "label": string, "confidence": number }',
+        '  ],',
+        '  "verificationSteps": string[],',
+        '  "recommendations": string[],',
+        '  "actionPlan": string[],',
+        '  "warnings": string[]',
+        '}',
+        '',
+        'Limity:',
+        '- summary: string, max 800 znakow,',
+        '- hypotheses: max 5,',
+        '- hypotheses[].key: krotki identyfikator bez spacji, np. "algae", "cloudy_water", "plant_damage", "fish_symptoms", "poor_image_quality",',
+        '- hypotheses[].label: krotki opis w jezyku odpowiedzi,',
+        '- hypotheses[].confidence: liczba 0..1,',
+        '- verificationSteps: string[], max 6,',
+        '- recommendations: string[], max 6,',
+        '- actionPlan: string[], max 6,',
+        '- warnings: string[], max 4.',
+        '',
+        'Zasady ogolne:',
+        '- Odpowiadaj w jezyku wskazanym w "Jezyk odpowiedzi".',
+        '- Klucze JSON zostaw bez zmian.',
+        '- Tresci pol summary, hypotheses.label, verificationSteps, recommendations, actionPlan i warnings przetlumacz na jezyk odpowiedzi.',
+        '- Opisuj tylko to, co realnie widac na zdjeciu i co wynika z kontekstu.',
+        '- Nie stawiaj pewnej diagnozy.',
+        '- Nie zgaduj parametrow wody na podstawie zdjecia.',
+        '- Nie oceniaj dokladnych wartosci NO2, NO3, NH3/NH4, pH, GH, KH, PO4, K, Ca, Mg, TDS ani temperatury na podstawie zdjecia.',
+        '- Uzywaj ostroznych sformulowan: "moze przypominac", "warto wykluczyc", "mozliwa przyczyna".',
+        '- confidence oznacza pewnosc hipotezy na podstawie zdjecia i kontekstu, nie pewnosc diagnozy.',
+        '- summary ma najpierw opisac widoczne elementy, a dopiero potem ostrozna ocene.',
+        '- Jesli obraz jest nieczytelny, ciemny, rozmazany, zle skadrowany albo nie pokazuje problemu, napisz to jasno i dodaj bezpieczny plan weryfikacji.',
+        '- Nie zalecaj lekow jako pierwszego kroku bez wystarczajacych danych.',
+        '- Nie zalecaj restartu akwarium jako pierwszej opcji.',
+        '- Nie strasz uzytkownika bez podstaw.',
+        '',
+        'Zasady dla ryb z objawami:',
+        '- Jesli zdjecie pokazuje rybe z objawami, ranami, kropkami, osadem, nietypowym zachowaniem, martwa rybe albo pytanie dotyczy leczenia, dodaj ostrzezenie weterynaryjne w jezyku odpowiedzi.',
+        '- W verificationSteps uwzglednij sprawdzenie NO2, temperatury, zachowania innych ryb, ostatnich zmian w akwarium i filtracji.',
+        '- Nie podawaj pewnej diagnozy choroby.',
+        '',
+        'Zasady dla glonow i roslin:',
+        '- Jesli zdjecie pokazuje glony lub problemy z roslinami, w verificationSteps uwzglednij swiatlo, czas swiecenia, NO3/PO4, nawozenie i CO2, jesli dostepne.',
+        '- Jesli brakuje danych o swietle, nawozeniu albo parametrach, wskaz to.',
+        '',
+        'Zasady dla wody i wygladu zbiornika:',
+        '- Jesli zdjecie pokazuje metna wode, osad, kozuch, brudne szyby albo problem z klarownoscia, zaproponuj testy wody, ocene filtracji, ostatnia podmiane, karmienie i obsade.',
+        '- Nie wnioskuj o dokladnych parametrach z samego wygladu wody.',
+        '',
+        `Tryb analizy: ${visionMode}`,
+        '',
+        'Jesli tryb analizy to algae_analysis:',
+        '- Wskaz maksymalnie 3 mozliwe typy glonow lub przyczyny, nigdy jako pewna diagnoza.',
+        '- Priorytetowo zaproponuj bezpieczna weryfikacje: NO3/PO4, czas i intensywnosc swiatla, CO2, cyrkulacja i podmiany.',
+        '- Nie zalecaj chemii ani restartu akwarium jako pierwszego kroku.',
+        '',
+        'Pytanie uzytkownika:',
+        request.question || '(brak)',
+        '',
+        'Dodatkowe informacje uzytkownika:',
+        request.additionalInfo || '(brak)',
+        '',
+        'Kontekst akwarium JSON:',
+        contextJson,
       ]
         .filter(Boolean)
         .join('\n');
@@ -587,7 +1383,19 @@ function createOpenAiResponsesProvider({
           content: [
             {
               type: 'input_text',
-              text: 'You are an aquarium vision assistant. Return strict JSON only. Do not include markdown.',
+              text: [
+                'Jestes asystentem akwarystycznym do analizy zdjec w aplikacji mobilnej.',
+                'Odpowiadaj w jezyku wskazanym w polu "Jezyk odpowiedzi".',
+                'Jesli jezyk odpowiedzi nie jest dostepny, odpowiedz po polsku.',
+                'Zwracaj wylacznie poprawny JSON zgodny z wymaganym schematem.',
+                'Nie uzywaj markdownu.',
+                'Nie dodawaj pol spoza schematu.',
+                'Opisuj tylko to, co widac na zdjeciu oraz wynika z kontekstu.',
+                'Nie stawiaj pewnej diagnozy na podstawie samego zdjecia.',
+                'Mozesz wskazywac hipotezy, ale musza byc ostrozne i mozliwe do zweryfikowania.',
+                'Nie oceniaj dokladnych parametrow wody na podstawie zdjecia.',
+                'Priorytetyzuj bezpieczne dzialania i weryfikacje pomiarami.',
+              ].join(' '),
             },
           ],
         },
@@ -640,108 +1448,88 @@ function withTimeout(promise, timeoutMs) {
   });
 }
 
-function normalizeChatProviderResponse(value) {
-  if (!isObjectRecord(value)) {
-    throw createAiBackendError(
-      AI_DIAGNOSTIC_CODES.PROVIDER_ERROR,
-      'Provider AI zwrocil nieprawidlowy format odpowiedzi.',
-      502
-    );
-  }
+function normalizeChatProviderResponse(value, request = null, resolvedLanguage = 'pl') {
+  const texts = getLocalizedTexts(resolvedLanguage);
+  const safeValue = isObjectRecord(value) ? value : {};
+  const answer = toSafeString(safeValue.answer, 1200) || texts.chatFallbackAnswer;
 
-  const answer = toSafeString(value.answer, 8000);
-  if (!answer) {
-    throw createAiBackendError(
-      AI_DIAGNOSTIC_CODES.PROVIDER_ERROR,
-      'Provider AI nie zwrocil odpowiedzi.',
-      502
-    );
-  }
+  const recommendations = normalizeStringArray(safeValue.recommendations, 6, 250);
+  const normalizedRecommendations =
+    recommendations.length > 0 ? recommendations : [texts.chatFallbackRecommendation];
+  const warnings = normalizeStringArray(safeValue.warnings, 4, 250);
 
-  const recommendations = Array.isArray(value.recommendations)
-    ? value.recommendations
-        .map((item) => toSafeString(item, 512))
-        .filter(Boolean)
-        .slice(0, 6)
-    : [];
-  const warnings = Array.isArray(value.warnings)
-    ? value.warnings
-        .map((item) => toSafeString(item, 512))
-        .filter(Boolean)
-        .slice(0, 6)
-    : [];
+  const shouldAddVetWarning =
+    hasVeterinaryRiskKeywords(request?.question) ||
+    hasVeterinaryRiskKeywords(request?.additionalInfo);
+  const mergedWarnings = shouldAddVetWarning
+    ? normalizeStringArray([texts.vetWarning, ...warnings], 4, 250)
+    : warnings;
 
   return {
     answer,
-    recommendations,
-    warnings,
+    recommendations: normalizedRecommendations,
+    warnings: mergedWarnings,
   };
 }
 
-function normalizeVisionProviderResponse(value) {
-  if (!isObjectRecord(value)) {
-    throw createAiBackendError(
-      AI_DIAGNOSTIC_CODES.PROVIDER_ERROR,
-      'Provider AI zwrocil nieprawidlowy format analizy obrazu.',
-      502
-    );
+function normalizeVisionProviderResponse(value, request = null, resolvedLanguage = 'pl') {
+  const texts = getLocalizedTexts(resolvedLanguage);
+  const safeValue = isObjectRecord(value) ? value : {};
+  const summary = toSafeString(safeValue.summary, 800);
+  const hypothesesInput = Array.isArray(safeValue.hypotheses) ? safeValue.hypotheses : [];
+  const hypotheses = hypothesesInput
+    .map((item) => {
+      const confidence = Number(item?.confidence);
+      const key = toSafeString(item?.key, 80) || 'unknown';
+      const label = toSafeString(item?.label, 200) || texts.unknownHypothesisLabel;
+      const normalizedConfidence = Number.isFinite(confidence)
+        ? Math.min(1, Math.max(0, confidence))
+        : 0.3;
+      return {
+        key,
+        label,
+        confidence: Number(normalizedConfidence.toFixed(3)),
+      };
+    })
+    .slice(0, 5);
+
+  const verificationSteps = normalizeStringArray(safeValue.verificationSteps, 6, 250);
+  const recommendations = normalizeStringArray(safeValue.recommendations, 6, 250);
+  const actionPlan = normalizeStringArray(safeValue.actionPlan, 6, 250);
+  const warnings = normalizeStringArray(safeValue.warnings, 4, 250);
+
+  const shouldUseFallback =
+    !isObjectRecord(value) ||
+    (!summary &&
+      hypotheses.length === 0 &&
+      verificationSteps.length === 0 &&
+      recommendations.length === 0 &&
+      actionPlan.length === 0 &&
+      warnings.length === 0);
+
+  const shouldAddVetWarning =
+    hasVeterinaryRiskKeywords(request?.question) ||
+    hasVeterinaryRiskKeywords(request?.additionalInfo);
+  const vetWarnings = shouldAddVetWarning ? [texts.vetWarning] : [];
+
+  if (shouldUseFallback) {
+    return {
+      summary: texts.noUsefulVisionSummary,
+      hypotheses: [],
+      verificationSteps: texts.visionFallbackSteps.slice(0, 6),
+      recommendations: [],
+      actionPlan: [],
+      warnings: normalizeStringArray([...vetWarnings], 4, 250),
+    };
   }
 
-  const summary = toSafeString(value.summary, 2000);
-  const hypotheses = Array.isArray(value.hypotheses)
-    ? value.hypotheses
-        .map((item) => ({
-          key: toSafeString(item?.key, 120),
-          label: toSafeString(item?.label, 240),
-          confidence: Number(item?.confidence),
-        }))
-        .filter(
-          (item) =>
-            item.key &&
-            item.label &&
-            Number.isFinite(item.confidence) &&
-            item.confidence >= 0 &&
-            item.confidence <= 1
-        )
-        .slice(0, 6)
-    : [];
-
-  const verificationSteps = Array.isArray(value.verificationSteps)
-    ? value.verificationSteps
-        .map((item) => toSafeString(item, 400))
-        .filter(Boolean)
-        .slice(0, 8)
-    : [];
-  const recommendations = Array.isArray(value.recommendations)
-    ? value.recommendations
-        .map((item) => toSafeString(item, 400))
-        .filter(Boolean)
-        .slice(0, 8)
-    : [];
-  const actionPlan = Array.isArray(value.actionPlan)
-    ? value.actionPlan
-        .map((item) => toSafeString(item, 400))
-        .filter(Boolean)
-        .slice(0, 8)
-    : recommendations.slice(0, 5);
-  const warnings = Array.isArray(value.warnings)
-    ? value.warnings
-        .map((item) => toSafeString(item, 400))
-        .filter(Boolean)
-        .slice(0, 8)
-    : [];
-
-  const hasNoUsefulData = !summary && hypotheses.length === 0;
-
   return {
-    summary: hasNoUsefulData
-      ? 'Obraz jest nieczytelny. Zrob wyrazniejsze zdjecie i powtorz analize.'
-      : summary || 'Brak jednoznacznej diagnozy na podstawie obrazu.',
+    summary: summary || texts.unclearVisionSummary,
     hypotheses,
     verificationSteps,
     recommendations,
     actionPlan,
-    warnings,
+    warnings: normalizeStringArray([...vetWarnings, ...warnings], 4, 250),
   };
 }
 
@@ -864,17 +1652,27 @@ function createAiRequestHandlers(deps) {
       uid = await resolveUidFromHeaders(headers);
       const userData = await dataStore.getUserData(uid, request.tankId);
       const contextSummary = buildUserAquariumContext(uid, request.tankId, userData);
+      const aiContext = limitAiContext(
+        buildAquariumAiContext({ request, userData, contextSummary }),
+        MAX_AI_CONTEXT_CHARS
+      );
+      const resolvedLanguage = resolveResponseLanguage(request, aiContext);
+      const requestForProvider = { ...request, resolvedLanguage };
 
       const providerResult = await withTimeout(
         aiProvider.generateChat({
           uid,
-          request,
-          contextSummary,
+          request: requestForProvider,
+          contextSummary: aiContext,
         }),
         providerTimeoutMs
       );
 
-      const normalized = normalizeChatProviderResponse(providerResult);
+      const normalized = normalizeChatProviderResponse(
+        providerResult,
+        requestForProvider,
+        resolvedLanguage
+      );
       const durationMs = now() - startedAt;
 
       logOperation(logger, 'info', 'ai_chat_request_processed', {
@@ -961,16 +1759,26 @@ function createAiRequestHandlers(deps) {
       uid = await resolveUidFromHeaders(headers);
       const userData = await dataStore.getUserData(uid, request.tankId);
       const contextSummary = buildUserAquariumContext(uid, request.tankId, userData);
+      const aiContext = limitAiContext(
+        buildAquariumAiContext({ request, userData, contextSummary }),
+        MAX_AI_CONTEXT_CHARS
+      );
+      const resolvedLanguage = resolveResponseLanguage(request, aiContext);
+      const requestForProvider = { ...request, resolvedLanguage };
 
       const providerResult = await withTimeout(
         aiProvider.analyzeVision({
           uid,
-          request,
-          contextSummary,
+          request: requestForProvider,
+          contextSummary: aiContext,
         }),
         providerTimeoutMs
       );
-      const normalized = normalizeVisionProviderResponse(providerResult);
+      const normalized = normalizeVisionProviderResponse(
+        providerResult,
+        requestForProvider,
+        resolvedLanguage
+      );
       const durationMs = now() - startedAt;
 
       logOperation(logger, 'info', 'ai_vision_request_processed', {
@@ -1062,9 +1870,14 @@ module.exports = {
   validateVisionRequest,
   parseBearerToken,
   createFirestoreAiDataStore,
+  buildAquariumAiContext,
+  limitAiContext,
+  stringifyAiContext,
   buildUserAquariumContext,
   buildUserDataSummary,
   createRuleBasedAiProvider,
   createOpenAiResponsesProvider,
   createAiRequestHandlers,
 };
+
+

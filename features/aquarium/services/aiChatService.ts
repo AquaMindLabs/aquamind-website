@@ -96,6 +96,10 @@ export type AiChatRequestPayload = {
   question: string;
   tankId?: string | null;
   additionalInfo?: string;
+  mode?: string;
+  locale?: string;
+  userLanguage?: string;
+  appLanguage?: string;
   timeoutMs?: number;
 };
 
@@ -112,12 +116,20 @@ export async function requestAiChat({
   question,
   tankId = null,
   additionalInfo = '',
+  mode = '',
+  locale = '',
+  userLanguage = '',
+  appLanguage = '',
   timeoutMs = DEFAULT_AI_TIMEOUT_MS,
 }: AiChatRequestPayload): Promise<AiChatResponse> {
   const token = toSafeString(idToken, 4096);
   const safeQuestion = sanitizeTextForAi(question, 4000);
   const safeTankId = toSafeString(tankId, 128);
   const safeAdditionalInfo = sanitizeTextForAi(additionalInfo, 4000);
+  const safeMode = toSafeString(mode, 64);
+  const safeLocale = toSafeString(locale, 24);
+  const safeUserLanguage = toSafeString(userLanguage, 24);
+  const safeAppLanguage = toSafeString(appLanguage, 24);
 
   if (!token) {
     throw new AiChatRequestError(
@@ -166,6 +178,10 @@ export async function requestAiChat({
         question: safeQuestion,
         additionalInfo: safeAdditionalInfo,
         tankId: safeTankId || undefined,
+        mode: safeMode || undefined,
+        locale: safeLocale || undefined,
+        userLanguage: safeUserLanguage || undefined,
+        appLanguage: safeAppLanguage || undefined,
       }),
       signal: controller.signal,
     });

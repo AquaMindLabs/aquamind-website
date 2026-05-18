@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Image, Pressable, Text, TextInput, View } from 'react-native';
+import { MaterialIcons } from '@expo/vector-icons';
 import {
   AiChatRequestError,
   requestAiChat,
@@ -88,6 +89,7 @@ type PickedVisionImage = {
 };
 
 const MAX_HISTORY_ITEMS = 8;
+const MAX_DESCRIPTION_LENGTH = 600;
 const QUICK_ACTIONS = Object.freeze([
   {
     id: 'interpret-params',
@@ -167,7 +169,6 @@ export function AiAssistantPanel({
   theme,
 }: AiAssistantPanelProps) {
   const [question, setQuestion] = useState('');
-  const [extraContext, setExtraContext] = useState('');
   const [includeActiveTank, setIncludeActiveTank] = useState(true);
   const [selectedVisionImage, setSelectedVisionImage] = useState<PickedVisionImage | null>(
     null
@@ -202,8 +203,6 @@ export function AiAssistantPanel({
   const activeTankIdForRequest = effectiveIncludeActiveTank ? selectedTankId || null : null;
   const canRetry = Boolean(lastRetryKind) && retryableError && !isLoading;
   const historyItems = useMemo(() => history, [history]);
-  const activeTankLabel = toSafeString(selectedTankName || selectedTankId, 120);
-
   const pushHistoryEntry = useCallback((entry: AiAssistantEntry) => {
     setHistory((previous) => [entry, ...previous].slice(0, MAX_HISTORY_ITEMS));
   }, []);
@@ -262,8 +261,8 @@ export function AiAssistantPanel({
       }
 
       const nextRequest = requestOverride ?? {
-        question: toSafeString(question, 4000),
-        additionalInfo: toSafeString(extraContext, 4000),
+        question: toSafeString(question, MAX_DESCRIPTION_LENGTH),
+        additionalInfo: '',
         tankId: activeTankIdForRequest,
       };
       if (!aiConsentDataProcessing) {
@@ -365,7 +364,6 @@ export function AiAssistantPanel({
       activeTankIdForRequest,
       aiConsentDataProcessing,
       clearErrorState,
-      extraContext,
       hasAiAssistantAccess,
       isLoading,
       pushHistoryEntry,
@@ -447,8 +445,8 @@ export function AiAssistantPanel({
       }
 
       const nextRequest = requestOverride ?? {
-        question: toSafeString(question, 4000),
-        additionalInfo: toSafeString(extraContext, 4000),
+        question: toSafeString(question, MAX_DESCRIPTION_LENGTH),
+        additionalInfo: '',
         tankId: activeTankIdForRequest,
         image,
       };
@@ -545,7 +543,6 @@ export function AiAssistantPanel({
       aiConsentDataProcessing,
       aiConsentImageAnalysis,
       clearErrorState,
-      extraContext,
       hasAiAssistantAccess,
       isLoading,
       pushHistoryEntry,
@@ -565,8 +562,9 @@ export function AiAssistantPanel({
       }
 
       clearErrorState();
-      setQuestion(action.question);
-      setExtraContext(action.additionalInfo);
+      setQuestion(
+        toSafeString(`${action.question}\n${action.additionalInfo}`, MAX_DESCRIPTION_LENGTH)
+      );
     },
     [clearErrorState, isLoading]
   );
@@ -581,6 +579,14 @@ export function AiAssistantPanel({
     }
   }, [lastChatRequest, lastRetryKind, lastVisionRequest, runChatRequest, runVisionRequest]);
 
+  const handleSubmitAssistantRequest = useCallback(() => {
+    if (selectedVisionImage?.uri) {
+      void runVisionRequest();
+      return;
+    }
+    void runChatRequest();
+  }, [runChatRequest, runVisionRequest, selectedVisionImage?.uri]);
+
   return (
     <View
       style={{
@@ -591,15 +597,34 @@ export function AiAssistantPanel({
         marginBottom: 18,
         backgroundColor: theme.themeCardBg,
       }}>
-      <Text
-        style={{
-          color: theme.themeTextPrimary,
-          fontWeight: '700',
-          fontSize: 16,
-          marginBottom: 8,
-        }}>
-        Asystent AI Pro
-      </Text>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <Text
+          style={{
+            color: theme.themeTextPrimary,
+            fontWeight: '700',
+            fontSize: 16,
+          }}>
+          Asystent AI
+        </Text>
+        <View
+          style={{
+            borderWidth: 1,
+            borderColor: '#c7a24a',
+            borderRadius: 999,
+            paddingVertical: 3,
+            paddingHorizontal: 8,
+            backgroundColor: theme.isLightTheme ? '#fff4cf' : '#3a2e13',
+          }}>
+          <Text
+            style={{
+              color: theme.isLightTheme ? '#7a5b17' : '#f5dd96',
+              fontSize: 10,
+              fontWeight: '700',
+            }}>
+            PRO
+          </Text>
+        </View>
+      </View>
       <Text style={{ color: theme.themeTextSecondary, fontSize: 12, marginBottom: 10 }}>
         Doradca premium, ktory analizuje dane konkretnego akwarium: parametry, obsade, sprzet,
         onboarding i zdjęcia.
@@ -678,27 +703,6 @@ export function AiAssistantPanel({
               marginBottom: 8,
             }}>
             <Text style={{ color: theme.themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
-              Kontekst AI
-            </Text>
-            <Text style={{ color: theme.themeTextSecondary, fontSize: 12, marginTop: 5 }}>
-              {effectiveIncludeActiveTank
-                ? activeTankLabel
-                  ? `Analiza dla aktywnego akwarium: ${activeTankLabel}`
-                  : 'Brak aktywnego akwarium. AI użyje danych ze wszystkich zbiornikow.'
-                : 'AI użyje danych ze wszystkich Twoich akwariów.'}
-            </Text>
-          </View>
-
-          <View
-            style={{
-              borderWidth: 1,
-              borderColor: theme.themeBorder,
-              borderRadius: 8,
-              padding: 10,
-              backgroundColor: theme.themeCardBgAlt,
-              marginBottom: 8,
-            }}>
-            <Text style={{ color: theme.themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
               Szybkie akcje AI
             </Text>
             <Text style={{ color: theme.themeTextSecondary, fontSize: 11, marginTop: 4 }}>
@@ -728,66 +732,8 @@ export function AiAssistantPanel({
             </View>
           </View>
 
-          <View
-            style={{
-              borderWidth: 1,
-              borderColor: theme.themeBorder,
-              borderRadius: 8,
-              padding: 10,
-              backgroundColor: theme.themeCardBgAlt,
-              marginBottom: 8,
-            }}>
-            <Text style={{ color: theme.themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
-              Zgody prywatnosci AI
-            </Text>
-            <Pressable
-              onPress={onToggleAiConsentDataProcessing}
-              style={{
-                marginTop: 8,
-                borderWidth: 1,
-                borderColor: aiConsentDataProcessing ? theme.themeAccent : theme.themeBorderStrong,
-                borderRadius: 8,
-                padding: 8,
-                backgroundColor: aiConsentDataProcessing
-                  ? theme.themeCardBg
-                  : theme.themeCardBgAlt,
-              }}>
-              <Text style={{ color: theme.themeTextPrimary, fontSize: 12 }}>
-                {aiConsentDataProcessing ? 'X ' : ''}
-                Wyrazam zgode na przetwarzanie danych przez AI.
-              </Text>
-            </Pressable>
-            <Pressable
-              onPress={onToggleAiConsentImageAnalysis}
-              style={{
-                marginTop: 8,
-                borderWidth: 1,
-                borderColor: aiConsentImageAnalysis ? theme.themeAccent : theme.themeBorderStrong,
-                borderRadius: 8,
-                padding: 8,
-                backgroundColor: aiConsentImageAnalysis
-                  ? theme.themeCardBg
-                  : theme.themeCardBgAlt,
-              }}>
-              <Text style={{ color: theme.themeTextPrimary, fontSize: 12 }}>
-                {aiConsentImageAnalysis ? 'X ' : ''}
-                Wyrazam zgode na analizę obrazow akwarium przez AI.
-              </Text>
-            </Pressable>
-            <Text style={{ color: theme.themeTextSecondary, fontSize: 11, marginTop: 8 }}>
-              Prywatnosc: przed wysylka maskujemy m.in. email, telefon i linki. Nie wpisuj danych
-              kontaktowych ani innych danych wrazliwych.
-            </Text>
-          </View>
-
           <View style={{ marginTop: 2, marginBottom: 8 }}>
-            <Text style={{ color: theme.themeTextPrimary, fontWeight: '700', fontSize: 13 }}>
-              Zalacz zdjęcie (opcjonalnie)
-            </Text>
-            <Text style={{ color: theme.themeTextSecondary, fontSize: 11, marginTop: 4 }}>
-              Dodaj zdjęcie przed wyslaniem pytania albo przed reczna analiza obrazu.
-            </Text>
-            <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+            <View style={{ flexDirection: 'row', gap: 8 }}>
               <Pressable
                 onPress={() => {
                   void handlePickVisionImage('gallery');
@@ -799,9 +745,15 @@ export function AiAssistantPanel({
                   borderColor: theme.themeBorderStrong,
                   borderRadius: 8,
                   paddingVertical: 9,
+                  paddingHorizontal: 8,
                   backgroundColor: theme.themeCardBgAlt,
                   opacity: isLoading ? 0.7 : 1,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
                 }}>
+                <MaterialIcons name="photo-library" size={16} color={theme.themeTextPrimary} />
                 <Text
                   style={{
                     color: theme.themeTextPrimary,
@@ -823,9 +775,15 @@ export function AiAssistantPanel({
                   borderColor: theme.themeBorderStrong,
                   borderRadius: 8,
                   paddingVertical: 9,
+                  paddingHorizontal: 8,
                   backgroundColor: theme.themeCardBgAlt,
                   opacity: isLoading ? 0.7 : 1,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
                 }}>
+                <MaterialIcons name="photo-camera" size={16} color={theme.themeTextPrimary} />
                 <Text
                   style={{
                     color: theme.themeTextPrimary,
@@ -885,9 +843,10 @@ export function AiAssistantPanel({
           <TextInput
             value={question}
             onChangeText={setQuestion}
-            placeholder="Np. Co poprawic, zeby ustabilizowac NO3?"
+            placeholder="Opisz problem lub pytanie (np. ryby lapia powietrze, NO3 rosnie, glony na szybach)."
             placeholderTextColor={theme.themePlaceholder}
             multiline
+            maxLength={MAX_DESCRIPTION_LENGTH}
             style={{
               borderWidth: 1,
               borderColor: theme.themeInputBorder,
@@ -900,25 +859,15 @@ export function AiAssistantPanel({
               textAlignVertical: 'top',
             }}
           />
-          <TextInput
-            value={extraContext}
-            onChangeText={setExtraContext}
-            placeholder="Dodatkowy kontekst (opcjonalnie), np. podmiany, karmienie, obserwacje."
-            placeholderTextColor={theme.themePlaceholder}
-            multiline
+          <Text
             style={{
-              marginTop: 8,
-              borderWidth: 1,
-              borderColor: theme.themeInputBorder,
-              borderRadius: 8,
-              paddingHorizontal: 10,
-              paddingVertical: 10,
-              backgroundColor: theme.themeInputBg,
-              color: theme.themeInputText,
-              minHeight: 62,
-              textAlignVertical: 'top',
-            }}
-          />
+              marginTop: 6,
+              color: theme.themeTextSecondary,
+              fontSize: 11,
+              textAlign: 'right',
+            }}>
+            {question.length}/{MAX_DESCRIPTION_LENGTH}
+          </Text>
 
           {!forceActiveTankContext ? (
             <Pressable
@@ -947,9 +896,7 @@ export function AiAssistantPanel({
           ) : null}
 
           <Pressable
-            onPress={() => {
-              void runChatRequest();
-            }}
+            onPress={handleSubmitAssistantRequest}
             disabled={isLoading}
             style={{
               marginTop: 10,
@@ -966,35 +913,48 @@ export function AiAssistantPanel({
                   textAlign: 'center',
                   fontWeight: '700',
                 }}>
-                {isLoading ? 'Asystent odpowiada...' : 'Zapytaj asystanta'}
+                {isLoading
+                  ? selectedVisionImage?.uri
+                    ? 'Trwa analiza...'
+                    : 'Asystent odpowiada...'
+                  : selectedVisionImage?.uri
+                    ? 'Zapytaj asystanta (ze zdjeciem)'
+                    : 'Zapytaj asystanta'}
               </Text>
             </Pressable>
 
-          <View style={{ marginTop: 10 }}>
-            <Pressable
-              onPress={() => {
-                void runVisionRequest();
-              }}
-              disabled={isLoading}
-              style={{
-                marginTop: 8,
-                borderWidth: 1,
-                borderColor: theme.themeAccent,
-                borderRadius: 8,
-                paddingVertical: 10,
-                backgroundColor: theme.themeAccent,
-                opacity: isLoading ? 0.7 : 1,
-              }}>
-              <Text
-                style={{
-                  color: theme.themeAccentOnStrong,
-                  textAlign: 'center',
-                  fontWeight: '700',
-                }}>
-                {isLoading ? 'Trwa analiza...' : 'Analizuj zdjęcie'}
-              </Text>
-            </Pressable>
-          </View>
+          <Pressable
+            onPress={onToggleAiConsentDataProcessing}
+            style={{
+              marginTop: 10,
+              borderWidth: 1,
+              borderColor: aiConsentDataProcessing ? theme.themeAccent : theme.themeBorderStrong,
+              borderRadius: 8,
+              padding: 8,
+              backgroundColor: aiConsentDataProcessing
+                ? theme.themeCardBg
+                : theme.themeCardBgAlt,
+            }}>
+            <Text style={{ color: theme.themeTextPrimary, fontSize: 12 }}>
+              [{aiConsentDataProcessing ? 'X' : ' '}] Uzywanie danych akwarium do odpowiedzi AI
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={onToggleAiConsentImageAnalysis}
+            style={{
+              marginTop: 8,
+              borderWidth: 1,
+              borderColor: aiConsentImageAnalysis ? theme.themeAccent : theme.themeBorderStrong,
+              borderRadius: 8,
+              padding: 8,
+              backgroundColor: aiConsentImageAnalysis
+                ? theme.themeCardBg
+                : theme.themeCardBgAlt,
+            }}>
+            <Text style={{ color: theme.themeTextPrimary, fontSize: 12 }}>
+              [{aiConsentImageAnalysis ? 'X' : ' '}] Analiza zdjec przez AI
+            </Text>
+          </Pressable>
 
           {errorMessage ? (
             <View
@@ -1210,3 +1170,5 @@ export function AiAssistantPanel({
     </View>
   );
 }
+
+

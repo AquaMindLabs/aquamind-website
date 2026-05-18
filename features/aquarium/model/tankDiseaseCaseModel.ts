@@ -34,8 +34,26 @@ const ALLOWED_TANK_DISEASE_CASE_FIELDS = new Set([
   'nextReviewAt',
   'closedAt',
   'closedReason',
+  'source',
+  'suspectedAlgae',
+  'locationTags',
+  'appearanceTags',
+  'userDescription',
+  'durationLabel',
+  'imageUrls',
+  'aiSummary',
+  'verificationSteps',
+  'recommendations',
+  'warnings',
+  'resolvedAt',
   'createdAt',
   'updatedAt',
+]);
+
+const NULLABLE_FIELDS_ON_CREATE = new Set([
+  'diseaseId',
+  'closedAt',
+  'resolvedAt',
 ]);
 
 function hasOwnField(entity: unknown, field: string) {
@@ -93,6 +111,59 @@ function normalizeStringList(value: unknown, maxItems: number, maxLen: number) {
     .map((item) => normalizeString(item, maxLen))
     .filter(Boolean)
     .slice(0, maxItems);
+}
+
+function normalizeSource(value: unknown) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  if (['ai', 'user', 'manual'].includes(normalized)) {
+    return normalized;
+  }
+  return normalized.slice(0, 24);
+}
+
+function normalizeConfidenceLabel(value: unknown) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (!normalized) {
+    return 'medium';
+  }
+  if (normalized === 'high' || normalized === 'low') {
+    return normalized;
+  }
+  return 'medium';
+}
+
+function normalizeSuspectedAlgae(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter((item) => item && typeof item === 'object')
+    .slice(0, 10)
+    .map((item) => {
+      const casted = item as Record<string, unknown>;
+      const confidenceValue = Number(casted.confidence);
+      const confidence =
+        Number.isFinite(confidenceValue) && confidenceValue >= 0 && confidenceValue <= 1
+          ? Math.round(confidenceValue * 100) / 100
+          : 0.3;
+      const algaeIdRaw = casted.algaeId;
+      const algaeId =
+        algaeIdRaw === null || algaeIdRaw === undefined
+          ? null
+          : normalizeString(algaeIdRaw, 180);
+      return {
+        algaeId,
+        name: normalizeString(casted.name, 220) ?? 'Niepewny typ glonu',
+        confidence,
+        confidenceLabel: normalizeConfidenceLabel(casted.confidenceLabel),
+        reason: normalizeString(casted.reason, 1000) ?? '',
+      };
+    })
+    .filter((item) => item.name);
 }
 
 function normalizeSchedule(value: unknown) {
@@ -159,6 +230,10 @@ export function normalizeTankDiseaseCaseRuntime(
     ['diseaseSummary', 3000],
     ['caution', 1500],
     ['closedReason', 80],
+    ['source', 24],
+    ['userDescription', 1000],
+    ['durationLabel', 80],
+    ['aiSummary', 3000],
   ].forEach(([field, maxLen]) => {
     if (!hasOwnField(normalized, String(field))) {
       return;
@@ -183,6 +258,35 @@ export function normalizeTankDiseaseCaseRuntime(
   }
   if (hasOwnField(normalized, 'schedule')) {
     normalized.schedule = normalizeSchedule(normalized.schedule);
+  }
+  if (hasOwnField(normalized, 'locationTags')) {
+    normalized.locationTags = normalizeStringList(normalized.locationTags, 16, 60);
+  }
+  if (hasOwnField(normalized, 'appearanceTags')) {
+    normalized.appearanceTags = normalizeStringList(normalized.appearanceTags, 16, 60);
+  }
+  if (hasOwnField(normalized, 'imageUrls')) {
+    normalized.imageUrls = normalizeStringList(normalized.imageUrls, 12, 2000);
+  }
+  if (hasOwnField(normalized, 'verificationSteps')) {
+    normalized.verificationSteps = normalizeStringList(
+      normalized.verificationSteps,
+      12,
+      500
+    );
+  }
+  if (hasOwnField(normalized, 'recommendations')) {
+    normalized.recommendations = normalizeStringList(
+      normalized.recommendations,
+      12,
+      500
+    );
+  }
+  if (hasOwnField(normalized, 'warnings')) {
+    normalized.warnings = normalizeStringList(normalized.warnings, 8, 500);
+  }
+  if (hasOwnField(normalized, 'suspectedAlgae')) {
+    normalized.suspectedAlgae = normalizeSuspectedAlgae(normalized.suspectedAlgae);
   }
 
   return normalized;
@@ -213,6 +317,11 @@ export function validateTankDiseaseCaseRuntime(
   if (
     ![
       'active',
+      'suspected',
+      'observing',
+      'adjusting',
+      'confirmed',
+      'dismissed',
       'resolved',
       'removed',
       'closed',
@@ -222,7 +331,7 @@ export function validateTankDiseaseCaseRuntime(
     issues.push('invalid_status');
   }
 
-  ['startedAt', 'nextReviewAt', 'closedAt', 'createdAt', 'updatedAt'].forEach((field) => {
+  ['startedAt', 'nextReviewAt', 'closedAt', 'resolvedAt', 'createdAt', 'updatedAt'].forEach((field) => {
     if (!hasOwnField(normalized, field)) {
       return;
     }
@@ -250,7 +359,7 @@ export function buildTankDiseaseCaseSanitizationPatchRuntime(
     }
   });
 
-  ['startedAt', 'nextReviewAt', 'closedAt', 'createdAt', 'updatedAt'].forEach((field) => {
+  ['startedAt', 'nextReviewAt', 'closedAt', 'resolvedAt', 'createdAt', 'updatedAt'].forEach((field) => {
     if (!hasOwnField(normalized, field)) {
       return;
     }
@@ -277,7 +386,11 @@ function sanitizeTankDiseaseCaseForWrite(
     if (value === undefined) {
       return;
     }
-    if (value === null && mode === 'create') {
+    if (
+      value === null &&
+      mode === 'create' &&
+      !NULLABLE_FIELDS_ON_CREATE.has(field)
+    ) {
       return;
     }
     sanitized[field] = value;
