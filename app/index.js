@@ -6749,6 +6749,69 @@ function getSanitizedFishCatalogFields(rawFish) {
   };
 }
 
+function getSanitizedPlantCatalogFields(rawPlant) {
+  const commonName = String(
+    rawPlant?.commonName ?? rawPlant?.name ?? ''
+  ).trim();
+  const latinNameRaw = String(rawPlant?.latinName ?? '').trim();
+  const latinName = latinNameRaw || commonName || 'Roslina';
+  const phMinRaw = coerceNumberToRange(
+    rawPlant?.phMin,
+    EXPANDED_PLANT_DEFAULTS.phMin,
+    0,
+    14
+  );
+  const phMaxRaw = coerceNumberToRange(
+    rawPlant?.phMax,
+    EXPANDED_PLANT_DEFAULTS.phMax,
+    0,
+    14
+  );
+  const ghMinRaw = coerceNumberToRange(
+    rawPlant?.ghMin,
+    EXPANDED_PLANT_DEFAULTS.ghMin,
+    0,
+    60
+  );
+  const ghMaxRaw = coerceNumberToRange(
+    rawPlant?.ghMax,
+    EXPANDED_PLANT_DEFAULTS.ghMax,
+    0,
+    60
+  );
+  const tempMinRaw = coerceNumberToRange(
+    rawPlant?.tempMin,
+    EXPANDED_PLANT_DEFAULTS.tempMin,
+    -5,
+    50
+  );
+  const tempMaxRaw = coerceNumberToRange(
+    rawPlant?.tempMax,
+    EXPANDED_PLANT_DEFAULTS.tempMax,
+    -5,
+    50
+  );
+  const minLitersRaw = coerceNumberToRange(
+    rawPlant?.minLiters,
+    EXPANDED_PLANT_DEFAULTS.minLiters,
+    1,
+    20000
+  );
+  const minLiters = Math.max(5, Math.round(minLitersRaw));
+
+  return {
+    commonName: commonName || latinName,
+    latinName,
+    phMin: Math.min(phMinRaw, phMaxRaw),
+    phMax: Math.max(phMinRaw, phMaxRaw),
+    ghMin: Math.min(ghMinRaw, ghMaxRaw),
+    ghMax: Math.max(ghMinRaw, ghMaxRaw),
+    tempMin: Math.min(tempMinRaw, tempMaxRaw),
+    tempMax: Math.max(tempMinRaw, tempMaxRaw),
+    minLiters,
+  };
+}
+
 function buildFishSeedEntry(rawFish, source) {
   const commonNameRaw = String(rawFish.commonName ?? '').trim();
   const latinName = String(rawFish.latinName ?? '').trim();
@@ -16165,7 +16228,11 @@ export default function HomeScreen() {
   };
 
   const handleAddStockItem = async () => {
-    if (!user || !selectedTank?.id || stockBusy) {
+    if (!user || !selectedTank?.id) {
+      return;
+    }
+    if (stockBusy) {
+      alert('Trwa zapisywanie poprzedniej zmiany. Sprobuj ponownie za chwile.');
       return;
     }
 
@@ -16328,25 +16395,33 @@ export default function HomeScreen() {
         }
 
         plantPayloads = selectedPlants.map((selectedPlant) => {
-          const requirements = getPlantLightRequirements(selectedPlant);
-          const requirementsProfile = inferPlantRequirementProfile(selectedPlant);
+          const sanitizedPlant = getSanitizedPlantCatalogFields(selectedPlant);
+          const requirements = getPlantLightRequirements({
+            ...selectedPlant,
+            ...sanitizedPlant,
+          });
+          const requirementsProfile = inferPlantRequirementProfile({
+            ...selectedPlant,
+            ...sanitizedPlant,
+            minLiters: sanitizedPlant.minLiters,
+          });
           return {
             userId: user.uid,
             tankId: selectedTank.id,
             tankName: selectedTank.name,
             type: 'plant',
-            name: selectedPlant.commonName,
-            commonName: selectedPlant.commonName,
-            latinName: selectedPlant.latinName,
+            name: sanitizedPlant.commonName,
+            commonName: sanitizedPlant.commonName,
+            latinName: sanitizedPlant.latinName,
             catalogPlantId: selectedPlant.id,
-            phMin: Number(selectedPlant.phMin),
-            phMax: Number(selectedPlant.phMax),
-            ghMin: Number(selectedPlant.ghMin),
-            ghMax: Number(selectedPlant.ghMax),
-            tempMin: Number(selectedPlant.tempMin),
-            tempMax: Number(selectedPlant.tempMax),
+            phMin: sanitizedPlant.phMin,
+            phMax: sanitizedPlant.phMax,
+            ghMin: sanitizedPlant.ghMin,
+            ghMax: sanitizedPlant.ghMax,
+            tempMin: sanitizedPlant.tempMin,
+            tempMax: sanitizedPlant.tempMax,
             quantity: 1,
-            minLiters: Number(selectedPlant.minLiters),
+            minLiters: sanitizedPlant.minLiters,
             lightLumenMinPerLiter: Number(requirements.minLumensPerLiter),
             lightLumenMaxPerLiter: Number(requirements.maxLumensPerLiter),
             lightHoursMin: Number.isFinite(Number(requirements.minHours))
@@ -16368,7 +16443,7 @@ export default function HomeScreen() {
             minTankHeightCm: requirementsProfile.minTankHeightCm,
             minTankVolumeL: requirementsProfile.minTankVolumeL,
             compatibleWithDiggers: requirementsProfile.compatibleWithDiggers,
-            notes: selectedPlant.notes ?? '',
+            notes: String(selectedPlant.notes ?? '').trim(),
             createdAt: new Date(),
           };
         });
@@ -17293,7 +17368,11 @@ export default function HomeScreen() {
   }, []);
 
   const handleAssignCatalogFishToTank = async (fish, tank) => {
-    if (!user?.uid || !tank?.id || stockBusy) {
+    if (!user?.uid || !tank?.id) {
+      return;
+    }
+    if (stockBusy) {
+      alert('Trwa zapisywanie poprzedniej zmiany. Sprobuj ponownie za chwile.');
       return;
     }
 
@@ -17355,7 +17434,7 @@ export default function HomeScreen() {
         name: sanitizedFish.commonName,
         commonName: sanitizedFish.commonName,
         latinName: sanitizedFish.latinName,
-        catalogFishId: selectedFish.id,
+        catalogFishId: getFishCatalogEntryId(selectedFish),
         phMin: sanitizedFish.phMin,
         phMax: sanitizedFish.phMax,
         ghMin: sanitizedFish.ghMin,
@@ -17562,7 +17641,11 @@ export default function HomeScreen() {
   };
 
   const handleAssignCatalogPlantToTank = async (plant, tank) => {
-    if (!user?.uid || !tank?.id || stockBusy) {
+    if (!user?.uid || !tank?.id) {
+      return;
+    }
+    if (stockBusy) {
+      alert('Trwa zapisywanie poprzedniej zmiany. Sprobuj ponownie za chwile.');
       return;
     }
 
@@ -17574,9 +17657,17 @@ export default function HomeScreen() {
         throw new Error('Wybrana roslina nie istnieje w katalogu.');
       }
 
-      const minLiters = Number(selectedPlant.minLiters);
-      const lightRequirements = getPlantLightRequirements(selectedPlant);
-      const requirementsProfile = inferPlantRequirementProfile(selectedPlant);
+      const sanitizedPlant = getSanitizedPlantCatalogFields(selectedPlant);
+      const minLiters = sanitizedPlant.minLiters;
+      const lightRequirements = getPlantLightRequirements({
+        ...selectedPlant,
+        ...sanitizedPlant,
+      });
+      const requirementsProfile = inferPlantRequirementProfile({
+        ...selectedPlant,
+        ...sanitizedPlant,
+        minLiters,
+      });
 
       const plantPayload = buildStockItemWritePayload(
         {
@@ -17584,16 +17675,16 @@ export default function HomeScreen() {
           tankId: tank.id,
           tankName: tank.name,
           type: 'plant',
-          name: selectedPlant.commonName,
-          commonName: selectedPlant.commonName,
-          latinName: selectedPlant.latinName,
+          name: sanitizedPlant.commonName,
+          commonName: sanitizedPlant.commonName,
+          latinName: sanitizedPlant.latinName,
           catalogPlantId: selectedPlant.id,
-          phMin: Number(selectedPlant.phMin),
-          phMax: Number(selectedPlant.phMax),
-          ghMin: Number(selectedPlant.ghMin),
-          ghMax: Number(selectedPlant.ghMax),
-          tempMin: Number(selectedPlant.tempMin),
-          tempMax: Number(selectedPlant.tempMax),
+          phMin: sanitizedPlant.phMin,
+          phMax: sanitizedPlant.phMax,
+          ghMin: sanitizedPlant.ghMin,
+          ghMax: sanitizedPlant.ghMax,
+          tempMin: sanitizedPlant.tempMin,
+          tempMax: sanitizedPlant.tempMax,
           quantity: 1,
           minLiters,
           lightLumenMinPerLiter: Number(lightRequirements.minLumensPerLiter),
@@ -17617,7 +17708,7 @@ export default function HomeScreen() {
           minTankHeightCm: requirementsProfile.minTankHeightCm,
           minTankVolumeL: requirementsProfile.minTankVolumeL,
           compatibleWithDiggers: requirementsProfile.compatibleWithDiggers,
-          notes: selectedPlant.notes ?? '',
+          notes: String(selectedPlant.notes ?? '').trim(),
           createdAt: new Date(),
         },
         {

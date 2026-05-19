@@ -364,11 +364,7 @@ function resolveStatusFromEntitlement(
 
 export function isBillingEnabledForCurrentPlatform(): boolean {
   const apiKey = getRevenueCatApiKeyForPlatform();
-  return (
-    Boolean(apiKey) &&
-    Boolean(getPurchasesModule()) &&
-    (Platform.OS === 'ios' || Platform.OS === 'android')
-  );
+  return Boolean(apiKey) && (Platform.OS === 'ios' || Platform.OS === 'android');
 }
 
 export function mapBillingErrorToUserMessage(
