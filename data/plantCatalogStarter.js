@@ -21,7 +21,7 @@ const RAW_PLANT_CATALOG_STARTER = [
     tempMin: 20,
     tempMax: 28,
     minLiters: 30,
-    notes: 'Latwa roslina na korzenie i kamienie, nie zakopuj kłącza.',
+    notes: 'Latwa roślina na korzenie i kamienie, nie zakopuj kłącza.',
   },
   {
     commonName: 'Kryptokoryna Wendta',
@@ -45,7 +45,7 @@ const RAW_PLANT_CATALOG_STARTER = [
     tempMin: 20,
     tempMax: 28,
     minLiters: 60,
-    notes: 'Latwa roslina tla, dobrze znosi start akwarium.',
+    notes: 'Latwa roślina tla, dobrze znosi start akwarium.',
   },
   {
     commonName: 'Moczarka argentynska',
@@ -57,7 +57,7 @@ const RAW_PLANT_CATALOG_STARTER = [
     tempMin: 18,
     tempMax: 26,
     minLiters: 30,
-    notes: 'Szybko rosnaca roslina dobra na start i do stabilizacji zbiornika.',
+    notes: 'Szybko rosnaca roślina dobra na start i do stabilizacji zbiornika.',
   },
   {
     commonName: 'Rogatek sztywny',
@@ -69,7 +69,7 @@ const RAW_PLANT_CATALOG_STARTER = [
     tempMin: 18,
     tempMax: 28,
     minLiters: 20,
-    notes: 'Bardzo latwa roslina szybkorosnaca, moze plywac lub byc dociazona.',
+    notes: 'Bardzo latwa roślina szybkorosnaca, moze plywac lub byc dociazona.',
   },
   {
     commonName: 'Hygrophila polysperma',
@@ -81,7 +81,7 @@ const RAW_PLANT_CATALOG_STARTER = [
     tempMin: 22,
     tempMax: 28,
     minLiters: 30,
-    notes: 'Szybko rosnaca lodygowa roslina dobra dla poczatkujacych.',
+    notes: 'Szybko rosnaca lodygowa roślina dobra dla poczatkujacych.',
   },
   {
     commonName: 'Ludwigia repens',
@@ -93,7 +93,7 @@ const RAW_PLANT_CATALOG_STARTER = [
     tempMin: 22,
     tempMax: 28,
     minLiters: 40,
-    notes: 'Latwa lodygowa roslina z czerwienszymi akcentami przy lepszym swietle.',
+    notes: 'Latwa lodygowa roślina z czerwienszymi akcentami przy lepszym swietle.',
   },
   {
     commonName: 'Bolbitis heudelotii',
@@ -129,7 +129,7 @@ const RAW_PLANT_CATALOG_STARTER = [
     tempMin: 22,
     tempMax: 28,
     minLiters: 40,
-    notes: 'Popularna lodygowa roslina szybkorosnaca.',
+    notes: 'Popularna lodygowa roślina szybkorosnaca.',
   },
   {
     commonName: 'Bacopa caroliniana',
@@ -141,7 +141,7 @@ const RAW_PLANT_CATALOG_STARTER = [
     tempMin: 20,
     tempMax: 28,
     minLiters: 30,
-    notes: 'Wytrzymala roslina lodygowa o grubych lisciach.',
+    notes: 'Wytrzymala roślina lodygowa o grubych lisciach.',
   },
   {
     commonName: 'Kabomba karolinska',
@@ -153,7 +153,7 @@ const RAW_PLANT_CATALOG_STARTER = [
     tempMin: 22,
     tempMax: 28,
     minLiters: 40,
-    notes: 'Delikatniejsza lodygowa roslina tla, lubi czysta wode.',
+    notes: 'Delikatniejsza lodygowa roślina tla, lubi czysta wode.',
   },
   {
     commonName: 'Pogostemon stellatus',
@@ -165,7 +165,7 @@ const RAW_PLANT_CATALOG_STARTER = [
     tempMin: 22,
     tempMax: 28,
     minLiters: 50,
-    notes: 'Efektowna lodygowa roslina tla, lepiej rosnie przy dobrym swietle.',
+    notes: 'Efektowna lodygowa roślina tla, lepiej rosnie przy dobrym swietle.',
   },
   {
     commonName: 'Monte Carlo',
@@ -177,7 +177,7 @@ const RAW_PLANT_CATALOG_STARTER = [
     tempMin: 20,
     tempMax: 28,
     minLiters: 30,
-    notes: 'Popularna roslina trawnikowa na przod akwarium.',
+    notes: 'Popularna roślina trawnikowa na przod akwarium.',
   },
   {
     commonName: 'Glossostigma',
@@ -189,7 +189,7 @@ const RAW_PLANT_CATALOG_STARTER = [
     tempMin: 20,
     tempMax: 28,
     minLiters: 30,
-    notes: 'Roslina trawnikowa wymagajaca lepszego swiatla.',
+    notes: 'Roślina trawnikowa wymagajaca lepszego światła.',
   },
   {
     commonName: 'Eleocharis mini',
@@ -213,7 +213,7 @@ const RAW_PLANT_CATALOG_STARTER = [
     tempMin: 20,
     tempMax: 28,
     minLiters: 25,
-    notes: 'Latwiejsza roslina na niski pierwszy plan.',
+    notes: 'Latwiejsza roślina na niski pierwszy plan.',
   },
   {
     commonName: 'Sagittaria subulata',
@@ -225,7 +225,7 @@ const RAW_PLANT_CATALOG_STARTER = [
     tempMin: 20,
     tempMax: 28,
     minLiters: 30,
-    notes: 'Latwa roslina na pierwszy plan lub srodek zbiornika.',
+    notes: 'Latwa roślina na pierwszy plan lub srodek zbiornika.',
   },
   {
     commonName: 'Mech jawajski',
@@ -285,7 +285,7 @@ const RAW_PLANT_CATALOG_STARTER = [
     tempMin: 22,
     tempMax: 30,
     minLiters: 30,
-    notes: 'Roslina plywajaca zapewniajaca cien i pobierajaca azotany.',
+    notes: 'Roślina plywajaca zapewniajaca cien i pobierajaca azotany.',
   },
   {
     commonName: 'Salwinia',
@@ -297,7 +297,7 @@ const RAW_PLANT_CATALOG_STARTER = [
     tempMin: 20,
     tempMax: 28,
     minLiters: 20,
-    notes: 'Lekka roslina plywajaca dobra do przyciemnienia tafli.',
+    notes: 'Lekka roślina plywajaca dobra do przyciemnienia tafli.',
   },
   {
     commonName: 'Limnobium',
@@ -309,7 +309,7 @@ const RAW_PLANT_CATALOG_STARTER = [
     tempMin: 20,
     tempMax: 28,
     minLiters: 20,
-    notes: 'Popularna roslina plywajaca z dluzszymi korzeniami.',
+    notes: 'Popularna roślina plywajaca z dluzszymi korzeniami.',
   },
   {
     commonName: 'Rzesa wodna',
@@ -321,7 +321,7 @@ const RAW_PLANT_CATALOG_STARTER = [
     tempMin: 18,
     tempMax: 28,
     minLiters: 20,
-    notes: 'Drobna roslina plywajaca, szybko sie mnozy.',
+    notes: 'Drobna roślina plywajaca, szybko sie mnozy.',
   },
 ];
 

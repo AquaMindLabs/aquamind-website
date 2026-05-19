@@ -226,7 +226,7 @@ export function generateAdaptiveTaskSchedule(tank, context = {}) {
     key: 'prefilter-rinse',
     title: 'Plukanie prefiltra',
     details:
-      'Przepływ i natlenienie zaleza od droznosci prefiltra. P?ucz czesciej przy duzej obsadzie.',
+      'Przepływ i natlenienie zależą od drożności prefiltra. Płucz częściej przy dużej obsadzie.',
     baseIntervalDays: fishCount >= 20 ? 4 : fishCount >= 10 ? 7 : 10,
     intervalModifierDays: riskLevel === 'critical' ? -2 : 0,
     riskBoost: 4,
@@ -1031,7 +1031,7 @@ const ONBOARDING_STEP_LIBRARY = {
       id: 'restart-day3',
       title: 'Okres największego ryzyka',
       description:
-        'To moment, gdy po restarcie najczesciej ujawniaja sie problemy z biologia.',
+        'To moment, gdy po restarcie najczęściej ujawniaja sie problemy z biologia.',
       startType: 'restart',
       earliestDay: 3,
       recommendedDay: 3,
@@ -1243,7 +1243,7 @@ const ONBOARDING_GUIDE_BY_START_TYPE = {
       'Utrzymaj media biologiczne stale mokre.',
       'W pierwszych dniach karm oszczednie.',
       'Nie dodawaj nowych ryb do czasu stabilnego NO2.',
-      'Kontroluj NO2 czesciej niż w stabilnym zbiorniku.',
+      'Kontroluj NO2 częściej niż w stabilnym zbiorniku.',
     ],
     firstMeasurements: [
       'Dzień 1: NO2, NO3, temperatura, pH/KH.',

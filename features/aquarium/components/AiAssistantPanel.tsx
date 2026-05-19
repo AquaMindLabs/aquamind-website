@@ -101,9 +101,9 @@ const QUICK_ACTIONS = Object.freeze([
   },
   {
     id: 'what-now',
-    label: 'Co zróbic teraz?',
+    label: 'Co zrobić teraz?',
     question:
-      'Co powinienem zróbic teraz w tym akwarium? Ustal priorytety na dzisiaj.',
+      'Co powinienem zrobić teraz w tym akwarium? Ustal priorytety na dzisiaj.',
     additionalInfo: 'Daj krótki plan krok po kroku.',
     mode: 'chat',
   },
@@ -111,7 +111,7 @@ const QUICK_ACTIONS = Object.freeze([
     id: 'check-stocking',
     label: 'Sprawdz obsade',
     question:
-      'Ocen obsade mojego akwarium i wskaz największe ryzyka dla ryb.',
+      'Oceń obsadę mojego akwarium i wskaż największe ryzyka dla ryb.',
     additionalInfo: 'Podaj, co poprawic najpierw i dlaczego.',
     mode: 'chat',
   },
@@ -127,8 +127,8 @@ const QUICK_ACTIONS = Object.freeze([
     id: 'help-algae',
     label: 'Pomoz z glonami',
     question:
-      'Mam problem z glonami. Ocen dane i zaproponuj plan ograniczania glonow.',
-    additionalInfo: 'Uwzglednij światło, NO3/PO4 i obciążenie biologiczne.',
+      'Mam problem z glonami. Oceń dane i zaproponuj plan ograniczania glonów.',
+    additionalInfo: 'Uwzględnij światło, NO3/PO4 i obciążenie biologiczne.',
     mode: 'chat',
   },
   {
@@ -243,10 +243,10 @@ export function AiAssistantPanel({
       hints.push('Dodaj pomiar: pH, NO2, NO3 i temperatura.');
     }
     if (!Number.isFinite(stockCount) || stockCount <= 0) {
-      hints.push('Uzupelnij obsade (ryby/rosliny), aby AI moglo ocenic zgodnosc.');
+      hints.push('Uzupełnij obsadę (ryby/rośliny), aby AI mogło ocenić zgodność.');
     }
     if (!Number.isFinite(equipmentTotal) || equipmentTotal <= 0) {
-      hints.push('Uzupelnij sprzet (filtr, grzalka, oświetlenie) dla trafniejszych zaleceń.');
+      hints.push('Uzupełnij sprzęt (filtr, grzałka, oświetlenie) dla trafniejszych zaleceń.');
     }
     return hints;
   }, []);
@@ -626,7 +626,7 @@ export function AiAssistantPanel({
         </View>
       </View>
       <Text style={{ color: theme.themeTextSecondary, fontSize: 12, marginBottom: 10 }}>
-        Doradca premium, ktory analizuje dane konkretnego akwarium: parametry, obsade, sprzet,
+        Doradca premium, który analizuje dane konkretnego akwarium: parametry, obsade, sprzęt,
         onboarding i zdjęcia.
       </Text>
 
@@ -649,7 +649,7 @@ export function AiAssistantPanel({
             - interpretacji parametrów i priorytetow działań,
           </Text>
           <Text style={{ color: theme.themeTextSecondary, fontSize: 12, marginTop: 2 }}>
-            - diagnozie problemów (ryby/rosliny/glony),
+            - diagnozie problemów (ryby/rośliny/glony),
           </Text>
           <Text style={{ color: theme.themeTextSecondary, fontSize: 12, marginTop: 2 }}>
             - analizie zdjęć + planie krok po kroku.
@@ -833,7 +833,7 @@ export function AiAssistantPanel({
                       fontWeight: '700',
                       fontSize: 12,
                     }}>
-                    Usun zdjęcie
+                    Usuń zdjęcie
                   </Text>
                 </Pressable>
               </View>
@@ -918,7 +918,7 @@ export function AiAssistantPanel({
                     ? 'Trwa analiza...'
                     : 'Asystent odpowiada...'
                   : selectedVisionImage?.uri
-                    ? 'Zapytaj asystanta (ze zdjeciem)'
+                    ? 'Zapytaj asystanta (ze zdjęciem)'
                     : 'Zapytaj asystanta'}
               </Text>
             </Pressable>
@@ -1042,7 +1042,7 @@ export function AiAssistantPanel({
         </Text>
         {historyItems.length === 0 ? (
           <Text style={{ color: theme.themeTextSecondary, fontSize: 12 }}>
-            Brak wpisow. U?yj szybkiej akcji albo zadaj pytanie dla aktywnego akwarium.
+            Brak wpisów. Użyj szybkiej akcji albo zadaj pytanie dla aktywnego akwarium.
           </Text>
         ) : (
           historyItems.map((entry) => (

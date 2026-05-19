@@ -5,7 +5,7 @@ export const ALGAE_SYMPTOMS = [
   { id: 'short_brush_dark', label: 'Ciemne kepki/wloski na krawedziach lisci' },
   { id: 'slime_blue_green', label: 'Sliski nalot niebiesko-zielony' },
   { id: 'brown_diatom_dust', label: 'Brazowy pyl na dekoracjach i lisciach' },
-  { id: 'plants_stunted', label: 'Rosliny slabo rosna / zatrzymany wzrost' },
+  { id: 'plants_stunted', label: 'Rośliny slabo rosna / zatrzymany wzrost' },
   { id: 'foul_smell', label: 'Nieprzyjemny zapach po poruszeniu nalotu' },
   { id: 'after_light_change', label: 'Wysyp po zmianie oswietlenia' },
   { id: 'after_overfeeding', label: 'Wysyp po przekarmianiu / wzroscie NO3/PO4' },
@@ -55,24 +55,24 @@ const RAW_ALGAE_CATALOG = [
     imageSourceLabel: 'Aquarium Co-Op',
     severity: 'medium',
     summary:
-      'Cienki zielony pyl na szybach i lisciach. Czesto zwiazany z niestabilnym swiatlem i mlodym zbiornikiem.',
+      'Cienki zielony pyl na szybach i lisciach. Czesto zwiazany z niestabilnym światłem i mlodym zbiornikiem.',
     symptoms: ['green_dust_glass', 'after_light_change', 'plants_stunted'],
     suggestedRemedy: 'Easy-Life AlgExit',
     causes: [
-      'Niestabilny czas swiecenia lampy lub nagle zwiekszenie mocy swiatla.',
-      'Niewyrownany wzrost roslin i okres dojrzewania zbiornika.',
+      'Niestabilny czas swiecenia lampy lub nagle zwiekszenie mocy światła.',
+      'Niewyrownany wzrost roślin i okres dojrzewania zbiornika.',
       'Zbyt rzadkie podmiany przy rosnacej materii organicznej.',
     ],
     removeActions: [
-      'Mechanicznie usun nalot z szyb podczas podmiany.',
+      'Mechanicznie usuń nalot z szyb podczas podmiany.',
       'Utrzymuj staly czas swiecenia lampy przez 7-10 dni.',
       'Pilnuj stabilnej temperatury (najczesciej 24-26 C) i unikaj przegrzewania > 27-28 C.',
       'Przy trudnych nawrotach rozwaz lagodne wsparcie: Easy-Life AlgExit (wg etykiety).',
       'Wykonuj regularne podmiany i odmulanie stref z osadem.',
     ],
     preventionActions: [
-      'Nie zwiekszaj mocy swiatla skokowo.',
-      'Wspieraj szybki wzrost roslin (makro/mikro, CO2 jesli stosowane).',
+      'Nie zwiekszaj mocy światła skokowo.',
+      'Wspieraj szybki wzrost roślin (makro/mikro, CO2 jesli stosowane).',
       'Utrzymuj stabilna rutyne podmian (np. 25-35% tygodniowo).',
     ],
     caution:
@@ -92,11 +92,11 @@ const RAW_ALGAE_CATALOG = [
     symptoms: ['green_spot_hard', 'plants_stunted', 'after_light_change'],
     suggestedRemedy: 'Easy-Life AlgExit',
     causes: [
-      'Dlugie swiecenie przy niedoborach roslin (np. fosfor).',
-      'Nierownowaga nawozenia i wolny wzrost roslin.',
+      'Dlugie swiecenie przy niedoborach roślin (np. fosfor).',
+      'Nierownowaga nawozenia i wolny wzrost roślin.',
     ],
     removeActions: [
-      'Usun mechanicznie z szyb skrobakiem/zyletka akwarystyczna.',
+      'Usuń mechanicznie z szyb skrobakiem/zyletka akwarystyczna.',
       'Przytnij mocno porazone starsze liscie.',
       'Skroc czas swiecenia lampy do 6-8h na czas stabilizacji.',
       'Utrzymuj stabilna temperature i nie dopuszczaj do dlugotrwalego przegrzewania zbiornika.',
@@ -105,7 +105,7 @@ const RAW_ALGAE_CATALOG = [
     preventionActions: [
       'Utrzymuj rownowage nawozenia i regularne podmiany.',
       'Pilnuj stalego czasu swiecenia, bez skokow.',
-      'Wzmacniaj mase roslinna, by konkurencja byla silniejsza.',
+      'Wzmacniaj mase roślinna, by konkurencja byla silniejsza.',
     ],
     caution:
       'Nagly blackout bez poprawy przyczyn czesto daje szybki nawrot.',
@@ -120,23 +120,23 @@ const RAW_ALGAE_CATALOG = [
     imageSourceLabel: 'Aquarium Co-Op',
     severity: 'high',
     summary:
-      'Dlugie zielone nitki oplatajace roslinki i dekoracje. Szybko sie rozrastaja.',
+      'Dlugie zielone nitki oplatajace roślinki i dekoracje. Szybko sie rozrastaja.',
     symptoms: ['green_hair_long', 'after_light_change', 'after_overfeeding'],
     suggestedRemedy: 'Easy-Life AlgExit',
     causes: [
-      'Nadmiar swiatla wzgledem kondycji roslin.',
+      'Nadmiar światła wzgledem kondycji roślin.',
       'Nadmiar materii organicznej i przekarmianie.',
       'Niestabilny CO2 (w zbiornikach z CO2).',
     ],
     removeActions: [
       'Recznie wyciagaj nitki przy kazdej podmianie.',
-      'Usun najbardziej porazone fragmenty roslin.',
+      'Usuń najbardziej porazone fragmenty roślin.',
       'Skroc oswietlenie do 6-7h na 2-3 tygodnie i utrzymuj stala temperature.',
       'Ogranicz karmienie na kilka dni i odmul dno.',
       'Jako wsparcie chemiczne mozesz rozwazyc Easy-Life AlgExit lub ostrozne punktowe dawkowanie plynnego wegla (wg etykiety).',
     ],
     preventionActions: [
-      'Ustabilizuj swiatlo i parametry odzywcze dla roslin.',
+      'Ustabilizuj światło i parametry odzywcze dla roślin.',
       'Dbaj o regularna filtracje i czyszczenie prefiltra.',
       'Wroc do umiarkowanego karmienia i obserwuj trend NO3.',
     ],
@@ -158,7 +158,7 @@ const RAW_ALGAE_CATALOG = [
     suggestedRemedy: 'Easy-Life EasyCarbo (punktowo)',
     causes: [
       'Niestabilny poziom CO2 lub slaby przeplyw.',
-      'Wahania swiatla i osadu organicznego.',
+      'Wahania światła i osadu organicznego.',
       'Przeciaganie serwisu i zabrudzona filtracja.',
     ],
     removeActions: [
@@ -174,7 +174,7 @@ const RAW_ALGAE_CATALOG = [
       'Unikaj skokow oswietlenia.',
     ],
     caution:
-      'Zbyt agresywne dawkowanie preparatow moze uszkodzic ryby/rosliny.',
+      'Zbyt agresywne dawkowanie preparatow moze uszkodzic ryby/rośliny.',
   },
   {
     id: 'cyanobacteria',
@@ -186,13 +186,13 @@ const RAW_ALGAE_CATALOG = [
     imageSourceLabel: 'Aquarium Co-Op',
     severity: 'high',
     summary:
-      'Sliski nalot o intensywnym zapachu, szybko pokrywa podloze i rosliny.',
+      'Sliski nalot o intensywnym zapachu, szybko pokrywa podłoże i rośliny.',
     symptoms: ['slime_blue_green', 'foul_smell', 'plants_stunted'],
     suggestedRemedy: 'Easy-Life Blue Exit',
     causes: [
       'Martwe strefy przeplywu i nagromadzona materia organiczna.',
       'Niestabilnosc biologii zbiornika.',
-      'Zbyt dlugi czas swiecenia lampy przy slabej konkurencji roslin.',
+      'Zbyt dlugi czas swiecenia lampy przy slabej konkurencji roślin.',
     ],
     removeActions: [
       'Natychmiast odsysaj nalot podczas podmian.',
@@ -204,7 +204,7 @@ const RAW_ALGAE_CATALOG = [
     preventionActions: [
       'Utrzymuj czyste dno i regularny harmonogram podmian.',
       'Pilnuj umiarkowanego karmienia i dobrej cyrkulacji.',
-      'Wzmacniaj wzrost roslin, by ograniczyc puste nisze.',
+      'Wzmacniaj wzrost roślin, by ograniczyc puste nisze.',
     ],
     caution:
       'Przy duzym wysypie reaguj szybko. Rozklad nalotu moze pogarszac tlen w wodzie.',
@@ -235,7 +235,7 @@ const RAW_ALGAE_CATALOG = [
     ],
     preventionActions: [
       'Utrzymuj cierpliwie stabilny serwis akwarium.',
-      'Stopniowo wzmacniaj kondycje roslin.',
+      'Stopniowo wzmacniaj kondycje roślin.',
       'Nie przekarmiaj i nie przeciagaj podmian.',
     ],
     caution:

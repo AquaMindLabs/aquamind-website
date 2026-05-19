@@ -61,16 +61,16 @@ const RAW_PLANT_DISEASE_CATALOG = [
     treatment: [
       'Zwieksz podaz potasu stopniowo przez 2-3 tygodnie.',
       'Przyklad nawozow K: Aqua Art Potassium, Easy-Life Kalium Potassium lub Tropica Premium (dawkowanie wg etykiety).',
-      'Usun mocno uszkodzone liscie, aby roslina skupila sie na nowych przyrostach.',
+      'Usuń mocno uszkodzone liscie, aby roślina skupila sie na nowych przyrostach.',
       'Utrzymuj regularne podmiany 20-30% raz w tygodniu.',
-      'Kontroluj rownowage NO3/PO4, aby rosliny mogly wykorzystac nawozenie.',
+      'Kontroluj rownowage NO3/PO4, aby rośliny mogly wykorzystac nawozenie.',
     ],
     caution:
       'Nie podnos dawek skokowo. Lepsza jest stabilna, umiarkowana korekta.',
   },
   {
     id: 'iron_deficiency',
-    name: 'Niedobor zelaza (Fe)',
+    name: 'Niedobór żelaza (Fe)',
     imageFileName:
       'https://cdn.shopify.com/s/files/1/0311/3149/files/Leaf_2_-_iron_deficiency_-_ivory_480x480.jpg?v=1715985092',
     imageFallbackFileName:
@@ -82,7 +82,7 @@ const RAW_PLANT_DISEASE_CATALOG = [
     symptoms: ['yellowing_new_leaves', 'transparent_leaves', 'stunted_growth'],
     suggestedRemedy: 'Seachem Flourish Iron',
     treatment: [
-      'Wlacz regularne mikroelementy z Fe w malych dawkach dziennych.',
+      'Włącz regularne mikroelementy z Fe w malych dawkach dziennych.',
       'Przyklad nawozow mikro/Fe: Seachem Flourish Iron, Aqua Art Ferro+ lub Tropica Specialized (wg etykiety).',
       'Skroc czas swiecenia lampy do 6-8h na czas stabilizacji wzrostu.',
       'Sprawdz cyrkulacje, aby nawozy docieraly do calego zbiornika.',
@@ -105,7 +105,7 @@ const RAW_PLANT_DISEASE_CATALOG = [
     symptoms: ['twisted_new_growth', 'yellowing_new_leaves', 'stunted_growth'],
     suggestedRemedy: 'Seachem Equilibrium',
     treatment: [
-      'Skoryguj GH do stabilnego poziomu odpowiedniego dla obsady i roslin.',
+      'Skoryguj GH do stabilnego poziomu odpowiedniego dla obsady i roślin.',
       'Przyklad preparatow Ca/Mg: Equilibrium (Seachem), SaltyShrimp GH+ lub Aqua Art GH Mineral (wg etykiety).',
       'Wprowadz suplementacje Ca/Mg stopniowo przez kilka podmian.',
       'Unikaj naglych zmian mineralizacji przy kolejnych podmianach.',
@@ -123,18 +123,18 @@ const RAW_PLANT_DISEASE_CATALOG = [
     imageSourceLabel: 'Aquarium Co-Op / 2Hr Aquarist',
     severity: 'high',
     summary:
-      'Wahania CO2 i pH moga prowadzic do czernienia lisci, zahamowania wzrostu i glonow.',
+      'Wahania CO2 i pH moga prowadzic do czernienia lisci, zahamowania wzrostu i glonów.',
     symptoms: ['black_leaf_edges', 'stunted_growth', 'leaf_drop'],
     suggestedRemedy: 'Easy-Life EasyCarbo (wsparcie)',
     treatment: [
-      'Ustabilizuj dozowanie CO2 i czas wlaczania przed swiatlem.',
+      'Ustabilizuj dozowanie CO2 i czas włączania przed światłem.',
       'Pomocniczo mozesz rozwazyc plynny wegiel (np. Easy-Life EasyCarbo lub Seachem Flourish Excel) jako wsparcie, nie zamiennik stabilnego CO2.',
       'Utrzymuj KH na poziomie stabilizujacym pH (zwykle > 4).',
       'Ogranicz zmiany oswietlenia do maksymalnie jednego parametru na tydzien.',
       'Wykonaj test pH i KH po podmianie oraz kolejnego dnia.',
     ],
     caution:
-      'Przy niestabilnym CO2 nie zwiekszaj mocy swiatla. To zwykle pogarsza sytuacje.',
+      'Przy niestabilnym CO2 nie zwiekszaj mocy światła. To zwykle pogarsza sytuacje.',
   },
   {
     id: 'transplant_melt',
@@ -146,11 +146,11 @@ const RAW_PLANT_DISEASE_CATALOG = [
     imageSourceLabel: 'Aquarium Co-Op',
     severity: 'low',
     summary:
-      'Po zmianie warunkow rosliny moga tracic stare liscie zanim wypuszcza przyrost podwodny.',
+      'Po zmianie warunkow rośliny moga tracic stare liscie zanim wypuszcza przyrost podwodny.',
     symptoms: ['melt_after_planting', 'transparent_leaves', 'leaf_drop'],
     suggestedRemedy: 'Tropica Specialized',
     treatment: [
-      'Usun tylko obumierajace liscie i pozostaw zdrowe korzenie.',
+      'Usuń tylko obumierajace liscie i pozostaw zdrowe korzenie.',
       'Po restarcie wzrostu podawaj lagodne mikro/makro: np. Tropica Premium/Specialized albo Aqua Art Planta Gainer (wg etykiety).',
       'Nie przesadzaj ponownie przez minimum 2 tygodnie.',
       'Utrzymuj staly czas swiecenia lampy i spokojny serwis akwarium.',
@@ -175,7 +175,7 @@ const RAW_PLANT_DISEASE_CATALOG = [
     treatment: [
       'Stopniowo podnies PO4 do stabilnego poziomu roboczego.',
       'Przyklad nawozow PO4: Seachem Phosphorus, Aqua Art Fosfo lub Easy-Life Fosfo (wg etykiety).',
-      'Zwieksz mase roslinna i regularnosc podmian.',
+      'Zwieksz mase roślinna i regularnosc podmian.',
       'Pilnuj stalego karmienia bez przekarmiania i skokow obciazenia biologicznego.',
     ],
     caution:
@@ -191,7 +191,7 @@ const RAW_PLANT_DISEASE_CATALOG = [
     imageSourceLabel: 'Aquarium Co-Op',
     severity: 'medium',
     summary:
-      'Najczesciej zaczyna sie od zolkniecia starszych lisci, spowolnienia wzrostu i oslabienia roslin.',
+      'Najczesciej zaczyna sie od zolkniecia starszych lisci, spowolnienia wzrostu i oslabienia roślin.',
     symptoms: ['yellowing_old_leaves', 'stunted_growth', 'leaf_drop'],
     suggestedRemedy: 'Aqua Art Nito',
     treatment: [

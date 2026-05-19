@@ -18,16 +18,14 @@ function resolveAiAssistantGate({
 
   const shouldShowUpgradePrompt = normalizedPlan === 'free' || normalizedPlan === 'premium';
   const promptMessage = shouldShowUpgradePrompt
-    ? 'Asystent AI Pro odblokowuje interpretacje parametrów, diagnozę problemów, analizę zdjęć i plan działań krok po kroku.'
+    ? 'Asystent AI Pro odblokowuje interpretację parametrów, analizę problemów, analizę zdjęć i plan działań krok po kroku.'
     : '';
 
   return {
     hasAccess: false,
     showUpgradePrompt: shouldShowUpgradePrompt,
     upgradePromptMessage: promptMessage,
-    lockMessage:
-      defaultLockMessage ||
-      'Asystent AI jest dostepny w planie Pro.',
+    lockMessage: defaultLockMessage || 'Asystent AI jest dostępny w planie Pro.',
     targetPlan: 'pro',
   };
 }

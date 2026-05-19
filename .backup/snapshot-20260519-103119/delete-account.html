@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="pl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AquaMind - Usuwanie konta</title>
+    <style>
+      :root {
+        --bg: #f6fbff;
+        --card: #ffffff;
+        --text: #15202b;
+        --muted: #4a5a6a;
+        --line: #d6e3ef;
+        --accent: #0a6fdc;
+        --danger: #c91f37;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        line-height: 1.6;
+      }
+      .wrap {
+        max-width: 900px;
+        margin: 0 auto;
+        padding: 28px 18px 40px;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 20px;
+        margin-top: 14px;
+      }
+      h1,
+      h2 {
+        margin: 0 0 10px;
+        line-height: 1.25;
+      }
+      p,
+      li {
+        color: var(--muted);
+      }
+      ul,
+      ol {
+        margin: 8px 0 0 20px;
+      }
+      nav {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-top: 10px;
+      }
+      a {
+        color: var(--accent);
+        text-decoration: none;
+        font-weight: 600;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+      code {
+        background: #f1f6fb;
+        padding: 2px 6px;
+        border-radius: 6px;
+      }
+      .danger {
+        color: var(--danger);
+        font-weight: 700;
+      }
+      .foot {
+        margin-top: 20px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <section class="card">
+        <h1>Usuwanie konta i danych - AquaMind</h1>
+        <p>
+          Ta strona opisuje, jak usunac konto AquaMind wraz z danymi.
+        </p>
+        <nav>
+          <a href="./index.html">Strona glowna</a>
+          <a href="./privacy.html">Polityka prywatnosci</a>
+        </nav>
+      </section>
+
+      <section class="card">
+        <h2>1. Usuniecie konta w aplikacji (najszybciej)</h2>
+        <ol>
+          <li>Zaloguj sie do aplikacji AquaMind.</li>
+          <li>Przejdz do <code>Ustawienia</code>.</li>
+          <li>Wybierz <code>Usun konto</code> i potwierdz operacje.</li>
+        </ol>
+        <p class="danger">
+          Operacja jest nieodwracalna.
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>2. Usuniecie konta poza aplikacja</h2>
+        <p>
+          Jesli nie masz dostepu do aplikacji, wyslij zgloszenie na:
+          <a href="mailto:chaeg1993@gmail.com">chaeg1993@gmail.com</a>
+        </p>
+        <p>W tytule wiadomosci wpisz: <code>Usuniecie konta AquaMind</code>.</p>
+        <p>
+          Dla bezpieczenstwa mozemy poprosic o potwierdzenie, ze to Twoje konto
+          (np. odpowiedz z tego samego adresu e-mail, na ktory zalozone bylo konto).
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>3. Jakie dane sa usuwane</h2>
+        <ul>
+          <li>Konto uzytkownika (logowanie).</li>
+          <li>Dane akwariow.</li>
+          <li>Historia pomiarow.</li>
+          <li>Obsada (ryby i rosliny).</li>
+          <li>Historia chorob i glonow.</li>
+        </ul>
+      </section>
+
+      <section class="card">
+        <h2>4. Termin realizacji</h2>
+        <p>
+          Usuniecie z poziomu aplikacji wykonywane jest od razu po potwierdzeniu.
+          Zgloszenia e-mail realizujemy bez zbednej zwloki, zwykle do 7 dni roboczych.
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>5. Dane, ktore moga pozostac czasowo</h2>
+        <p>
+          Ograniczone dane techniczne i bezpieczenstwa (np. logi systemowe) moga byc
+          przechowywane czasowo tylko w celu ochrony uslugi, diagnostyki lub z powodu
+          wymogow prawnych.
+        </p>
+      </section>
+
+      <p class="foot">Ostatnia aktualizacja: 7 maja 2026</p>
+    </main>
+  </body>
+  </html>

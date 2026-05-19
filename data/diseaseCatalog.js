@@ -4,7 +4,7 @@ export const DISEASE_SYMPTOMS = [
   { id: 'cotton_growth', label: 'Bialy nalot (jak wata)' },
   { id: 'frayed_fins', label: 'Postrzepione pletwy' },
   { id: 'clamped_fins', label: 'Sklejone pletwy' },
-  { id: 'flashing', label: 'Ocieranie sie o podloze/dekoracje' },
+  { id: 'flashing', label: 'Ocieranie sie o podłoże/dekoracje' },
   { id: 'rapid_breathing', label: 'Przyspieszony oddech / lapie powietrze' },
   { id: 'red_gills', label: 'Zaczerwienione skrzela' },
   { id: 'loss_appetite', label: 'Brak apetytu' },
@@ -157,7 +157,7 @@ const RAW_DISEASE_CATALOG = [
     treatment: [
       'Popraw jakosc wody i ogranicz stres obsady.',
       'Utrzymuj stabilna temperature (zwykle 24-26 C) i regularny czas swiecenia lampy bez naglych zmian.',
-      'Usun potencjalne przyczyny urazow (ostre dekoracje, agresje).',
+      'Usuń potencjalne przyczyny urazow (ostre dekoracje, agresje).',
       'W ciezszych przypadkach rozwaz leczenie antybakteryjne: Sera Baktopur, Sera Baktopur Direct lub eSHa 2000 (zgodnie z etykieta).',
     ],
     caution:
@@ -188,7 +188,7 @@ const RAW_DISEASE_CATALOG = [
     treatment: [
       'Oddziel chore ryby, jesli to mozliwe.',
       'Utrzymuj stabilna temperature i umiarkowane oswietlenie, bez gwaltownych zmian.',
-      'Usun martwe tkanki i zrodla urazow z akwarium.',
+      'Usuń martwe tkanki i zrodla urazow z akwarium.',
       'Rozwaz preparat przeciwgrzybiczy: Sera Mycopur, JBL Fungol lub eSHa 2000 (zgodnie z etykieta).',
     ],
     caution:
@@ -221,7 +221,7 @@ const RAW_DISEASE_CATALOG = [
       'Utrzymuj stala temperature i nie przegrzewaj akwarium; przy dusznosci priorytetem jest tlen.',
       'Zwieksz napowietrzanie i monitoruj zachowanie ryb.',
       'Rozwaz preparat na przywry: Sera Tremazol, JBL Gyrodol Plus 250 lub eSHa gdex (zgodnie z etykieta).',
-      'Po kuracji odmul podloze i wykonaj bezpieczna podmiane wody.',
+      'Po kuracji odmul podłoże i wykonaj bezpieczna podmiane wody.',
     ],
     caution:
       'Przy ciezkich dusznosciach dzialaj szybko. Niedotlenienie moze byc grozniejsze niz sama choroba.',

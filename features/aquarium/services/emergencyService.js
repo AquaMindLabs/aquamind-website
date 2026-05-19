@@ -172,7 +172,7 @@ function buildHighTemperatureEmergencyCase(temperatureValue, thresholdValue) {
       'Przegrzanie zmniejsza ilosc tlenu w wodzie i może nasilac stres oraz toksycznosc.',
     steps: [
       'Zwiksz natlenienie i ruch tafli.',
-      'Ogranicz oświetlenie i źród?a ciepla przy akwarium.',
+      'Ogranicz oświetlenie i źródła ciepła przy akwarium.',
       'Chlodz zbiornik stopniowo (maks. ok. 1 C na kilka godzin).',
       'Sprawdz, czy grzalka nie jest zablokowana w pozycji grzania.',
       'Kontroluj temperature co 30-60 min do stabilizacji.',

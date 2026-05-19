@@ -157,7 +157,7 @@ export function buildTrendSuggestedEnvironmentForTank(
 
 export function buildAttentionItemsForTank(
   {
-    hasEquipmentSaveAccess,
+    hasEquipmentAssessmentAccess,
     equipmentAssessment,
     trendSuggestedEnvironment,
     fishCompatibilityResults = [],
@@ -281,7 +281,7 @@ export function buildAttentionItemsForTank(
     });
   };
 
-  if (hasEquipmentSaveAccess) {
+  if (hasEquipmentAssessmentAccess) {
     [equipmentAssessment.heater, equipmentAssessment.filter].forEach((entry: any) => {
       if (
         (entry.status === 'warning' || entry.status === 'critical') &&

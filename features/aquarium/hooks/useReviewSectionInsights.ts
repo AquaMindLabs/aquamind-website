@@ -20,7 +20,7 @@ type UseReviewSectionInsightsParams = {
   stockItems: any[];
   equipmentCatalogForAnalysis: any[];
   hasGeneralRecommendationAccess: boolean;
-  hasEquipmentSaveAccess: boolean;
+  hasEquipmentAssessmentAccess: boolean;
   tankEquipmentAssessment: any;
   fishCompatibilityResults: any[];
   plantCompatibilityResults: any[];
@@ -68,7 +68,7 @@ export function useReviewSectionInsights({
   stockItems,
   equipmentCatalogForAnalysis,
   hasGeneralRecommendationAccess,
-  hasEquipmentSaveAccess,
+  hasEquipmentAssessmentAccess,
   tankEquipmentAssessment,
   fishCompatibilityResults,
   plantCompatibilityResults,
@@ -203,7 +203,7 @@ export function useReviewSectionInsights({
     return buildAttentionItemsForTank(
       {
         hasGeneralRecommendationAccess,
-        hasEquipmentSaveAccess,
+        hasEquipmentAssessmentAccess,
         equipmentAssessment: tankEquipmentAssessment,
         trendSuggestedEnvironment,
         fishCompatibilityResults,
@@ -244,7 +244,7 @@ export function useReviewSectionInsights({
     fishStockingSummary,
     formatCompactNameList,
     getIssueCaseDisplayName,
-    hasEquipmentSaveAccess,
+    hasEquipmentAssessmentAccess,
     hasGeneralRecommendationAccess,
     plantCompatibilityResults,
     selectedTank,

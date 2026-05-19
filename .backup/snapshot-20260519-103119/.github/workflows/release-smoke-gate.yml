@@ -1,0 +1,69 @@
+name: Release Smoke Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag or build identifier"
+        required: true
+        type: string
+      qa_owner:
+        description: "QA/PM owner (name or handle)"
+        required: true
+        type: string
+      result_file:
+        description: "Path to filled smoke result markdown file"
+        required: false
+        default: "docs/release-smoke-result.md"
+        type: string
+      manual_approval:
+        description: "Set to yes after QA/PM manual approval"
+        required: true
+        default: "no"
+        type: choice
+        options:
+          - "no"
+          - "yes"
+
+jobs:
+  smoke-gate:
+    name: Smoke Gate
+    runs-on: ubuntu-latest
+    environment: release-smoke
+    steps:
+      - name: Check manual approval
+        shell: bash
+        run: |
+          if [ "${{ inputs.manual_approval }}" != "yes" ]; then
+            echo "Manual approval not confirmed. Set 'manual_approval' to 'yes' after QA/PM sign-off."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run smoke gate script
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          QA_OWNER: ${{ inputs.qa_owner }}
+        run: |
+          node scripts/release-smoke-gate.cjs \
+            --checklist docs/release-smoke-checklist.md \
+            --result "${{ inputs.result_file }}" \
+            --outDir release-smoke-artifacts \
+            --release "${{ inputs.release_tag }}" \
+            --owner "${{ inputs.qa_owner }}" \
+            --manualApproval "${{ inputs.manual_approval }}"
+
+      - name: Upload smoke gate artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-smoke-${{ inputs.release_tag }}
+          path: release-smoke-artifacts/
+          if-no-files-found: warn
