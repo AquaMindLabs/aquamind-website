@@ -49,9 +49,6 @@ import {
   trackBillingRestore,
   logTelemetryError,
   logTelemetryEvent,
-  trackPurchaseAttempt,
-  trackPurchaseFailure,
-  trackPurchaseSuccess,
 } from '@/shared/services/observability';
 
 type ThemeMode = 'dark' | 'light';
@@ -163,18 +160,8 @@ type TankContextValue = {
 
 const TankContext = createContext<TankContextValue | null>(null);
 const APP_SETTINGS_STORAGE_KEY = 'app_settings_v1';
-const ALLOWED_TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);
-
-function readBooleanEnv(name: string): boolean {
-  const value = String(process.env[name] ?? '').trim().toLowerCase();
-  return ALLOWED_TRUE_VALUES.has(value);
-}
-
-const LOCAL_PLAN_SIMULATION_ENABLED =
-  __DEV__ || readBooleanEnv('EXPO_PUBLIC_ENABLE_LOCAL_PLAN_SIMULATION');
-const ADMIN_PLAN_OVERRIDE_ENABLED = readBooleanEnv(
-  'EXPO_PUBLIC_ENABLE_ADMIN_PLAN_OVERRIDE'
-);
+const LOCAL_PLAN_SIMULATION_ENABLED = false;
+const ADMIN_PLAN_OVERRIDE_ENABLED = false;
 
 function normalizeSubscriptionForEnvironment(
   subscription: SubscriptionState
@@ -708,69 +695,14 @@ export function TankProvider({ children }: TankProviderProps) {
     };
   }, [applyBillingSyncResult, billingEnabled, getStoreProductIdForTier]);
 
-  const applySubscriptionTierWithSource = useCallback(
-    (tier: SubscriptionTier, source: SubscriptionSource) => {
-      const startedAtMs = Date.now();
-      const currentTier = subscription.tier;
-
-      trackPurchaseAttempt({
-        purchaseType: 'subscription_tier_change',
-        fromTier: currentTier,
-        targetTier: tier,
-        source,
-      });
-
-      try {
-        updateSubscription((prev) => ({
-          tier,
-          status: 'active',
-          source,
-          startedAt: prev.startedAt ?? new Date().toISOString(),
-          lastValidatedAt: new Date().toISOString(),
-        }));
-
-        trackPurchaseSuccess({
-          purchaseType: 'subscription_tier_change',
-          fromTier: currentTier,
-          targetTier: tier,
-          source,
-          durationMs: Date.now() - startedAtMs,
-        });
-        return true;
-      } catch (error) {
-        trackPurchaseFailure(error, {
-          purchaseType: 'subscription_tier_change',
-          fromTier: currentTier,
-          targetTier: tier,
-          source,
-          durationMs: Date.now() - startedAtMs,
-        });
-        return false;
-      }
-    },
-    [subscription.tier, updateSubscription]
-  );
-
   const setSubscriptionTier = useCallback(
-    (tier: SubscriptionTier) => {
-      if (!LOCAL_PLAN_SIMULATION_ENABLED) {
-        return false;
-      }
-
-      return applySubscriptionTierWithSource(tier, 'local');
-    },
-    [applySubscriptionTierWithSource]
+    (_tier: SubscriptionTier) => false,
+    []
   );
 
   const applyAdminSubscriptionTier = useCallback(
-    (tier: SubscriptionTier) => {
-      if (!ADMIN_PLAN_OVERRIDE_ENABLED) {
-        return false;
-      }
-
-      return applySubscriptionTierWithSource(tier, 'admin');
-    },
-    [applySubscriptionTierWithSource]
+    (_tier: SubscriptionTier) => false,
+    []
   );
 
   const canManageSubscriptionManually =
