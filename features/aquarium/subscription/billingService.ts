@@ -124,8 +124,7 @@ function getPurchasesModule(): PurchasesModuleLike | null {
   }
 
   try {
-    const dynamicRequire = Function('return require')() as (id: string) => unknown;
-    const loaded = dynamicRequire('react-native-purchases') as {
+    const loaded = require('react-native-purchases') as {
       default?: PurchasesModuleLike;
     };
     purchasesModuleCache = loaded?.default ?? (loaded as PurchasesModuleLike);

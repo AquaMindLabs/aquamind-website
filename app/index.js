@@ -19882,7 +19882,10 @@ export default function HomeScreen() {
     }
 
     try {
-      await purchaseSubscriptionTier(tier);
+      const purchaseStarted = await purchaseSubscriptionTier(tier);
+      if (!purchaseStarted) {
+        alert('Nie udalo sie uruchomic zakupu dla wybranego planu.');
+      }
     } catch (error) {
       alert(mapBillingErrorToUserMessage(error, 'purchase'));
     }
