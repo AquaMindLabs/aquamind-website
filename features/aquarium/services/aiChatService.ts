@@ -75,10 +75,10 @@ function mapDiagnosticCodeToUserMessage(code: string): string {
     return 'Asystent odpowiada zbyt dlugo. Spróbuj ponownie za chwile.';
   }
   if (code === AI_DIAGNOSTIC_CODES.VALIDATION) {
-    return 'Sprawdz pytanie i uzupelnij je bardziej szczegółowo.';
+    return 'Sprawdź pytanie i uzupelnij je bardziej szczegółowo.';
   }
   if (code === AI_DIAGNOSTIC_CODES.PROVIDER_ERROR) {
-    return 'Asystent jest chwilowo niedostepny. Spróbuj ponownie za moment.';
+    return 'Asystent jest chwilowo niedostępny. Spróbuj ponownie za moment.';
   }
   if (code === AI_DIAGNOSTIC_CODES.UNAVAILABLE) {
     return 'Asystent AI nie jest jeszcze skonfigurowany dla tego builda.';

@@ -45,6 +45,14 @@ type OfferingPackageLike = {
   };
 };
 
+type GoogleProductChangeInfoLike = {
+  oldProductIdentifier: string;
+};
+
+type LegacyUpgradeInfoLike = {
+  oldSKU: string;
+};
+
 type OfferingsLike = {
   all?: Record<
     string,
@@ -107,10 +115,13 @@ type PurchasesModuleLike = {
   getCustomerInfo?: () => Promise<CustomerInfoLike>;
   getOfferings?: () => Promise<OfferingsLike>;
   purchaseProduct?: (
-    productId: string
+    productId: string,
+    upgradeInfo?: LegacyUpgradeInfoLike | null
   ) => Promise<{ customerInfo?: CustomerInfoLike }>;
   purchasePackage?: (
-    packageToPurchase: OfferingPackageLike
+    packageToPurchase: OfferingPackageLike,
+    upgradeInfo?: null,
+    googleProductChangeInfo?: GoogleProductChangeInfoLike | null
   ) => Promise<{ customerInfo?: CustomerInfoLike }>;
   restorePurchases?: () => Promise<CustomerInfoLike>;
   addCustomerInfoUpdateListener?: (
@@ -172,6 +183,16 @@ function normalizeStoreToSource(store: unknown): SubscriptionSource {
     return 'promo';
   }
   return 'system';
+}
+
+function getSubscriptionTierRank(tier: SubscriptionTier | null): number {
+  if (tier === 'pro') {
+    return 2;
+  }
+  if (tier === 'premium') {
+    return 1;
+  }
+  return 0;
 }
 
 function getRevenueCatApiKeyForPlatform(): string | null {
@@ -261,7 +282,16 @@ function pickEntitlement(customerInfo: CustomerInfoLike): EntitlementInfoLike | 
     const paidEntries = activeEntries.filter((entry) =>
       Boolean(getSubscriptionTierByStoreProductId(entry?.productIdentifier))
     );
-    return (paidEntries[0] ?? activeEntries[0]) ?? null;
+    const rankedPaidEntries = [...paidEntries].sort(
+      (left, right) =>
+        getSubscriptionTierRank(
+          getSubscriptionTierByStoreProductId(right?.productIdentifier)
+        ) -
+        getSubscriptionTierRank(
+          getSubscriptionTierByStoreProductId(left?.productIdentifier)
+        )
+    );
+    return (rankedPaidEntries[0] ?? activeEntries[0]) ?? null;
   }
 
   const allEntries = Object.values(allEntitlements).sort(
@@ -430,13 +460,13 @@ export function mapBillingErrorToUserMessage(
     return 'Zakupy nie sa jeszcze skonfigurowane dla tej platformy.';
   }
   if (code === 'payment_pending_error') {
-    return 'Platnosc oczekuje na potwierdzenie. Sprawdz status za chwile.';
+    return 'Platnosc oczekuje na potwierdzenie. Sprawdź status za chwile.';
   }
   if (code === 'purchase_not_allowed_error' || code === 'insufficient_permissions_error') {
-    return 'Zakupy sa niedostepne dla tego konta. Sprawdz ustawieńia sklepu.';
+    return 'Zakupy sa niedostępne dla tego konta. Sprawdź ustawieńia sklepu.';
   }
   if (code === 'product_not_available_for_purchase_error') {
-    return 'Ten plan nie jest aktualnie dostepny w sklepie dla tej wersji aplikacji.';
+    return 'Ten plan nie jest aktualnie dostępny w sklepie dla tej wersji aplikacji.';
   }
   if (code === 'network_error' || code === 'offline_connection_error') {
     return 'Brak połączenia z internetem. Spróbuj ponownie.';
@@ -445,12 +475,12 @@ export function mapBillingErrorToUserMessage(
     return 'Sklep chwilowo nie odpowiada. Spróbuj ponownie za kilka minut.';
   }
   if (action === 'restore') {
-    return 'Nie udalo sie przywróic zakupow. Spróbuj ponownie za chwile.';
+    return 'Nie udało się przywrócić zakupow. Spróbuj ponownie za chwile.';
   }
   if (action === 'refresh') {
-    return 'Nie udalo sie odświeżyc statusu subskrypcji.';
+    return 'Nie udało się odświeżyć statusu subskrypcji.';
   }
-  return 'Nie udalo sie dokonac zakupu. Spróbuj ponownie za chwile.';
+  return 'Nie udało się dokonac zakupu. Spróbuj ponownie za chwile.';
 }
 
 export async function ensureBillingConfigured(
@@ -534,6 +564,7 @@ export function buildSubscriptionPatchFromCustomerInfo(
       tier: resolvedTier,
       status: resolvedStatus,
       source,
+      productId: String(entitlement?.productIdentifier ?? '').trim() || null,
       startedAt,
       expiresAt,
       renewsAt,
@@ -609,7 +640,8 @@ export async function refreshBillingCustomerInfo(
 
 export async function purchaseSubscriptionByProductId(
   appUserId: string | null,
-  productId: string
+  productId: string,
+  previousProductId?: string | null
 ): Promise<BillingSyncResult> {
   const normalizedProductId = String(productId ?? '').trim();
   if (!normalizedProductId) {
@@ -625,6 +657,12 @@ export async function purchaseSubscriptionByProductId(
   if ((!purchasePackage && !purchaseProduct) || !getCustomerInfo) {
     throw new Error('billing_sdk_unavailable');
   }
+  const normalizedPreviousProductId = String(previousProductId ?? '').trim();
+  const googleProductChangeInfo =
+    normalizedPreviousProductId &&
+    !productIdsMatch(normalizedPreviousProductId, normalizedProductId)
+      ? { oldProductIdentifier: normalizedPreviousProductId }
+      : null;
 
   let matchingPackage: OfferingPackageLike | null = null;
   if (getOfferings) {
@@ -645,8 +683,25 @@ export async function purchaseSubscriptionByProductId(
 
   const purchaseResult =
     matchingPackage && purchasePackage
-      ? await withRetry(() => purchasePackage(matchingPackage as OfferingPackageLike), 1)
-      : await withRetry(() => purchaseProduct?.(normalizedProductId), 1);
+      ? await withRetry(
+          () =>
+            purchasePackage(
+              matchingPackage as OfferingPackageLike,
+              null,
+              googleProductChangeInfo
+            ),
+          1
+        )
+      : await withRetry(
+          () =>
+            purchaseProduct?.(
+              normalizedProductId,
+              googleProductChangeInfo
+                ? { oldSKU: googleProductChangeInfo.oldProductIdentifier }
+                : null
+            ),
+          1
+        );
   const customerInfo =
     (purchaseResult as { customerInfo?: CustomerInfoLike })?.customerInfo ??
     (await getCustomerInfo());

@@ -142,6 +142,7 @@ import {
   generateAdaptiveTaskSchedule,
 } from '@/features/aquarium/services/tasksService';
 import { evaluateStockingCompatibilityModel } from '@/features/aquarium/services/stockingCompatibilityService';
+import { evaluateUniversalStockingLoad } from '@/features/aquarium/services/stockingLoadModelService';
 import { buildOnboardingPanelModel } from '@/features/aquarium/services/onboardingAdapter';
 import {
   AiChatRequestError,
@@ -199,7 +200,7 @@ const IS_EXPO_GO =
 const IS_IOS_EXPO_GO = Platform.OS === 'ios' && IS_EXPO_GO;
 const ENABLE_FISH_IMAGES = true;
 const ENABLE_PLANT_IMAGES = true;
-const CATALOG_EAGER_RENDER_LIMIT = 24;
+const CATALOG_EAGER_RENDER_LIMIT = 150;
 const DISEASE_IMAGE_PLACEHOLDER_SOURCE = require('../assets/images/icon.png');
 const DEFAULT_TERMS_URL = 'https://aquamindlabs.github.io/aquamind-website/terms.html';
 const DEFAULT_PRIVACY_POLICY_URL =
@@ -218,8 +219,8 @@ const REMOTE_JSON_REQUEST_HEADERS = Object.freeze({
 const DISEASE_AI_DURATION_OPTIONS = [
   { id: 'today', label: 'Dzisiaj' },
   { id: '2_3_days', label: '2-3 dni' },
-  { id: 'about_week', label: 'OkoĹ‚o tygodnia' },
-  { id: 'longer', label: 'DĹ‚uĹĽej' },
+  { id: 'about_week', label: 'Około tygodnia' },
+  { id: 'longer', label: 'Dłużej' },
   { id: 'unknown', label: 'Nie wiem' },
 ];
 const DISEASE_AI_OTHER_FISH_OPTIONS = [
@@ -234,13 +235,13 @@ const PLANT_AI_MULTIPLE_OPTIONS = [
   { id: 'unknown', label: 'Nie wiem' },
 ];
 const PLANT_AI_WARNING =
-  'AI wskazuje moĹĽliwe przyczyny, ale nie zastÄ™puje obserwacji roĹ›lin i regularnych testĂłw wody.';
+  'AI wskazuje możliwe przyczyny, ale nie zastępuje obserwacji roślin i regularnych testów wody.';
 const ALGAE_AI_WARNING =
-  'AI wskazuje moĹĽliwe przyczyny, ale typ glonĂłw warto potwierdziÄ‡ obserwacjÄ…, parametrami wody i zdjÄ™ciem w dobrym Ĺ›wietle.';
+  'AI wskazuje możliwe przyczyny, ale typ glonów warto potwierdzić obserwacją, parametrami wody i zdjęciem w dobrym świetle.';
 const ALGAE_AI_LOCATION_OPTIONS = [
   { id: 'glass', label: 'Szyby' },
-  { id: 'plants', label: 'RoĹ›liny' },
-  { id: 'substrate', label: 'PodĹ‚oĹĽe' },
+  { id: 'plants', label: 'Rośliny' },
+  { id: 'substrate', label: 'Podłoże' },
   { id: 'decorations', label: 'Dekoracje/korzenie/kamienie' },
   { id: 'filter_outlet', label: 'Filtr/wylot' },
   { id: 'surface', label: 'Tafla wody' },
@@ -248,10 +249,10 @@ const ALGAE_AI_LOCATION_OPTIONS = [
 ];
 const ALGAE_AI_APPEARANCE_OPTIONS = [
   { id: 'green_film', label: 'Zielony nalot' },
-  { id: 'brown_film', label: 'BrÄ…zowy nalot' },
-  { id: 'black_tufts', label: 'Czarne kÄ™pki/pÄ™dzelki' },
+  { id: 'brown_film', label: 'Brązowy nalot' },
+  { id: 'black_tufts', label: 'Czarne kępki/pędzelki' },
   { id: 'threads', label: 'Nitki' },
-  { id: 'slimy_layer', label: 'Ĺšliska warstwa' },
+  { id: 'slimy_layer', label: 'Śliska warstwa' },
   { id: 'green_water', label: 'Zielona woda' },
   { id: 'blue_green_layer', label: 'Siny/niebiesko-zielony nalot' },
   { id: 'other_unknown', label: 'Inne / nie wiem' },
@@ -285,7 +286,7 @@ function mapDiseaseAiConfidenceBadge(confidenceLabel) {
   if (confidenceLabel === 'low') {
     return 'niska';
   }
-  return 'Ĺ›rednia';
+  return 'średnia';
 }
 
 function buildDiseaseAiSuspectedDiseases({
@@ -333,7 +334,7 @@ function buildDiseaseAiSuspectedDiseases({
       label: diseaseName,
       confidence,
       confidenceLabel,
-      reason: `Opis objawĂłw jest zbliĹĽony do pozycji "${diseaseName}".`,
+      reason: `Opis objawów jest zbliżony do pozycji "${diseaseName}".`,
     });
   });
 
@@ -348,7 +349,7 @@ function buildDiseaseAiSuspectedDiseases({
       label: 'Niepewne objawy',
       confidence: 0.32,
       confidenceLabel: 'low',
-      reason: 'Brak jednoznacznego dopasowania do katalogu chorĂłb.',
+      reason: 'Brak jednoznacznego dopasowania do katalogu chorób.',
     },
   ];
 }
@@ -492,7 +493,7 @@ function getFirstRunStatusLabel(statusSeverity = 'no_data') {
   if (statusSeverity === 'ok') {
     return 'Stabilny start';
   }
-  return 'Brak peĹ‚nego zestawu danych';
+  return 'Brak pełnego zestawu danych';
 }
 
 function buildFishCommonsFallbackImageUrl(latinName, width = 420) {
@@ -676,7 +677,7 @@ function parsePositiveNumberOrThrow(label, rawValue) {
   const value = parseNumberOrThrow(label, rawValue);
 
   if (value <= 0) {
-    throw new Error(`Pole ${label} musi byÄ‡ wiÄ™ksze od 0`);
+    throw new Error(`Pole ${label} musi być większe od 0`);
   }
 
   return value;
@@ -690,7 +691,7 @@ function parseOptionalNonNegativeNumberOrThrow(label, rawValue) {
   }
 
   if (value < 0) {
-    throw new Error(`Pole ${label} nie moĹĽe byc mniejsze od 0`);
+    throw new Error(`Pole ${label} nie może byc mniejsze od 0`);
   }
 
   return value;
@@ -700,7 +701,7 @@ function parseNonNegativeNumberOrThrow(label, rawValue) {
   const value = parseNumberOrThrow(label, rawValue);
 
   if (value < 0) {
-    throw new Error(`Pole ${label} nie moĹĽe byc mniejsze od 0`);
+    throw new Error(`Pole ${label} nie może byc mniejsze od 0`);
   }
 
   return value;
@@ -881,18 +882,18 @@ function getEquipmentCatalogDescription(item) {
       return 'Kompaktowa grzalka do stabilnego dogrzewania mniejszych zbiornikow.';
     }
     if (maxLiters <= 180) {
-      return 'Uniwersalna grzalka do codzieĹ„nego utrzymania temperatury w akwarium towarzyskim.';
+      return 'Uniwersalna grzalka do codzieńnego utrzymania temperatury w akwarium towarzyskim.';
     }
-    return 'Mocniejsza grzalka do wiÄ™kszych zbiornikow lub pomieszczen z chlodniejszym otoczeniem.';
+    return 'Mocniejsza grzalka do większych zbiornikow lub pomieszczen z chlodniejszym otoczeniem.';
   }
 
   if (flowLh <= 500) {
-    return 'Lagodniejsza filtracja do mniejszych akwariĂłw i spokojniejszej obsady.';
+    return 'Lagodniejsza filtracja do mniejszych akwariów i spokojniejszej obsady.';
   }
   if (flowLh <= 1200) {
-    return 'Uniwersalny filtr do codzieĹ„nej filtracji biologiczno-mechanicznej.';
+    return 'Uniwersalny filtr do codzieńnej filtracji biologiczno-mechanicznej.';
   }
-  return 'Wydajniejszy filtr do wiÄ™kszych zbiornikow albo mocniej obciÄ…ĹĽonej obsady.';
+  return 'Wydajniejszy filtr do większych zbiornikow albo mocniej obciążonej obsady.';
 }
 
 function normalizeEquipmentCatalogType(value) {
@@ -1516,15 +1517,15 @@ function getMeasurementDefaultAction(key, severity) {
   }
 
   if (key === 'no2') {
-    return 'Podmien wode od razu, mocno napowietrz i sprawdz filtr biologiczny.';
+    return 'Podmien wode od razu, mocno napowietrz i sprawdź filtr biologiczny.';
   }
 
   if (key === 'no3') {
-    return 'Wykonaj podmianÄ™ wody i ogranicz karmienie, a dodatkowo zwiÄ™ksz mase roslin szybko rosnacych.';
+    return 'Wykonaj podmianę wody i ogranicz karmienie, a dodatkowo zwiększ mase roslin szybko rosnacych.';
   }
 
   if (key === 'temperature') {
-    return 'Skoryguj ustawieĹ„ia grzalki/chlodzenia stopniowo i obserwuj reakcje ryb.';
+    return 'Skoryguj ustawieńia grzalki/chlodzenia stopniowo i obserwuj reakcje ryb.';
   }
 
   if (key === 'co2') {
@@ -1536,42 +1537,42 @@ function getMeasurementDefaultAction(key, severity) {
   }
 
   if (key === 'tds') {
-    return 'Dostosuj mineralizacje i podmiany, aby wrĂłic do stabilnego zakresu TDS.';
+    return 'Dostosuj mineralizacje i podmiany, aby wróic do stabilnego zakresu TDS.';
   }
 
   return severity === 'critical'
-    ? 'WprowadĹş korekte jeszcze dzisiaj i powtorz pomiar po zmianach.'
-    : 'Zaplanow korekte przy najbliĹĽszej pielegnacji i kontrolny pomiar.';
+    ? 'Wprowadź korekte jeszcze dzisiaj i powtorz pomiar po zmianach.'
+    : 'Zaplanow korekte przy najbliższej pielegnacji i kontrolny pomiar.';
 }
 
 function getMeasurementDefaultImpact(key, severity) {
   if (severity === 'ok') {
-    return 'Przy utrzymaniu tego poziomu parametr nie powinien teraz zwiÄ™kszac ryzyka dla obsady.';
+    return 'Przy utrzymaniu tego poziomu parametr nie powinien teraz zwiększac ryzyka dla obsady.';
   }
 
   if (key === 'no2') {
-    return 'Podwyzszone NO2 szybko podnosi stres i moĹĽe prowadzic do zatruc.';
+    return 'Podwyzszone NO2 szybko podnosi stres i może prowadzic do zatruc.';
   }
 
   if (key === 'no3') {
-    return 'Wysokie NO3 zwiÄ™ksza ryzyko glonow, oslabienia ryb i gorszego samopoczucia obsady.';
+    return 'Wysokie NO3 zwiększa ryzyko glonow, oslabienia ryb i gorszego samopoczucia obsady.';
   }
 
   if (key === 'nh3nh4') {
-    return 'Podwyzszone NH3/NH4 zwiÄ™ksza ryzyko podtrucia i problemĂłw z oddychaniem u ryb.';
+    return 'Podwyzszone NH3/NH4 zwiększa ryzyko podtrucia i problemów z oddychaniem u ryb.';
   }
 
   if (key === 'temperature') {
-    return 'Niestabilna temperatura nasila stres i moĹĽe oslabic odpornoĹ›? ryb.';
+    return 'Niestabilna temperatura nasila stres i może oslabic odpornoś? ryb.';
   }
 
   if (key === 'ph') {
-    return 'Odchylenie pH moĹĽe zwiÄ™kszac stres i podatnosc na infekcje.';
+    return 'Odchylenie pH może zwiększac stres i podatnosc na infekcje.';
   }
 
   return severity === 'critical'
-    ? 'Bez korekty moĹĽe dojsc do pogorszenia kondycji zbiornika i obsady.'
-    : 'Bez korekty moĹĽe stopniowo obniĹĽac komfort zycia ryb i roslin.';
+    ? 'Bez korekty może dojsc do pogorszenia kondycji zbiornika i obsady.'
+    : 'Bez korekty może stopniowo obniżac komfort zycia ryb i roslin.';
 }
 
 const SEVERITY_LABEL = {
@@ -1639,7 +1640,7 @@ const SUBSTRATE_OPTIONS = [
   { value: 'sand', label: 'Piasek', labelKey: 'substrateSand' },
   { value: 'fine_gravel', label: 'Drobny zwir', labelKey: 'substrateFineGravel' },
   { value: 'gravel', label: 'Zwir', labelKey: 'substrateGravel' },
-  { value: 'active_soil', label: 'PodĹ‚oĹĽe aktywne', labelKey: 'substrateActiveSoil' },
+  { value: 'active_soil', label: 'Podłoże aktywne', labelKey: 'substrateActiveSoil' },
   { value: 'garden_soil', label: 'Ziemia ogrodowa' },
   { value: 'mixed', label: 'Mieszane', labelKey: 'substrateMixed' },
   { value: 'other', label: 'Inne', labelKey: 'substrateOther' },
@@ -1857,7 +1858,7 @@ const ADD_TANK_WIZARD_STEPS = [
   { id: 'start', title: 'Sposob uruchomienia' },
   { id: 'onboarding', title: 'Onboarding' },
   { id: 'profile', title: 'Profil akwarium' },
-  { id: 'substrate', title: 'PodĹ‚oĹĽe' },
+  { id: 'substrate', title: 'Podłoże' },
   { id: 'water', title: 'Parametry wody' },
   { id: 'temperature', title: 'Temperatura' },
   { id: 'summary', title: 'Podsumowanie' },
@@ -1896,10 +1897,10 @@ const ADD_TANK_PROFILE_OPTIONS = [
   { value: 'custom', label: 'Wlasny profil' },
 ];
 const WIZARD_SUBSTRATE_LAYER_OPTIONS = [
-  { value: 'none', label: 'Brak podĹ‚oĹĽa', modelValue: 'other' },
+  { value: 'none', label: 'Brak podłoża', modelValue: 'other' },
   { value: 'sand', label: 'Piasek', modelValue: 'sand' },
   { value: 'gravel', label: 'Zwir', modelValue: 'gravel' },
-  { value: 'active_soil', label: 'PodĹ‚oĹĽe aktywne', modelValue: 'active_soil' },
+  { value: 'active_soil', label: 'Podłoże aktywne', modelValue: 'active_soil' },
   { value: 'substrate', label: 'Substrat pod rosliny', modelValue: 'mixed' },
   { value: 'soil_layer', label: 'Ziemia / warstwa odzywcza', modelValue: 'garden_soil' },
   { value: 'other', label: 'Inne', modelValue: 'other' },
@@ -2834,7 +2835,7 @@ function getLightIntensityLabel(value) {
 
 function getTankLightingLabelForIssues(tankProfile) {
   if (Boolean(tankProfile?.isDaylightOnly)) {
-    return 'Ĺ›wiatĹ‚o dzieĹ„ne (bez lampy)';
+    return 'światło dzieńne (bez lampy)';
   }
 
   const lightModelName = String(tankProfile?.lightModelName ?? '').trim();
@@ -3193,7 +3194,7 @@ function inferPlantParameterStabilitySensitivity(item) {
   if (
     text.includes('stabilne warunki') ||
     text.includes('delikatn') ||
-    text.includes('gubic liĹ›cie')
+    text.includes('gubic liście')
   ) {
     return 'high';
   }
@@ -3431,7 +3432,7 @@ function evaluatePlantLightingForTank(item, tankProfile = null) {
     return {
       status: 'unknown',
       label: 'Brak danych',
-      message: 'Brak kompletnych danych o wymaganiach ?wietlnych rosliny.',
+      message: 'Brak kompletnych danych o wymaganiach świetlnych rośliny.',
       requirements,
     };
   }
@@ -3440,8 +3441,8 @@ function evaluatePlantLightingForTank(item, tankProfile = null) {
     if (Boolean(tankProfile?.isDaylightOnly)) {
       return {
         status: 'too_low',
-        label: 'Za malo Ĺ›wiatĹ‚a',
-        message: `Roslina potrzebuje ${Math.round(minLumens)}-${Math.round(maxLumens)} lm/l, a akwarium ma tylko Ĺ›wiatĹ‚o dzieĹ„ne.`,
+        label: 'Za malo światła',
+        message: `Roslina potrzebuje ${Math.round(minLumens)}-${Math.round(maxLumens)} lm/l, a akwarium ma tylko światło dzieńne.`,
         requirements,
       };
     }
@@ -3461,8 +3462,8 @@ function evaluatePlantLightingForTank(item, tankProfile = null) {
   if (tankLumensPerLiter < minLumens) {
     return {
       status: 'too_low',
-      label: 'Za malo Ĺ›wiatĹ‚a',
-      message: `Za malo Ĺ›wiatĹ‚a: ${roundedTankLumens} lm/l przy wymaganiu ${roundedMin}-${roundedMax} lm/l.`,
+      label: 'Za malo światła',
+      message: `Za malo światła: ${roundedTankLumens} lm/l przy wymaganiu ${roundedMin}-${roundedMax} lm/l.`,
       requirements,
     };
   }
@@ -3470,16 +3471,16 @@ function evaluatePlantLightingForTank(item, tankProfile = null) {
   if (tankLumensPerLiter > maxLumens) {
     return {
       status: 'too_high',
-      label: 'Za mocne Ĺ›wiatĹ‚o',
-      message: `Za mocne Ĺ›wiatĹ‚o: ${roundedTankLumens} lm/l przy wymaganiu ${roundedMin}-${roundedMax} lm/l.`,
+      label: 'Za mocne światło',
+      message: `Za mocne światło: ${roundedTankLumens} lm/l przy wymaganiu ${roundedMin}-${roundedMax} lm/l.`,
       requirements,
     };
   }
 
   return {
     status: 'ok',
-    label: 'Ĺ›wiatĹ‚o OK',
-    message: `Ĺ›wiatĹ‚o OK: ${roundedTankLumens} lm/l miesci sie w wymaganiu ${roundedMin}-${roundedMax} lm/l.`,
+    label: 'światło OK',
+    message: `światło OK: ${roundedTankLumens} lm/l miesci sie w wymaganiu ${roundedMin}-${roundedMax} lm/l.`,
     requirements,
   };
 }
@@ -3494,7 +3495,7 @@ function evaluateLampFitForTank({
   if (!Number.isFinite(value) || value <= 0) {
     return {
       status: 'check',
-      label: 'Sprawdz',
+      label: 'Sprawdź',
       isFit: false,
       message: 'Brak danych lm/l - trudno ocenic dopasowanie lampy.',
     };
@@ -3544,7 +3545,7 @@ function evaluateLampFitForTank({
       status: 'too_low',
       label: 'Za slaba',
       isFit: false,
-      message: `Za slaba dla litraĹĽu: ${roundedValue} lm/l (minimum ${fallbackMin} lm/l).`,
+      message: `Za slaba dla litrażu: ${roundedValue} lm/l (minimum ${fallbackMin} lm/l).`,
     };
   }
 
@@ -3553,7 +3554,7 @@ function evaluateLampFitForTank({
       status: 'too_high',
       label: 'Za mocna',
       isFit: false,
-      message: `Za mocna dla litraĹĽu: ${roundedValue} lm/l (maksimum ${fallbackMax} lm/l).`,
+      message: `Za mocna dla litrażu: ${roundedValue} lm/l (maksimum ${fallbackMax} lm/l).`,
     };
   }
 
@@ -3561,7 +3562,7 @@ function evaluateLampFitForTank({
     status: 'ok',
     label: 'OK',
     isFit: true,
-    message: `OK dla litraĹĽu: ${roundedValue} lm/l.`,
+    message: `OK dla litrażu: ${roundedValue} lm/l.`,
   };
 }
 
@@ -3838,7 +3839,7 @@ const SEMI_AGGRESSIVE_FISH_KEYWORDS = [
   'semi aggressive',
   'semi-aggressive',
   'terytorial',
-  'moĹĽe podskubywac',
+  'może podskubywac',
   'zaczepna',
   'bojownik',
   'betta',
@@ -4049,7 +4050,7 @@ function normalizeEatsShrimp(value, predatorRisk = false) {
   const normalized = normalizeText(value);
   if (normalized === 'yes' || normalized === 'tak') return 'yes';
   if (normalized === 'no' || normalized === 'nie') return 'no';
-  if (normalized === 'maybe' || normalized === 'moĹĽe' || normalized === 'ryzyko') return 'maybe';
+  if (normalized === 'maybe' || normalized === 'może' || normalized === 'ryzyko') return 'maybe';
   return predatorRisk ? 'maybe' : 'no';
 }
 
@@ -4084,7 +4085,7 @@ function normalizeDensityLevel(value) {
 
 function normalizeFlowPreference(value) {
   const normalized = normalizeText(value);
-  if (normalized.includes('low') || normalized.includes('sĹ‚aby') || normalized.includes('spokoj')) {
+  if (normalized.includes('low') || normalized.includes('słaby') || normalized.includes('spokoj')) {
     return 'low';
   }
   if (normalized.includes('high') || normalized.includes('mocny') || normalized.includes('silny')) {
@@ -4156,7 +4157,7 @@ function normalizeShrimpSafe(value) {
   if (normalized === 'no' || normalized === 'nie') {
     return 'no';
   }
-  if (normalized === 'maybe' || normalized === 'moĹĽe' || normalized === 'ryzyko') {
+  if (normalized === 'maybe' || normalized === 'może' || normalized === 'ryzyko') {
     return 'maybe';
   }
   return 'yes';
@@ -4576,17 +4577,17 @@ function evaluateFishPairCompatibility(firstFish, secondFish, tankLiters = null)
     (firstTempLegacy === 'aggressive' && secondTempLegacy === 'peaceful') ||
     (firstTempLegacy === 'peaceful' && secondTempLegacy === 'aggressive')
   ) {
-    applyPenalty(35, 'PoĹ‚Ä…czenie ryby agresywnej i spokojnej.');
+    applyPenalty(35, 'Połączenie ryby agresywnej i spokojnej.');
   } else if (
     (firstTempLegacy === 'aggressive' && secondTempLegacy === 'semi_aggressive') ||
     (firstTempLegacy === 'semi_aggressive' && secondTempLegacy === 'aggressive')
   ) {
-    applyPenalty(20, 'PoĹ‚Ä…czenie ryb agresywnych i polagresywnych.');
+    applyPenalty(20, 'Połączenie ryb agresywnych i polagresywnych.');
   } else if (
     (firstTempLegacy === 'semi_aggressive' && secondTempLegacy === 'peaceful') ||
     (firstTempLegacy === 'peaceful' && secondTempLegacy === 'semi_aggressive')
   ) {
-    applyPenalty(15, 'PoĹ‚Ä…czenie ryb polagresywnych i spokojnych.');
+    applyPenalty(15, 'Połączenie ryb polagresywnych i spokojnych.');
   }
 
   const bigger =
@@ -4634,7 +4635,7 @@ function evaluateFishPairCompatibility(firstFish, secondFish, tankLiters = null)
   ) {
     applyPenalty(
       10,
-      `${firstLabel} wymaga wiÄ™kszej grupy (min. ${firstProfile.minGroupSize}).`
+      `${firstLabel} wymaga większej grupy (min. ${firstProfile.minGroupSize}).`
     );
   }
   if (
@@ -4643,7 +4644,7 @@ function evaluateFishPairCompatibility(firstFish, secondFish, tankLiters = null)
   ) {
     applyPenalty(
       10,
-      `${secondLabel} wymaga wiÄ™kszej grupy (min. ${secondProfile.minGroupSize}).`
+      `${secondLabel} wymaga większej grupy (min. ${secondProfile.minGroupSize}).`
     );
   }
 
@@ -4653,7 +4654,7 @@ function evaluateFishPairCompatibility(firstFish, secondFish, tankLiters = null)
     (firstShrimp && secondProfile.shrimpSafe === 'no') ||
     (secondShrimp && firstProfile.shrimpSafe === 'no')
   ) {
-    applyPenalty(35, 'Ryba moĹĽe traktowac krewetki jako pokarm.');
+    applyPenalty(35, 'Ryba może traktowac krewetki jako pokarm.');
   } else if (
     (firstShrimp && secondProfile.shrimpSafe === 'maybe') ||
     (secondShrimp && firstProfile.shrimpSafe === 'maybe')
@@ -4924,19 +4925,22 @@ function getStockingScoreScaleLabel(scoreValue) {
   if (!Number.isFinite(score)) {
     return 'Brak danych';
   }
-  if (score >= 85) {
-    return 'Bardzo dobra obsada';
+  if (score <= 60) {
+    return 'Bezpiecznie';
   }
-  if (score >= 70) {
-    return 'Dobra, drobne uwagi';
+  if (score <= 80) {
+    return 'Dobrze';
   }
-  if (score >= 55) {
-    return 'Srednia, wymaga korekt';
+  if (score <= 95) {
+    return 'Wysoko';
   }
-  if (score >= 40) {
-    return 'Problematyczna';
+  if (score <= 110) {
+    return 'Granicznie';
   }
-  return 'Niezalecana / niezgodna';
+  if (score <= 130) {
+    return 'Przekroczone';
+  }
+  return 'Mocno przekroczone';
 }
 
 function getZoneKeyFromProfile(profile) {
@@ -5135,11 +5139,11 @@ function calculateFiltrationCompensation(aquarium, filters, stockingList = []) {
     (turnoverPerHour > turnoverProfile.idealMax && sensitiveToCurrentCount > 0);
 
   if (turnoverPerHour > turnoverProfile.strongMax) {
-    warnings.push('Nurt jest bardzo silny - moĹĽe meczyc spokojne gatunki i utrudniac odpoczynek.');
+    warnings.push('Nurt jest bardzo silny - może meczyc spokojne gatunki i utrudniac odpoczynek.');
     status = 'za silny nurt';
   } else if (turnoverPerHour > turnoverProfile.idealMax && sensitiveToCurrentCount > 0) {
     warnings.push(
-      'Zbyt silny nurt moĹĽe stresowac gatunki spokojne lub slabo plywajace.'
+      'Zbyt silny nurt może stresowac gatunki spokojne lub slabo plywajace.'
     );
   }
 
@@ -5301,11 +5305,45 @@ function rankToRisk(rank) {
   return 'low';
 }
 
-function riskToCompatibilityStatus(risk) {
-  if (risk === 'critical') return 'incompatible';
-  if (risk === 'high') return 'high_risk';
-  if (risk === 'medium') return 'caution';
-  return 'compatible';
+function mapStockingLoadStatusToCompatibilityStatus(loadStatus) {
+  const normalized = String(loadStatus ?? '').trim().toLowerCase();
+  if (normalized === 'safe' || normalized === 'good') {
+    return 'compatible';
+  }
+  if (normalized === 'high') {
+    return 'caution';
+  }
+  if (normalized === 'borderline') {
+    return 'high_risk';
+  }
+  if (normalized === 'overstocked' || normalized === 'heavily_overstocked') {
+    return 'incompatible';
+  }
+  return 'unknown';
+}
+
+function mapFiltrationStatusToLoadModelLevel(filtrationStatus) {
+  const normalized = normalizeText(filtrationStatus);
+  if (normalized === 'za slaba') return 'weak';
+  if (normalized === 'ok') return 'standard';
+  if (normalized === 'mocna') return 'strong';
+  if (normalized === 'nadfiltracja') return 'very_strong';
+  if (normalized === 'za silny nurt') return 'very_strong';
+  return 'standard';
+}
+
+function mapWaterChangeIntervalToLoadModelFrequency(intervalDays) {
+  const safeInterval = Number(intervalDays);
+  if (!Number.isFinite(safeInterval) || safeInterval <= 0) {
+    return 'standard';
+  }
+  if (safeInterval <= 7) {
+    return 'frequent';
+  }
+  if (safeInterval >= 14) {
+    return 'rare';
+  }
+  return 'standard';
 }
 
 function evaluateStockingCompatibility(aquarium, stockingList, measurement = null) {
@@ -5436,11 +5474,35 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
       null,
       []
     );
+    const emptyStockingModel = evaluateUniversalStockingLoad(
+      {
+        volumeLiters: Number(tank.volumeLiters),
+        lengthCm: Number(tank.lengthCm),
+        widthCm: Number(tank.widthCm),
+        heightCm: Number(tank.heightCm),
+        filtrationLevel: mapFiltrationStatusToLoadModelLevel(
+          emptyFiltration?.status
+        ),
+        plantDensity: normalizeDensityLevel(tank?.plantDensity) || 'low',
+        waterChangeFrequency: 'standard',
+        openSwimmingSpace:
+          normalizeDensityLevel(tank?.zones?.openSwimmingSpace) || 'medium',
+      },
+      []
+    );
+    const emptyScore = Math.max(
+      0,
+      Math.round(Number(emptyStockingModel?.finalStockingScore) || 0)
+    );
+    const emptyOverallStatus = mapStockingLoadStatusToCompatibilityStatus(
+      emptyStockingModel?.finalStatus?.status
+    );
     const emptyAssessment = {
-      overallStatus: 'compatible',
+      overallStatus: emptyOverallStatus,
       biologicalLoad: {
         rawRisk: 'low',
         adjustedRisk: 'low',
+        score: Number(emptyStockingModel?.scores?.bioloadScore) || 0,
         bioloadIndex: 0,
         bioloadIndexFromStocking: 0,
         bioloadIndexReal: 0,
@@ -5463,30 +5525,38 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
           plantAreaFactor: 0,
           biomassAvailabilityFactor: 0,
         },
-        message: 'Brak obsady ryb - obciÄ…ĹĽenie biologiczne jest niskie.',
+        message:
+          emptyStockingModel?.componentStatus?.bioload?.message ||
+          'Brak obsady ryb - obciazenie biologiczne jest niskie.',
       },
       spaceLoad: {
-        risk: 'low',
-        message: 'Brak obsady ryb - brak presji przestrzennej.',
+        risk: emptyStockingModel?.risks?.spaceLoadRisk ?? 'low',
+        score: Number(emptyStockingModel?.scores?.spaceScore) || 0,
+        message:
+          emptyStockingModel?.componentStatus?.space?.message ||
+          'Brak obsady ryb - brak presji przestrzennej.',
       },
       behaviorLoad: {
-        risk: 'low',
-        message: 'Brak obsady ryb - brak konfliktĂłw behawioralnych.',
+        risk: emptyStockingModel?.risks?.behaviorLoadRisk ?? 'low',
+        score: Number(emptyStockingModel?.scores?.behaviourScore) || 0,
+        zoneCrowdingScore:
+          Number(emptyStockingModel?.scores?.zoneCrowdingScore) || 0,
+        message:
+          emptyStockingModel?.componentStatus?.behaviour?.message ||
+          'Brak obsady ryb - brak konfliktow behawioralnych.',
       },
       filtration: emptyFiltration,
-      recommendations: [],
+      recommendations: emptyStockingModel?.recommendations ?? [],
     };
     return {
-      overallStatus: compatibilityModelResult.overallStatus,
-      overallUiStatus: compatibilityModelResult.overallStatus === 'unknown'
-        ? 'Brak danych'
-        : compatibilityModelResult.overallStatus === 'compatible'
-          ? 'Zgodne'
-          : compatibilityModelResult.overallStatus === 'caution'
-            ? 'Ostroznie'
-            : 'Niezgodne',
-      score: compatibilityModelResult.score,
-      summary: compatibilityModelResult.summary,
+      overallStatus: emptyOverallStatus,
+      overallUiStatus:
+        emptyStockingModel?.finalStatus?.label ??
+        getStockingScoreScaleLabel(emptyScore),
+      score: emptyScore,
+      summary:
+        emptyStockingModel?.finalStatus?.message ??
+        compatibilityModelResult.summary,
       issues: compatibilityModelResult.issues,
       commonParameterRange: compatibilityModelResult.commonParameterRange,
       categories: Object.keys(DEFAULT_COMPATIBILITY_CATEGORIES).reduce((acc, key) => {
@@ -5494,8 +5564,16 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
         return acc;
       }, {}),
       conflicts: [],
-      warnings: (compatibilityModelResult.issues ?? []).map((item) => String(item?.message ?? '').trim()).filter(Boolean),
-      recommendations: compatibilityModelResult.recommendations ?? [],
+      warnings: [
+        ...(emptyStockingModel?.warnings ?? []),
+        ...(compatibilityModelResult.issues ?? [])
+          .map((item) => String(item?.message ?? '').trim())
+          .filter(Boolean),
+      ],
+      recommendations: [
+        ...(emptyStockingModel?.recommendations ?? []),
+        ...(compatibilityModelResult.recommendations ?? []),
+      ],
       stockingAssessment: emptyAssessment,
       metrics: {
         aggressiveBioloadCount: 0,
@@ -5553,6 +5631,65 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
     return null;
   };
   const waterChangeIntervalDays = inferWaterChangeIntervalDays();
+  const universalStockingInput = fishProfiles.map((entry) => ({
+    speciesId: String(entry?.item?.catalogFishId ?? entry?.item?.id ?? '').trim(),
+    commonName: String(
+      entry?.item?.commonName ??
+        entry?.item?.name ??
+        entry?.item?.latinName ??
+        'Gatunek'
+    ).trim(),
+    quantity: Number(entry?.quantity) || 1,
+    profile: {
+      adultSizeCm: Number(entry?.profile?.adultSizeCm),
+      bodyMassType: entry?.profile?.bodyMassType,
+      wasteProduction:
+        Number(entry?.profile?.wasteProduction) ||
+        Number(entry?.profile?.wasteProductionLevel),
+      activityLevel: entry?.profile?.activityLevel ?? entry?.profile?.activity,
+      aggressionLevel:
+        entry?.profile?.aggressionLevel ??
+        entry?.profile?.aggressionLevelNumeric ??
+        entry?.profile?.temperament,
+      territoriality:
+        entry?.profile?.territoriality ??
+        entry?.profile?.territorialityLevel ??
+        entry?.profile?.territorialityScore,
+      minGroupSize: Number(entry?.profile?.minGroupSize),
+      recommendedGroupSize: Number(entry?.profile?.recommendedGroupSize),
+      isSchoolingFish:
+        (entry?.profile?.isSchoolingFish ??
+          entry?.profile?.isSchooling ??
+          ['school', 'group'].includes(
+            String(entry?.profile?.socialType ?? '').toLowerCase()
+          )) === true,
+      swimmingZone: entry?.profile?.swimmingZone ?? entry?.profile?.waterZone,
+      requiredTankLengthCm:
+        Number(entry?.profile?.requiredTankLengthCm) ||
+        Number(entry?.profile?.minTankLengthCm),
+      sensitiveToWaterQuality: Boolean(entry?.profile?.sensitiveToWaterQuality),
+      bioloadModifier: Number(entry?.profile?.bioloadModifier),
+      spaceModifier: Number(entry?.profile?.spaceModifier),
+      behaviourModifier: Number(entry?.profile?.behaviourModifier),
+    },
+  }));
+  const universalStockingModel = evaluateUniversalStockingLoad(
+    {
+      volumeLiters: Number(tank.volumeLiters),
+      lengthCm: Number(tank.lengthCm),
+      widthCm: Number(tank.widthCm),
+      heightCm: Number(tank.heightCm),
+      filtrationLevel: mapFiltrationStatusToLoadModelLevel(
+        filtrationCompensation?.status
+      ),
+      plantDensity: normalizeDensityLevel(tank?.plantDensity) || 'low',
+      waterChangeFrequency:
+        mapWaterChangeIntervalToLoadModelFrequency(waterChangeIntervalDays),
+      openSwimmingSpace:
+        normalizeDensityLevel(tank?.zones?.openSwimmingSpace) || 'medium',
+    },
+    universalStockingInput
+  );
   const footprintCm2 = Number(tank.lengthCm) > 0 && Number(tank.widthCm) > 0
     ? Number(tank.lengthCm) * Number(tank.widthCm)
     : 0;
@@ -5582,7 +5719,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
     addPenalty(
       'waterParameters',
       35,
-      'Zakresy temperatur gatunkow nie pokrywaja sie - moĹĽe to zwiÄ™kszac ryzyko stresu i chorĂłb.',
+      'Zakresy temperatur gatunkow nie pokrywaja sie - może to zwiększac ryzyko stresu i chorób.',
       'Dobierz gatunki o bardziej zblizonych wymaganiach temperatury.'
     );
   }
@@ -5612,14 +5749,14 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
         addPenalty(
           'waterParameters',
           5,
-          `${fishLabel}: aktualne pH moĹĽe byc poza komfortowym zakresem gatunku.`
+          `${fishLabel}: aktualne pH może byc poza komfortowym zakresem gatunku.`
         );
       }
       if (Number.isFinite(ghValue) && (ghValue < Number(profile.ghMin) || ghValue > Number(profile.ghMax))) {
         addPenalty(
           'waterParameters',
           4,
-          `${fishLabel}: aktualne GH moĹĽe byc poza komfortowym zakresem gatunku.`
+          `${fishLabel}: aktualne GH może byc poza komfortowym zakresem gatunku.`
         );
       }
       if (
@@ -5629,7 +5766,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
         addPenalty(
           'waterParameters',
           6,
-          `${fishLabel}: aktualna temperatura moĹĽe byc poza komfortowym zakresem gatunku.`
+          `${fishLabel}: aktualna temperatura może byc poza komfortowym zakresem gatunku.`
         );
       }
     });
@@ -5643,8 +5780,8 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
       addPenalty(
         'tankSize',
         ratio >= 1.8 ? 55 : ratio >= 1.4 ? 42 : 30,
-        `${fishLabel}: zbiornik jest mniejszy niĹĽ zwykle zalecane minimum (${Math.round(minTankLiters)} l).`,
-        'WiÄ™kszy zbiornik zwykle obniĹĽa ryzyko agresji i stresu.'
+        `${fishLabel}: zbiornik jest mniejszy niż zwykle zalecane minimum (${Math.round(minTankLiters)} l).`,
+        'Większy zbiornik zwykle obniża ryzyko agresji i stresu.'
       );
     }
     if (Number.isFinite(Number(tank.lengthCm)) && Number(tank.lengthCm) > 0) {
@@ -5653,7 +5790,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
         addPenalty(
           'tankSize',
           14,
-          `${fishLabel}: dĹ‚ugoĹ›? akwarium moĹĽe byc za mala (${Math.round(Number(tank.lengthCm))} cm vs min ${Math.round(minLength)} cm).`,
+          `${fishLabel}: długoś? akwarium może byc za mala (${Math.round(Number(tank.lengthCm))} cm vs min ${Math.round(minLength)} cm).`,
           'Przy gatunkach terytorialnych dluzszy zbiornik zwykle ulatwia podzial stref.'
         );
       }
@@ -5664,8 +5801,8 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
         addPenalty(
           'territoriality',
           18,
-          `${fishLabel}: powierzchnia dna moĹĽe byc za mala dla rewiru tego gatunku.`,
-          'ZwiÄ™ksz powierzchnie dna albo ogranicz liczbe gatunkow dennych/terytorialnych.'
+          `${fishLabel}: powierzchnia dna może byc za mala dla rewiru tego gatunku.`,
+          'Zwiększ powierzchnie dna albo ogranicz liczbe gatunkow dennych/terytorialnych.'
         );
       }
     }
@@ -5674,16 +5811,16 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
       addPenalty(
         'tankSize',
         12,
-        `${fishLabel}: liczebnosc moĹĽe byc za wysoka jak na litraĹĽ.`,
-        'Zmniejsz liczebnosc lub zwiÄ™ksz litraĹĽ.'
+        `${fishLabel}: liczebnosc może byc za wysoka jak na litraż.`,
+        'Zmniejsz liczebnosc lub zwiększ litraż.'
       );
     }
     if (profile.socialStructure === 'harem' && (sexRatio === 'mostly_males' || sexRatio === 'unknown')) {
       addPenalty(
         'socialNeeds',
         sexRatio === 'unknown' ? 10 : 18,
-        `${fishLabel}: ten gatunek zwykle lepiej funkcjonuje w ukladzie haremowym, a udzial samcow moĹĽe zwiÄ™kszac konflikty.`,
-        'Rozwaz uklad 1 samiec + kilka samic i wiÄ™cej kryjowek.'
+        `${fishLabel}: ten gatunek zwykle lepiej funkcjonuje w ukladzie haremowym, a udzial samcow może zwiększac konflikty.`,
+        'Rozwaz uklad 1 samiec + kilka samic i więcej kryjowek.'
       );
     }
     if (profile.socialStructure === 'pair' && quantity !== 2) {
@@ -5698,22 +5835,29 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
       addPenalty(
         'socialNeeds',
         16,
-        `${fishLabel}: grupa jest mniejsza niĹĽ zwykle zalecane minimum (${profile.minGroupSize}).`,
-        'ZwiÄ™ksz liczebnosc grupy albo wybierz gatunek mniej stadny.'
+        `${fishLabel}: grupa jest mniejsza niż zwykle zalecane minimum (${profile.minGroupSize}).`,
+        'Zwiększ liczebnosc grupy albo wybierz gatunek mniej stadny.'
       );
     } else if (quantity < Number(profile.recommendedGroupSize || profile.minGroupSize || 1)) {
       addPenalty(
         'socialNeeds',
         6,
-        `${fishLabel}: liczebnosc jest poniĹĽej czesto zalecanej grupy (${profile.recommendedGroupSize}).`
+        `${fishLabel}: liczebnosc jest poniżej czesto zalecanej grupy (${profile.recommendedGroupSize}).`
       );
     }
   });
 
-  const weightedAggression = fishProfiles.reduce(
-    (sum, entry) => sum + entry.quantity * Math.max(1, Number(entry.profile.adultSizeCm) || 1) * (Number(entry.profile.aggressionLevel) || 0),
+  const totalStockLoadForAggression = fishProfiles.reduce(
+    (sum, entry) =>
+      sum + entry.quantity * Math.max(1, Number(entry.profile.adultSizeCm) || 1),
     0
   );
+  const weightedAggression = fishProfiles.reduce((sum, entry) => {
+    const aggressionLevel = Number(entry.profile.aggressionLevel) || 0;
+    return aggressionLevel >= 3
+      ? sum + entry.quantity * Math.max(1, Number(entry.profile.adultSizeCm) || 1)
+      : sum;
+  }, 0);
   const fishBioload = fishProfiles.reduce(
     (sum, entry) => {
       const rawWasteProductionLevel = Number(entry.profile.wasteProductionLevel);
@@ -5755,8 +5899,8 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
       : sum;
   }, 0);
   const aggressiveRatio =
-    weightedAggression + weightedPeaceful > 0
-      ? weightedAggression / (weightedAggression + weightedPeaceful)
+    totalStockLoadForAggression > 0
+      ? weightedAggression / totalStockLoadForAggression
       : 0;
   const maxAggressionLevel = fishProfiles.reduce(
     (max, entry) => Math.max(max, Number(entry.profile.aggressionLevel) || 0),
@@ -5771,8 +5915,8 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
     addPenalty(
       'aggression',
       34,
-      'Udzial ryb agresywnych w obsadzie jest wysoki, co moĹĽe nasilac nekanie spokojniejszych gatunkow.',
-      'Ogranicz udzial agresywnych gatunkow albo zwiÄ™ksz litraĹĽ i liczbe kryjowek.'
+      'Udzial ryb agresywnych w obsadzie jest wysoki, co może nasilac nekanie spokojniejszych gatunkow.',
+      'Ogranicz udzial agresywnych gatunkow albo zwiększ litraż i liczbe kryjowek.'
     );
   } else if (aggressiveRatio >= 0.52) {
     addPenalty(
@@ -5865,7 +6009,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
           'aggression',
           aggressionPenalty,
           `${firstName} i ${secondName} maja wysoki potencjal agresji, a ryzyko rosnie przy wspolnej strefie.`,
-          'W wiÄ™kszym akwarium z kryjowkami to poĹ‚Ä…czenie moĹĽe byc latwiejsze.'
+          'W większym akwarium z kryjowkami to połączenie może byc latwiejsze.'
         );
         conflicts.push({
           id: `${first.item?.id ?? index}-${second.item?.id ?? compareIndex}-aggr`,
@@ -5874,7 +6018,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
           severity: aggressionPenalty >= 25 ? 'critical' : 'warning',
           firstFish: first.item,
           secondFish: second.item,
-          message: `${firstName} i ${secondName}: podwyzszone ryzyko konfliktĂłw agresji.`,
+          message: `${firstName} i ${secondName}: podwyzszone ryzyko konfliktów agresji.`,
         });
       }
       const bigger =
@@ -5893,7 +6037,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
         addPenalty(
           'predation',
           predatorPenalty,
-          `${bigger.item?.commonName ?? bigger.item?.name} moĹĽe traktowac ${smaller.item?.commonName ?? smaller.item?.name} jako potencjalny pokarm.`,
+          `${bigger.item?.commonName ?? bigger.item?.name} może traktowac ${smaller.item?.commonName ?? smaller.item?.name} jako potencjalny pokarm.`,
           'Nie lacz drapieznika z wyraznie mniejszymi rybami.'
         );
         conflicts.push({
@@ -5914,7 +6058,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
           'finNipping',
           28,
           `${firstName} i ${secondName}: mozliwe podgryzanie pletw.`,
-          'Rozdziel gatunki lub zapewnij wiÄ™cej przestrzeni i kryjowek.'
+          'Rozdziel gatunki lub zapewnij więcej przestrzeni i kryjowek.'
         );
       }
     }
@@ -5933,14 +6077,14 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
       addPenalty(
         'territoriality',
         26,
-        `${fishLabel}: dostÄ™pna przestrzen moĹĽe byc za mala do liczby rewirow (${zone}).`,
-        'Zmniejsz liczbe osobnikow lub zwiÄ™ksz przestrzen akwarium.'
+        `${fishLabel}: dostępna przestrzen może byc za mala do liczby rewirow (${zone}).`,
+        'Zmniejsz liczbe osobnikow lub zwiększ przestrzen akwarium.'
       );
     } else if (zonePressure > 0.75) {
       addPenalty(
         'territoriality',
         14,
-        `${fishLabel}: rewir moĹĽe byc ciasny dla tej liczebnosci (${zone}).`
+        `${fishLabel}: rewir może byc ciasny dla tej liczebnosci (${zone}).`
       );
     }
     if (profile.needsShelter && hidingFactor < 0.35) {
@@ -5955,7 +6099,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
       addPenalty(
         'aggression',
         14,
-        `${fishLabel}: niskie przelamanie linii widzenia moĹĽe zwiÄ™kszac agresje.`,
+        `${fishLabel}: niskie przelamanie linii widzenia może zwiększac agresje.`,
         'Dodaj elementy dzielace widok (rosliny, korzenie, skaly).'
       );
     }
@@ -5968,22 +6112,22 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
       addPenalty(
         'aggression',
         sexRatio === 'mostly_males' ? 34 : 20,
-        `${fishLabel}: przy wysokiej agresji samcow i tym litraĹĽu ryzyko konfliktĂłw moĹĽe byc podwyzszone.`,
-        'Ogranicz liczbe samcow lub zapewnij wiÄ™kszy zbiornik.'
+        `${fishLabel}: przy wysokiej agresji samcow i tym litrażu ryzyko konfliktów może byc podwyzszone.`,
+        'Ogranicz liczbe samcow lub zapewnij większy zbiornik.'
       );
     }
     if (profile.breedingAggression === 'high' && profile.socialStructure !== 'school') {
       addPenalty(
         'territoriality',
         8,
-        `${fishLabel}: w okresie tarla ten gatunek moĹĽe silnie bronic rewiru.`
+        `${fishLabel}: w okresie tarla ten gatunek może silnie bronic rewiru.`
       );
     }
     if (zoneLoad >= 10 && zone !== 'whole_tank') {
       addPenalty(
         'zoneCompetition',
         10,
-        `${fishLabel}: duze zagÄ™szczenie ryb w strefie ${zone} moĹĽe prowadzic do konkurencji.`
+        `${fishLabel}: duze zagęszczenie ryb w strefie ${zone} może prowadzic do konkurencji.`
       );
     }
   });
@@ -6040,19 +6184,19 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
   if (riskToRank(biologicalLoadRawRisk) >= 2 && biologicalCompensationPercent > 0) {
     appendUnique(
       warnings,
-      'Mocna filtracja czesciowo kompensuje obciÄ…ĹĽenie biologiczne.'
+      'Mocna filtracja czesciowo kompensuje obciążenie biologiczne.'
     );
   }
   if (riskToRank(biologicalLoadRawRisk) >= 1 && plantCompensationPercent >= 8) {
     appendUnique(
       warnings,
-      'Masa roslinna wspiera buforowanie obciÄ…ĹĽenia azotowego i stabilizacje biologii.'
+      'Masa roslinna wspiera buforowanie obciążenia azotowego i stabilizacje biologii.'
     );
   }
   if (riskToRank(biologicalLoadRawRisk) >= 1 && plantItems.length > 0 && plantCompensationPercent < 8) {
     appendUnique(
       recommendations,
-      'ZwiÄ™ksz mase roslin (szczegĂłĹ‚nie szybkorosnacych), aby mocniej odciazyc obieg azotu.'
+      'Zwiększ mase roslin (szczegółnie szybkorosnacych), aby mocniej odciazyc obieg azotu.'
     );
   }
   appendUnique(
@@ -6071,7 +6215,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
   if (filtrationCompensation.status === 'za silny nurt') {
     appendUnique(
       warnings,
-      'Zbyt silny nurt moĹĽe stresowac gatunki spokojne lub slabo plywajace.'
+      'Zbyt silny nurt może stresowac gatunki spokojne lub slabo plywajace.'
     );
   }
   if (riskToRank(biologicalLoadRawRisk) >= 1) {
@@ -6098,95 +6242,70 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
     ];
   });
   const categories = Object.fromEntries(categoryEntries);
-  const toRiskFromCategoryScore = (scoreValue) => {
-    const score = Number(scoreValue);
-    if (score < 35) return 'critical';
-    if (score < 55) return 'high';
-    if (score < 75) return 'medium';
-    return 'low';
-  };
-  const spaceLoadRisk = rankToRisk(
-    riskToRank(toRiskFromCategoryScore(categories.tankSize.score))
+  const universalBioloadScore =
+    Number(universalStockingModel?.scores?.bioloadScore) || 0;
+  const universalSpaceScore =
+    Number(universalStockingModel?.scores?.spaceScore) || 0;
+  const universalBehaviourScore =
+    Number(universalStockingModel?.scores?.behaviourScore) || 0;
+  const universalZoneCrowdingScore =
+    Number(universalStockingModel?.scores?.zoneCrowdingScore) || 0;
+  const spaceLoadRisk = universalStockingModel?.risks?.spaceLoadRisk ?? 'low';
+  const behaviorLoadRisk =
+    universalStockingModel?.risks?.behaviorLoadRisk ?? 'low';
+  const overallStatus = mapStockingLoadStatusToCompatibilityStatus(
+    universalStockingModel?.finalStatus?.status
   );
-  const behaviorLoadRisk = rankToRisk(
-    Math.max(
-      riskToRank(toRiskFromCategoryScore(categories.aggression.score)),
-      riskToRank(toRiskFromCategoryScore(categories.territoriality.score)),
-      riskToRank(toRiskFromCategoryScore(categories.predation.score)),
-      riskToRank(toRiskFromCategoryScore(categories.finNipping.score)),
-      riskToRank(toRiskFromCategoryScore(categories.socialNeeds.score)),
-      riskToRank(toRiskFromCategoryScore(categories.zoneCompetition.score))
-    )
-  );
-  const weightedCategoryScoreRaw =
-    Number(categories.waterParameters.score) * 0.16 +
-    Number(categories.tankSize.score) * 0.16 +
-    Number(categories.aggression.score) * 0.16 +
-    Number(categories.territoriality.score) * 0.13 +
-    Number(categories.predation.score) * 0.1 +
-    Number(categories.finNipping.score) * 0.07 +
-    Number(categories.socialNeeds.score) * 0.06 +
-    Number(categories.zoneCompetition.score) * 0.06;
-  const weightedCategoryScore = clampScore(
-    weightedCategoryScoreRaw / 0.9,
-    0,
-    100
-  );
-  const criticalConflictCount = conflicts.filter((item) => item?.severity === 'critical').length;
-  const conflictPenalty = Math.min(criticalConflictCount * 6, 24);
-  const baseScore = clampScore(Math.round(weightedCategoryScore - conflictPenalty), 0, 100);
-  const worstRiskRank = Math.max(
-    riskToRank(spaceLoadRisk),
-    riskToRank(behaviorLoadRisk)
-  );
-  const score = clampScore(
-    Math.round(baseScore - worstRiskRank * 12),
-    0,
-    100
-  );
-  const overallStatus = riskToCompatibilityStatus(rankToRisk(worstRiskRank));
   const biologicalLoadMessage =
-    biologicalLoadAdjustedRisk === 'low'
-      ? 'ObciÄ…ĹĽenie biologiczne jest niskie lub dobrze kontrolowane.'
+    universalStockingModel?.componentStatus?.bioload?.message ||
+    (biologicalLoadAdjustedRisk === 'low'
+      ? 'Obciazenie biologiczne jest niskie lub dobrze kontrolowane.'
       : biologicalLoadAdjustedRisk === 'medium'
-        ? 'ObciÄ…ĹĽenie biologiczne jest podwyĹĽszone. Kontroluj NO3 i regularnoĹ›Ä‡ podmian.'
+        ? 'Obciazenie biologiczne jest podwyzszone. Kontroluj NO3 i regularnosc podmian.'
         : biologicalLoadAdjustedRisk === 'high'
-          ? 'ObciÄ…ĹĽenie biologiczne jest wysokie. Filtracja moĹĽe pomagaÄ‡, ale nie zastÄ…pi podmian.'
-          : 'ObciÄ…ĹĽenie biologiczne jest krytyczne - ryzyko skokĂłw NH3/NH4, NO2 i NO3 jest wysokie.';
+          ? 'Obciazenie biologiczne jest wysokie. Filtracja moze pomagac, ale nie zastapi podmian.'
+          : 'Obciazenie biologiczne jest krytyczne - ryzyko skokow NH3/NH4, NO2 i NO3 jest wysokie.');
   const spaceLoadMessage =
-    spaceLoadRisk === 'low'
+    universalStockingModel?.componentStatus?.space?.message ||
+    (spaceLoadRisk === 'low'
       ? 'Przestrzen akwarium wydaje sie odpowiednia dla obecnej obsady.'
       : spaceLoadRisk === 'medium'
         ? 'Przestrzen jest na granicy komfortu dla czesci obsady.'
         : spaceLoadRisk === 'high'
-          ? 'Akwarium moĹĽe byc zbyt male przestrzennie dla tej obsady.'
-          : 'Przestrzen jest krytycznie niewystarczajaca dla obecnej obsady.';
+          ? 'Akwarium moze byc zbyt male przestrzennie dla tej obsady.'
+          : 'Przestrzen jest krytycznie niewystarczajaca dla obecnej obsady.');
   const behaviorLoadMessage =
-    behaviorLoadRisk === 'low'
-      ? 'Ryzyko konfliktĂłw behawioralnych jest niskie.'
+    universalStockingModel?.componentStatus?.behaviour?.message ||
+    (behaviorLoadRisk === 'low'
+      ? 'Ryzyko konfliktow behawioralnych jest niskie.'
       : behaviorLoadRisk === 'medium'
         ? 'Wystepuje umiarkowane ryzyko stresu/agresji - obserwuj zachowanie ryb.'
         : behaviorLoadRisk === 'high'
-          ? 'Ryzyko konfliktĂłw behawioralnych jest wysokie (agresja/terytorialnosc/strefy).'
-          : 'Ryzyko konfliktĂłw behawioralnych jest krytyczne.';
+          ? 'Ryzyko konfliktow behawioralnych jest wysokie (agresja/terytorialnosc/strefy).'
+          : 'Ryzyko konfliktow behawioralnych jest krytyczne.');
   if (
     filtrationCompensation.status === 'nadfiltracja' &&
     (riskToRank(spaceLoadRisk) >= 1 || riskToRank(behaviorLoadRisk) >= 1)
   ) {
     appendUnique(
       warnings,
-      'Nadfiltracja nie oznacza, ze mozna dowolnie zwiÄ™kszac obsade.'
+      'Nadfiltracja nie oznacza, ze mozna dowolnie zwiększac obsade.'
     );
   }
 
   const stockingAssessment = {
     overallStatus,
     biologicalLoad: {
-      rawRisk: biologicalLoadRawRisk,
-      adjustedRisk: biologicalLoadAdjustedRisk,
-      bioloadIndex: Math.round(biologicalLoadIndex * 100) / 100,
-      bioloadIndexFromStocking: Math.round(biologicalLoadIndex * 100) / 100,
-      bioloadIndexReal: Math.round(biologicalLoadRealIndex * 100) / 100,
+      rawRisk: universalStockingModel?.risks?.biologicalLoadRisk ?? biologicalLoadRawRisk,
+      adjustedRisk:
+        universalStockingModel?.risks?.biologicalLoadRisk ??
+        biologicalLoadAdjustedRisk,
+      score: universalBioloadScore,
+      bioloadIndex: Math.round((universalBioloadScore / 100) * 100) / 100,
+      bioloadIndexFromStocking:
+        Math.round((universalBioloadScore / 100) * 100) / 100,
+      bioloadIndexReal:
+        Math.round((universalBioloadScore / 100) * 100) / 100,
       filtrationCompensation: biologicalCompensationPercent,
       plantCompensation: Math.round(plantCompensationPercent),
       totalCompensation: Math.round(totalBiologicalCompensationPercent),
@@ -6214,10 +6333,13 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
     },
     spaceLoad: {
       risk: spaceLoadRisk,
+      score: universalSpaceScore,
       message: spaceLoadMessage,
     },
     behaviorLoad: {
       risk: behaviorLoadRisk,
+      score: universalBehaviourScore,
+      zoneCrowdingScore: universalZoneCrowdingScore,
       message: behaviorLoadMessage,
     },
     filtration: filtrationCompensation,
@@ -6234,15 +6356,11 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
       'Obserwuj zachowanie ryb po zmianach obsady i reaguj szybko na nekanie/slabniecie osobnikow.'
     );
   }
-  const modelStatus = String(compatibilityModelResult?.overallStatus ?? '').trim() || 'unknown';
-  const legacyDisplayScore = clampScore(Math.round(score), 0, 100);
-  const normalizedStatusFromScore =
-    legacyDisplayScore >= 85
-      ? 'compatible'
-      : legacyDisplayScore >= 55
-        ? 'caution'
-        : 'incompatible';
-  const finalOverallStatus = modelStatus === 'unknown' ? 'unknown' : normalizedStatusFromScore;
+  const legacyDisplayScore = Math.max(
+    0,
+    Math.round(Number(universalStockingModel?.finalStockingScore) || 0)
+  );
+  const finalOverallStatus = overallStatus;
   const modelSummary = String(compatibilityModelResult?.summary ?? '').trim();
   const modelIssues = Array.isArray(compatibilityModelResult?.issues)
     ? compatibilityModelResult.issues
@@ -6258,15 +6376,22 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
   const normalizedUiStatus =
     finalOverallStatus === 'unknown'
       ? 'Brak danych'
-      : getStockingScoreScaleLabel(legacyDisplayScore);
-  const mergedWarnings = [...warnings];
+      : universalStockingModel?.finalStatus?.label ||
+        getStockingScoreScaleLabel(legacyDisplayScore);
+  const mergedWarnings = [
+    ...warnings,
+    ...(universalStockingModel?.warnings ?? []),
+  ];
   modelIssues.forEach((item) => {
     const message = String(item?.message ?? '').trim();
     if (message) {
       appendUnique(mergedWarnings, message);
     }
   });
-  const mergedRecommendations = [...recommendations];
+  const mergedRecommendations = [
+    ...recommendations,
+    ...(universalStockingModel?.recommendations ?? []),
+  ];
   modelRecommendations.forEach((text) => appendUnique(mergedRecommendations, text));
   const speciesNameById = new Map(
     compatibilityModelInput
@@ -6366,6 +6491,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
     overallUiStatus: normalizedUiStatus,
     score: legacyDisplayScore,
     summary:
+      universalStockingModel?.finalStatus?.message ||
       modelSummary ||
       (finalOverallStatus === 'compatible'
         ? 'Obsada wyglada stabilnie.'
@@ -6376,7 +6502,9 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
             : 'Obsada jest problematyczna i wymaga zmian.'),
     issues: modelIssues,
     commonParameterRange: modelCommonParameterRange,
-    biologicalLoadRisk: biologicalLoadAdjustedRisk,
+    biologicalLoadRisk:
+      universalStockingModel?.risks?.biologicalLoadRisk ??
+      biologicalLoadAdjustedRisk,
     spaceLoadRisk,
     behaviorLoadRisk,
     categories,
@@ -7154,32 +7282,97 @@ const FISH_CATALOG_ALLOWED_LATIN_NAMES = [
 ];
 
 const PLANT_CATALOG_ALLOWED_LATIN_NAMES = [
-  'Anubias barteri var. nana',
+  'Anubias barteri',
+  'Anubias barteri nana',
+  'Anubias nana petite',
   'Microsorum pteropus',
+  'Microsorum pteropus trident',
+  'Microsorum pteropus narrow',
   'Bolbitis heudelotii',
-  'Bucephalandra sp.',
+  'Bucephalandra',
   'Cryptocoryne wendtii',
+  'Cryptocoryne parva',
+  'Cryptocoryne beckettii',
+  'Cryptocoryne balansae',
+  'Echinodorus bleheri',
+  'Echinodorus amazonicus',
+  'Echinodorus ozelot',
   'Vallisneria spiralis',
+  'Vallisneria americana',
+  'Vallisneria nana',
   'Egeria densa',
+  'Elodea canadensis',
   'Ceratophyllum demersum',
   'Hygrophila polysperma',
+  'Hygrophila corymbosa',
+  'Hygrophila difformis',
+  'Hygrophila pinnatifida',
   'Ludwigia repens',
+  'Ludwigia palustris',
+  'Ludwigia super red',
+  'Ludwigia inclinata',
+  'Ludwigia arcuata',
+  'Ludwigia glandulosa',
   'Rotala rotundifolia',
+  'Rotala indica',
+  'Rotala wallichii',
+  'Rotala macrandra',
+  'Rotala green',
+  "Rotala H'ra",
+  'Rotala bonsai',
   'Bacopa caroliniana',
+  'Bacopa monnieri',
   'Cabomba caroliniana',
+  'Staurogyne repens',
+  'Limnophila sessiliflora',
+  'Myriophyllum mattogrossense',
   'Pogostemon stellatus',
-  'Micranthemum tweediei',
-  'Glossostigma elatinoides',
-  'Eleocharis acicularis mini',
+  'Pogostemon helferi',
+  'Pogostemon erectus',
+  'Pogostemon octopus',
+  'Micranthemum tweediei Monte Carlo',
+  'Heteranthera zosterifolia',
+  'Proserpinaca palustris',
+  'Didiplis diandra',
+  'Ammania gracilis',
+  'Nesaea crassicaulis',
+  'Tonina fluviatilis',
+  'Syngonanthus macrocaulon',
+  'Eriocaulon cinereum',
+  'Eleocharis parvula',
+  'Eleocharis acicularis',
+  'Lilaeopsis brasiliensis',
+  'Hydrocotyle tripartita',
+  'Hydrocotyle leucocephala',
+  'Najas guadalupensis',
+  'Ceratopteris thalictroides',
+  'Ceratopteris cornuta',
+  'Nymphaea lotus',
+  'Nymphaea rubra',
+  'Hemianthus callitrichoides Cuba',
+  'Alternanthera reineckii',
+  'Alternanthera reineckii mini',
   'Marsilea hirsuta',
+  'Marsilea crenata',
+  'Glossostigma elatinoides',
+  'Utricularia graminifolia',
+  'Ranunculus inundatus',
+  'Crinum calamistratum',
+  'Aponogeton crispus',
+  'Aponogeton boivinianus',
+  'Samolus valerandi',
+  'Lobelia cardinalis mini',
+  'Hottonia palustris',
+  'Mayaca fluviatilis',
   'Sagittaria subulata',
   'Taxiphyllum barbieri',
   'Vesicularia montagnei',
-  'Fissidens fontanus',
+  'Christmas moss',
+  'Flame moss',
+  'Weeping moss',
   'Riccia fluitans',
   'Pistia stratiotes',
   'Limnobium laevigatum',
-  'Lemna minor',
   'Salvinia natans',
 ];
 
@@ -7359,7 +7552,7 @@ const FISH_LOCALIZED_COMMON_NAMES_BY_LATIN = Object.freeze({
   },
   'physella acuta': {
     pl: 'Rozdetka',
-    en: 'BĹ‚Ä…dder snail',
+    en: 'Błądder snail',
     de: 'Blasenschnecke',
   },
   'planorbella duryi': {
@@ -7686,7 +7879,7 @@ const PLANT_COMMON_NAME_OVERRIDES_BY_LATIN = Object.freeze({
   'hygrophila polysperma': 'Nadwodka wielonasienna',
   'hygrophila corymbosa': 'Nadwodka corymbosa',
   'hygrophila corymbosa siamensis': 'Nadwodka syjamska',
-  'hygrophila difformis': 'Nadwodka wieloksztaĹ‚tna',
+  'hygrophila difformis': 'Nadwodka wielokształtna',
   'hygrophila pinnatifida': 'Nadwodka pinnatifida',
   'taxiphyllum barbieri': 'Mch jawajski',
   'vesicularia montagnei': 'Mch christmas',
@@ -7795,16 +7988,13 @@ function getPlantCommonsFileOverride(latinKey) {
   );
 }
 
-const FISH_CATALOG_ALLOWED_LATIN_KEYS = new Set(
-  FISH_CATALOG_ALLOWED_LATIN_NAMES.map((name) => normalizeLatinCatalogKey(name)).filter(Boolean)
-);
 const PLANT_CATALOG_ALLOWED_LATIN_KEYS = new Set(
   PLANT_CATALOG_ALLOWED_LATIN_NAMES.map((name) => normalizeLatinCatalogKey(name)).filter(Boolean)
 );
 
 function isAllowedFishCatalogLatinName(latinName) {
   const normalizedKey = normalizeLatinCatalogKey(latinName);
-  return Boolean(normalizedKey) && FISH_CATALOG_ALLOWED_LATIN_KEYS.has(normalizedKey);
+  return Boolean(normalizedKey);
 }
 
 function isAllowedPlantCatalogLatinName(latinName) {
@@ -7854,11 +8044,6 @@ function isAllowedStockItem(item) {
   }
 
   return true;
-}
-
-function isBuiltInFishCatalogSource(source) {
-  const normalizedSource = String(source ?? '').trim().toLowerCase();
-  return normalizedSource === '' || normalizedSource === 'starter' || normalizedSource === 'expanded';
 }
 
 function buildFishCatalogSeed() {
@@ -8255,21 +8440,9 @@ function buildPlantSeedEntry(rawPlant, source) {
 
 function getPlantSeedScore(item) {
   const source = String(item.source ?? '').trim().toLowerCase();
-  const hasStarterRanges = source === 'starter';
-  const hasCustomNote =
-    item.notes && item.notes !== EXPANDED_PLANT_DEFAULTS.notes;
-
-  let score = 0;
-
-  if (hasStarterRanges) {
-    score += 100;
-  }
-
-  if (hasCustomNote) {
-    score += 1;
-  }
-
-  return score;
+  const hasCustomNote = item.notes && item.notes !== EXPANDED_PLANT_DEFAULTS.notes;
+  const sourceScore = source === 'expanded' ? 200 : source === 'starter' ? 100 : 0;
+  return sourceScore + (hasCustomNote ? 1 : 0);
 }
 
 function buildPlantCatalogSeed() {
@@ -8323,9 +8496,9 @@ const PRACTICAL_WATER_TOLERANCE = {
 
 const SENSITIVE_STOCK_KEYWORDS = [
   'wrazliw',
-  'stabilnych parametrĂłw',
+  'stabilnych parametrów',
   'stabilne warunki',
-  'miÄ™kkiej wod',
+  'miękkiej wod',
   'crystal red',
   'ramireza',
   'dyskowiec',
@@ -8471,7 +8644,7 @@ function checkFishCompatibility(item, measurement, tankLiters, tankProfile = nul
       !isSoftBottomSubstrate(substrateTypes)
     ) {
       issues.push(
-        `Ten gatunek zwykle lepiej czuje sie na miÄ™kkim podĹ‚oĹĽu, a w akwarium ustawiono: ${getSubstrateLabels(substrateTypes)}.`
+        `Ten gatunek zwykle lepiej czuje sie na miękkim podłożu, a w akwarium ustawiono: ${getSubstrateLabels(substrateTypes)}.`
       );
     }
 
@@ -8489,9 +8662,9 @@ function checkFishCompatibility(item, measurement, tankLiters, tankProfile = nul
         tankLightRank > lightLevelToRank(fishLightRange.max))
     ) {
       issues.push(
-        `Ĺ›wiatĹ‚o (${getTankLightingLabelForIssues(
+        `światło (${getTankLightingLabelForIssues(
           tankProfile
-        )}) moĹĽe nie byc optymalne dla tego gatunku.`
+        )}) może nie byc optymalne dla tego gatunku.`
       );
     }
   }
@@ -8513,7 +8686,7 @@ function isPotentialDiggingFish(item) {
     'kopi',
     'przekop',
     'grzebi',
-    'podĹ‚oĹĽe',
+    'podłoże',
     'geophagus',
     'earth eater',
     'pyszczak',
@@ -8568,7 +8741,7 @@ function checkPlantCompatibility(
     ) > 1
   ) {
     issues.push(
-      `Docelowy litraĹĽ dla tej rosliny to min. ${requirementsProfile.minTankVolumeL} l, a akwarium ma ${tankLiters} l.`
+      `Docelowy litraż dla tej rosliny to min. ${requirementsProfile.minTankVolumeL} l, a akwarium ma ${tankLiters} l.`
     );
   }
 
@@ -8580,7 +8753,7 @@ function checkPlantCompatibility(
       Number(tankProfile.heightCm) < Number(requirementsProfile.minTankHeightCm)
     ) {
       issues.push(
-        `WysokoĹ›? zbiornika (${Math.round(Number(tankProfile.heightCm))} cm) jest poniĹĽej zalecenia dla tej rosliny (${requirementsProfile.minTankHeightCm} cm).`
+        `Wysokoś? zbiornika (${Math.round(Number(tankProfile.heightCm))} cm) jest poniżej zalecenia dla tej rosliny (${requirementsProfile.minTankHeightCm} cm).`
       );
     }
 
@@ -8589,7 +8762,7 @@ function checkPlantCompatibility(
       normalizeDensityLevel(tankProfile?.zones?.plantArea) === 'low'
     ) {
       issues.push(
-        'Tylna strefa nasadzen jest uboga, a ta roslina najlepiej pracuje jako tlo. Rozwaz wiÄ™cej miejsca na tyl zbiornika.'
+        'Tylna strefa nasadzen jest uboga, a ta roslina najlepiej pracuje jako tlo. Rozwaz więcej miejsca na tyl zbiornika.'
       );
     }
 
@@ -8608,14 +8781,14 @@ function checkPlantCompatibility(
 
       if (!hasActiveRootTabsSupport) {
         issues.push(
-          `Ta roslina zwykle rosnie lepiej w bardziej zasobnym podĹ‚oĹĽu, a w akwarium ustawiono: ${getSubstrateLabels(substrateTypes)}.`
+          `Ta roslina zwykle rosnie lepiej w bardziej zasobnym podłożu, a w akwarium ustawiono: ${getSubstrateLabels(substrateTypes)}.`
         );
       } else if (
         Number.isFinite(rootTabsSupportDaysLeft) &&
         rootTabsSupportDaysLeft <= ROOT_TABS_DUE_SOON_DAYS
       ) {
         issues.push(
-          `PodĹ‚oĹĽe (${getSubstrateLabels(substrateTypes)}) jest wspierane kulkami nawozowymi, ale ich dziaĹ‚anie moĹĽe sie skonczyc za ok. ${Math.max(
+          `Podłoże (${getSubstrateLabels(substrateTypes)}) jest wspierane kulkami nawozowymi, ale ich działanie może sie skonczyc za ok. ${Math.max(
             0,
             Math.round(rootTabsSupportDaysLeft)
           )} dni.`
@@ -8644,7 +8817,7 @@ function checkPlantCompatibility(
         (lightHours < minHours || lightHours > maxHours)
       ) {
         issues.push(
-          `Czas Ĺ›wiecenia (${lightHours} h) moĹĽe utrudniac tej roslinie stabilny wzrost (zwykle ${minHours}-${maxHours} h).`
+          `Czas świecenia (${lightHours} h) może utrudniac tej roslinie stabilny wzrost (zwykle ${minHours}-${maxHours} h).`
         );
       }
     }
@@ -8666,7 +8839,7 @@ function checkPlantCompatibility(
       Number(measuredCo2) < 8
     ) {
       issues.push(
-        `CO2 (${Math.round(Number(measuredCo2))} mg/l) moĹĽe byc zbyt niskie dla stabilnego wzrostu tej rosliny.`
+        `CO2 (${Math.round(Number(measuredCo2))} mg/l) może byc zbyt niskie dla stabilnego wzrostu tej rosliny.`
       );
     }
 
@@ -8676,7 +8849,7 @@ function checkPlantCompatibility(
       !isNutrientSubstrate(substrateTypes)
     ) {
       issues.push(
-        'Roslina ma wysokie zapotrzebowanie nawozowe - przy tym podĹ‚oĹĽu rozwaz regularne nawozenie i wsparcie strefy korzeniowej.'
+        'Roslina ma wysokie zapotrzebowanie nawozowe - przy tym podłożu rozwaz regularne nawozenie i wsparcie strefy korzeniowej.'
       );
     }
   }
@@ -8687,18 +8860,18 @@ function checkPlantCompatibility(
   const diggerCount = fishItems.filter((fishItem) => isPotentialDiggingFish(fishItem)).length;
   if (!requirementsProfile.compatibleWithDiggers && diggerCount > 0) {
     issues.push(
-      `W akwarium sa ryby potencjalnie kopiace w podĹ‚oĹĽu (${diggerCount}), a ta roslina slabo to toleruje.`
+      `W akwarium sa ryby potencjalnie kopiace w podłożu (${diggerCount}), a ta roslina slabo to toleruje.`
     );
   }
 
   if (issues.length > 0 && requirementsProfile.parameterStabilitySensitivity === 'high') {
     issues.push(
-      'Ta roslina jest wrazliwa na skoki parametrĂłw - korekty wykonuj stopniowo.'
+      'Ta roslina jest wrazliwa na skoki parametrów - korekty wykonuj stopniowo.'
     );
   }
   if (issues.length > 0 && requirementsProfile.carboSensitivity === 'high') {
     issues.push(
-      'Roslina moĹĽe byc wrazliwa na agresywne dawkowanie carbo - zaczynaj od mniejszych dawek i obserwuj liĹ›cie.'
+      'Roslina może byc wrazliwa na agresywne dawkowanie carbo - zaczynaj od mniejszych dawek i obserwuj liście.'
     );
   }
 
@@ -8989,14 +9162,14 @@ function buildContextualEcosystemInsights({
       value: `${Math.round(no3Value * 10) / 10} mg/l`,
       expectedRange: `NO3 <= ${no3SafeMax} mg/l i trend stabilny`,
       issue:
-        'Duza obsada przy malej masie roslin zwiÄ™ksza produkcje azotanow szybciej niĹĽ zbiornik je wykorzystuje.',
+        'Duza obsada przy malej masie roslin zwiększa produkcje azotanow szybciej niż zbiornik je wykorzystuje.',
       action:
         'Na 10-14 dni: podmiany 20-25% co 3-4 dni, karmienie -20-30%, odmulanie dna i dodanie szybko rosnacych roslin (np. rogatek, hygrophila, nurzaniec).',
       dueInDays: severity === 'critical' ? 0 : 1,
     });
 
     summaryHints.push(
-      'Parametry trzeba czytac razem z obciÄ…ĹĽeniem zbiornika: przy tej obsadzie NO3 bedzie wracalo bez korekty karmienia i masy roslin.'
+      'Parametry trzeba czytac razem z obciążeniem zbiornika: przy tej obsadzie NO3 bedzie wracalo bez korekty karmienia i masy roslin.'
     );
   }
 
@@ -9011,9 +9184,9 @@ function buildContextualEcosystemInsights({
       value: 'brak aktywnego testu',
       expectedRange: `NO3 <= ${no3SafeMax} mg/l`,
       issue:
-        'Przy tej obsadzie bez testu NO3 trudno wychwycic narastanie obciÄ…ĹĽenia biologicznego.',
+        'Przy tej obsadzie bez testu NO3 trudno wychwycic narastanie obciążenia biologicznego.',
       action:
-        'WĹ‚Ä…cz test NO3 w ustawieniach i kontroluj go min. 2 razy w tygodniu przez najbliĹĽsze 2 tygodnie.',
+        'Włącz test NO3 w ustawieniach i kontroluj go min. 2 razy w tygodniu przez najbliższe 2 tygodnie.',
       dueInDays: 1,
     });
   }
@@ -9025,13 +9198,13 @@ function buildContextualEcosystemInsights({
   ) {
     recommendations.push({
       severity: hasStrongBioloadPressure ? 'critical' : 'warning',
-      parameter: 'Filtracja / obciÄ…ĹĽenie',
+      parameter: 'Filtracja / obciążenie',
       value: hasStrongBioloadPressure ? 'wysokie' : 'podwyzszone',
       expectedRange: 'wydajna filtracja biologiczna dla aktualnej obsady',
       issue:
-        'ObciÄ…ĹĽenie biologiczne jest wysokie, a filtracja wymaga poprawy - to przyspiesza skoki NO2/NO3.',
+        'Obciążenie biologiczne jest wysokie, a filtracja wymaga poprawy - to przyspiesza skoki NO2/NO3.',
       action:
-        'Popraw filtracje: wyczysc prefiltr, zwiÄ™ksz media biologiczne i rozwaz mocniejszy zestaw lub drugi filtr.',
+        'Popraw filtracje: wyczysc prefiltr, zwiększ media biologiczne i rozwaz mocniejszy zestaw lub drugi filtr.',
       dueInDays: hasStrongBioloadPressure ? 0 : 2,
     });
   }
@@ -9155,7 +9328,7 @@ function buildAquariumHealthAssessment({
   };
 
   if (!Number.isFinite(tankLiters) || tankLiters <= 0) {
-    applyPenalty(22, 'Brak poprawnego litraĹĽu akwarium.');
+    applyPenalty(22, 'Brak poprawnego litrażu akwarium.');
   } else {
     accuracy += 20;
 
@@ -9270,7 +9443,7 @@ function buildAquariumHealthAssessment({
     if (analysis?.status === 'critical') {
       applyPenalty(16, 'Parametry wody sa wyraznie poza bezpiecznym zakresem.');
     } else if (analysis?.status === 'warning') {
-      applyPenalty(8, 'Czesc parametrĂłw wody warto skorygowac.');
+      applyPenalty(8, 'Czesc parametrów wody warto skorygowac.');
     } else if (analysis?.status === 'ok') {
       applyBonus(3);
     }
@@ -9282,7 +9455,7 @@ function buildAquariumHealthAssessment({
 
     const riskPenalty = Math.min(riskNotes.length * 2, 8);
     if (riskPenalty > 0) {
-      applyPenalty(riskPenalty, 'Widac dodatkowe ryzyka dla stabilnoĹ›ci zbiornika.');
+      applyPenalty(riskPenalty, 'Widac dodatkowe ryzyka dla stabilności zbiornika.');
     }
   }
 
@@ -9352,14 +9525,17 @@ function buildAquariumHealthAssessment({
     }
   }
 
-  if (fishItems.length > 0 && stockingCompatibility.score < 85) {
+  if (fishItems.length > 0 && stockingCompatibility.score > 80) {
     const dynamicPenalty = Math.min(
-      Math.max(6, Math.round((100 - Number(stockingCompatibility.score)) * 0.34)),
+      Math.max(
+        6,
+        Math.round((Number(stockingCompatibility.score) - 80) * 0.7)
+      ),
       34
     );
     applyPenalty(
       dynamicPenalty,
-      `Kontekstowa zgodnosc obsady jest oceniona na ${stockingCompatibility.score}/100 (${stockingCompatibility.overallUiStatus}).`
+      `Kontekstowa zgodnosc obsady jest oceniona na ${stockingCompatibility.score}% (${stockingCompatibility.overallUiStatus}).`
     );
   } else {
     applyBonus(3);
@@ -9401,7 +9577,7 @@ function buildAquariumHealthAssessment({
     ];
 
     if (names.length === 0) {
-      return 'problem wymagajÄ…cy kontroli';
+      return 'problem wymagający kontroli';
     }
 
     const visibleNames = names.slice(0, 3).join(', ');
@@ -9427,7 +9603,7 @@ function buildAquariumHealthAssessment({
     const fishDiseasePenalty = Math.min(6 + Math.round((fishDiseaseLoad - 1) * 3), 14);
     applyPenalty(
       fishDiseasePenalty,
-      `Choroby ryb wymagaj? terapii: ${formatIssueNames(activeFishDiseaseCases)}.`,
+      `Choroby ryb wymagają terapii: ${formatIssueNames(activeFishDiseaseCases)}.`,
       'health'
     );
   }
@@ -9437,7 +9613,7 @@ function buildAquariumHealthAssessment({
     const plantDiseasePenalty = Math.min(4 + Math.round((plantDiseaseLoad - 1) * 2), 10);
     applyPenalty(
       plantDiseasePenalty,
-      `Choroby roslin wymagaj? terapii: ${formatIssueNames(activePlantDiseaseCases)}.`,
+      `Choroby roslin wymagają terapii: ${formatIssueNames(activePlantDiseaseCases)}.`,
       'health'
     );
   }
@@ -9447,7 +9623,7 @@ function buildAquariumHealthAssessment({
     const algaePenalty = Math.min(5 + Math.round((algaeLoad - 1) * 2), 12);
     applyPenalty(
       algaePenalty,
-      `Glony wymagaj? opanowania: ${formatIssueNames(activeAlgaeCases)}.`,
+      `Glony wymagają opanowania: ${formatIssueNames(activeAlgaeCases)}.`,
       'health'
     );
   }
@@ -9916,24 +10092,24 @@ function buildProbableCausesByContext(kind, candidate, context) {
     push('Trend PO4 jest wzrostowy.');
   }
   if (trends?.ph?.direction !== 'stable' && trends?.ph?.direction !== 'unknown') {
-    push('pH wykazuje niestabilnoĹ›Ä‡ miÄ™dzy pomiarami.');
+    push('pH wykazuje niestabilność między pomiarami.');
   }
   if (
     trends?.temperature?.direction !== 'stable' &&
     trends?.temperature?.direction !== 'unknown'
   ) {
-    push('Temperatura wykazuje wahania miÄ™dzy pomiarami.');
+    push('Temperatura wykazuje wahania między pomiarami.');
   }
 
   if (kind === 'algae' || kind === 'plant_disease') {
     if (Number.isFinite(lightHours) && lightHours > 9) {
-      push(`Dlugie swiecenie (${lightHours} h) moĹĽe napedzac nierownowage.`);
+      push(`Dlugie swiecenie (${lightHours} h) może napedzac nierownowage.`);
     }
     if (Number.isFinite(lumensPerLiter) && lumensPerLiter > 50) {
-      push(`Mocne oĹ›wietlenie (${Math.round(lumensPerLiter)} lm/l) wymaga stabilnego nawozenia i CO2.`);
+      push(`Mocne oświetlenie (${Math.round(lumensPerLiter)} lm/l) wymaga stabilnego nawozenia i CO2.`);
     }
     if (Number.isFinite(co2) && co2 < 10) {
-      push(`CO2 jest niskie (${Math.round(co2)} mg/l), co moĹĽe oslabiac konkurencje roslin.`);
+      push(`CO2 jest niskie (${Math.round(co2)} mg/l), co może oslabiac konkurencje roslin.`);
     }
     if (Number.isFinite(po4) && po4 > 2) {
       push(`PO4 jest wysokie (${Math.round(po4 * 100) / 100} mg/l).`);
@@ -9945,7 +10121,7 @@ function buildProbableCausesByContext(kind, candidate, context) {
       push('Brak aktywnego wsparcia nawozenia strefy korzeniowej.');
     }
     if (Number.isFinite(fe) && fe < 0.02 && kind === 'plant_disease') {
-      push(`Niskie Fe (${Math.round(fe * 100) / 100} mg/l) moĹĽe ograniczac wzrost roslin.`);
+      push(`Niskie Fe (${Math.round(fe * 100) / 100} mg/l) może ograniczac wzrost roslin.`);
     }
   }
 
@@ -9954,7 +10130,7 @@ function buildProbableCausesByContext(kind, candidate, context) {
       context?.stockingCompatibility?.overallStatus ?? ''
     );
     if (overallStockingStatus === 'high_risk' || overallStockingStatus === 'incompatible') {
-      push('Obsada jest ryzykowna, co zwiÄ™ksza stres i podatnosc ryb na choroby.');
+      push('Obsada jest ryzykowna, co zwiększa stres i podatnosc ryb na choroby.');
     }
   }
 
@@ -9963,7 +10139,7 @@ function buildProbableCausesByContext(kind, candidate, context) {
   }
 
   if (Number.isFinite(tankAgeDays) && tankAgeDays > 0 && tankAgeDays < 30) {
-    push(`Mlody wiek akwarium (${tankAgeDays} dni) moĹĽe zwiÄ™kszac ryzyko nierownowagi.`);
+    push(`Mlody wiek akwarium (${tankAgeDays} dni) może zwiększac ryzyko nierownowagi.`);
   }
 
   return dedupeTextList(causes, 6);
@@ -9983,22 +10159,22 @@ function buildDiagnosisTimelinePlan(kind, candidate, context) {
   const d30 = [];
 
   if (kind === 'disease') {
-    h24.push('Sprawdz NO2, NH3/NH4, temperature i napowietrzanie; popraw warunki zanim wdrozysz leczenie.');
+    h24.push('Sprawdź NO2, NH3/NH4, temperature i napowietrzanie; popraw warunki zanim wdrozysz leczenie.');
     h24.push('Oddziel osobniki najslabsze do obserwacji (jesli to bezpieczne).');
-    d7.push('Prowadz codzieĹ„na obserwacje zachowania i apetytu; zapisuj zmiany.');
-    d7.push('Wykonaj 2-3 kontrolÄ™ parametrĂłw i utrzymuj regularne podmiany.');
+    d7.push('Prowadz codzieńna obserwacje zachowania i apetytu; zapisuj zmiany.');
+    d7.push('Wykonaj 2-3 kontrolę parametrów i utrzymuj regularne podmiany.');
     d30.push('Po ustabilizowaniu zbiornika zweryfikuj obsade i ogranicz dlugoterminowy stres.');
   } else if (kind === 'plant_disease') {
-    h24.push('Sprawdz Ĺ›wiatĹ‚o (czas/moc), CO2 i podstawowe makro/mikro; nie zmieniaj wszystkiego naraz.');
-    h24.push('Usun najmocniej uszkodzone liĹ›cie.');
-    d7.push('WprowadĹş jedna korekte co 2-3 dni i obserwuj nowe przyrosty.');
-    d7.push('Kontroluj NO3/PO4/Fe oraz stabilnoĹ›? pH.');
-    d30.push('Ustal staly schemat Ĺ›wiatĹ‚a, nawozenia i podmian; oceniaj glownie nowe liĹ›cie.');
+    h24.push('Sprawdź światło (czas/moc), CO2 i podstawowe makro/mikro; nie zmieniaj wszystkiego naraz.');
+    h24.push('Usun najmocniej uszkodzone liście.');
+    d7.push('Wprowadź jedna korekte co 2-3 dni i obserwuj nowe przyrosty.');
+    d7.push('Kontroluj NO3/PO4/Fe oraz stabilnoś? pH.');
+    d30.push('Ustal staly schemat światła, nawozenia i podmian; oceniaj glownie nowe liście.');
   } else {
     h24.push('Mechanicznie usun glony i wykonaj serwis, bez agresywnych dawek preparatow na start.');
-    h24.push('Skoryguj Ĺ›wiatĹ‚o do stabilnego zakresu i ogranicz przekarmianie.');
+    h24.push('Skoryguj światło do stabilnego zakresu i ogranicz przekarmianie.');
     d7.push('Monitoruj trendy NO3/PO4/CO2 i poprawiaj jedna zmienna naraz.');
-    d7.push('Wzmocnij konkurencje roslin (masa roslinna, stabilnoĹ›? nawozenia).');
+    d7.push('Wzmocnij konkurencje roslin (masa roslinna, stabilnoś? nawozenia).');
     d30.push('Utrzymaj profilaktyke: regularne podmiany, przycinki i higiena filtra.');
   }
 
@@ -10367,7 +10543,7 @@ function buildTankOnboardingPlan(tank, measurements, enabledTests = {}) {
       checklistStart: [],
       firstMeasurements: [],
       statusText:
-        'Nie udalo sie zbudowac planu onboardingu dla tego akwarium. Sprawdz dane i sprĂłbuj ponownie.',
+        'Nie udało się zbudować planu onboardingu dla tego akwarium. Sprawdź dane i spróbuj ponownie.',
       dayNumber: 0,
       targetEndDay: 0,
       isStabilized: false,
@@ -10889,7 +11065,7 @@ export default function HomeScreen() {
             resolvedUser = auth.currentUser ?? nextUser;
           } catch (reloadError) {
             console.warn(
-              'BĹ‚Ä…d odĹ›wieĹĽenia statusu emailVerified:',
+              'Błąd odświeżenia statusu emailVerified:',
               reloadError instanceof Error ? reloadError.message : String(reloadError)
             );
           }
@@ -10901,7 +11077,7 @@ export default function HomeScreen() {
 
           signOut(auth).catch((error) => {
             console.warn(
-              'BĹ‚Ä…d wylogowania nieweryfikowanego konta:',
+              'Błąd wylogowania nieweryfikowanego konta:',
               error instanceof Error ? error.message : String(error)
             );
           });
@@ -10910,7 +11086,7 @@ export default function HomeScreen() {
           setInitialDataReady(true);
           if (shouldShowAlert) {
             showUnverifiedEmailAlert(
-              'Najpierw zweryfikuj email. Sprawdz skrzynke i kliknij link aktywacyjny.'
+              'Najpierw zweryfikuj email. Sprawdź skrzynke i kliknij link aktywacyjny.'
             );
           }
           return;
@@ -11051,7 +11227,7 @@ export default function HomeScreen() {
         }
       } catch (error) {
         console.warn(
-          'BĹ‚Ä…d obslugi onAuthStateChanged:',
+          'Błąd obslugi onAuthStateChanged:',
           error instanceof Error ? error.message : String(error)
         );
         logTelemetryError(error, {
@@ -11171,7 +11347,7 @@ export default function HomeScreen() {
         await AsyncStorage.setItem(storageKey, nextSelectedTank.id);
       } catch (error) {
         alert(
-          'BĹ‚Ä…d pobierania akwariĂłw: ' +
+          'Błąd pobierania akwariów: ' +
             (error instanceof Error ? error.message : '')
         );
       } finally {
@@ -11225,7 +11401,7 @@ export default function HomeScreen() {
       setMeasurements(data);
     } catch (error) {
       alert(
-        'BĹ‚Ä…d pobierania historii: ' +
+        'Błąd pobierania historii: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -11282,7 +11458,7 @@ export default function HomeScreen() {
       );
     } catch (error) {
       alert(
-        'BĹ‚Ä…d pobierania obsady: ' +
+        'Błąd pobierania obsady: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -11363,7 +11539,7 @@ export default function HomeScreen() {
       setHomeActiveIssueCases(activeIssues);
     } catch (error) {
       alert(
-        'BĹ‚Ä…d pobierania danych ekranu glownego: ' +
+        'Błąd pobierania danych ekranu glownego: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -11402,7 +11578,7 @@ export default function HomeScreen() {
       setTankDiseaseHistoryCases(allCases);
     } catch (error) {
       alert(
-        'BĹ‚Ä…d pobierania chorĂłb akwarium: ' +
+        'Błąd pobierania chorób akwarium: ' +
           (error instanceof Error ? error.message : '')
       );
     }
@@ -11412,8 +11588,7 @@ export default function HomeScreen() {
     setFishCatalogLoading(true);
 
     try {
-      const catalogCollection = collection(db, 'fishCatalog');
-      const snapshot = await getDocs(catalogCollection);
+      const snapshot = await getDocs(collection(db, 'fishCatalog'));
       const existingRaw = snapshot.docs
         .map((item) => {
           const raw = item.data();
@@ -11425,262 +11600,30 @@ export default function HomeScreen() {
         });
 
       const {
-        uniqueEntries: existing,
-        duplicateIds: duplicateCatalogDocIds,
+        uniqueEntries: dedupedData,
       } = dedupeFishCatalogEntriesByLatin(existingRaw);
 
-      if (duplicateCatalogDocIds.length > 0) {
-        await Promise.all(
-          duplicateCatalogDocIds.map((itemId) =>
-            deleteDoc(doc(db, 'fishCatalog', itemId))
-          )
-        );
-      }
-
-      const disallowedCatalogEntryIds = existing
-        .filter((item) => !isAllowedFishCatalogLatinName(item.latinName))
-        .map((item) => item.id);
-
-      if (disallowedCatalogEntryIds.length > 0) {
-        await Promise.all(
-          disallowedCatalogEntryIds.map((itemId) =>
-            deleteDoc(doc(db, 'fishCatalog', itemId))
-          )
-        );
-      }
-
-      const allowedExisting = existing.filter((item) =>
-        isAllowedFishCatalogLatinName(item.latinName)
-      );
-
-      const existingLatinNames = new Set(
-        allowedExisting.map((item) => normalizeLatinCatalogKey(item.latinName))
-      );
-      const missingSeedFish = FISH_CATALOG_SEED.filter(
-        (fish) => !existingLatinNames.has(normalizeLatinCatalogKey(fish.latinName))
-      );
-      const existingByLatinName = new Map(
-        allowedExisting.map((item) => [normalizeLatinCatalogKey(item.latinName), item])
-      );
-
-      const existingSeedUpdates = FISH_CATALOG_SEED.map((fish) => {
-        const normalizedLatin = normalizeLatinCatalogKey(fish.latinName);
-        const existingItem = existingByLatinName.get(normalizedLatin);
-
-        if (!existingItem || !isBuiltInFishCatalogSource(existingItem.source)) {
-          return null;
-        }
-
-        const patch = {};
-
-        if (normalizeText(existingItem.commonName) !== normalizeText(fish.commonName)) {
-          patch.commonName = fish.commonName;
-          patch.commonNameNormalized = normalizeText(fish.commonName);
-        }
-
-        if (normalizeText(existingItem.latinName) !== normalizeText(fish.latinName)) {
-          patch.latinName = fish.latinName;
-          patch.latinNameNormalized = normalizeText(fish.latinName);
-        }
-
-        if (Number(existingItem.phMin) !== Number(fish.phMin)) {
-          patch.phMin = Number(fish.phMin);
-        }
-
-        if (Number(existingItem.phMax) !== Number(fish.phMax)) {
-          patch.phMax = Number(fish.phMax);
-        }
-
-        if (Number(existingItem.ghMin) !== Number(fish.ghMin)) {
-          patch.ghMin = Number(fish.ghMin);
-        }
-
-        if (Number(existingItem.ghMax) !== Number(fish.ghMax)) {
-          patch.ghMax = Number(fish.ghMax);
-        }
-
-        if (Number(existingItem.tempMin) !== Number(fish.tempMin)) {
-          patch.tempMin = Number(fish.tempMin);
-        }
-
-        if (Number(existingItem.tempMax) !== Number(fish.tempMax)) {
-          patch.tempMax = Number(fish.tempMax);
-        }
-
-        if (Number(existingItem.minLiters) !== Number(fish.minLiters)) {
-          patch.minLiters = Number(fish.minLiters);
-        }
-
-        if (Boolean(existingItem.isSchooling) !== Boolean(fish.isSchooling)) {
-          patch.isSchooling = Boolean(fish.isSchooling);
-        }
-
-        if (Number(existingItem.minGroupSize ?? 0) !== Number(fish.minGroupSize ?? 0)) {
-          patch.minGroupSize = Number(fish.minGroupSize ?? 0);
-        }
-
-        if (
-          normalizeAggressionLevel(existingItem.aggressionLevel) !==
-          normalizeAggressionLevel(fish.aggressionLevel)
-        ) {
-          patch.aggressionLevel = normalizeAggressionLevel(fish.aggressionLevel);
-        }
-
-        const existingWasteProductionLevel = normalizeWasteProductionLevelValue(
-          existingItem.wasteProductionLevel
-        );
-        const nextWasteProductionLevel = normalizeWasteProductionLevelValue(
-          fish.wasteProductionLevel
-        );
-        if (
-          Number.isFinite(nextWasteProductionLevel) &&
-          nextWasteProductionLevel >= 0 &&
-          existingWasteProductionLevel !== nextWasteProductionLevel
-        ) {
-          patch.wasteProductionLevel = nextWasteProductionLevel;
-        }
-
-        const existingFishProfile = getFishSpeciesProfile(existingItem);
-        const nextFishProfile = getFishSpeciesProfile(fish);
-        if (
-          JSON.stringify(existingFishProfile) !== JSON.stringify(nextFishProfile)
-        ) {
-          patch.fishProfile = nextFishProfile;
-        }
-
-        if (String(existingItem.notes ?? '').trim() !== String(fish.notes ?? '').trim()) {
-          patch.notes = fish.notes ?? '';
-        }
-
-        if (existingItem.source !== fish.source) {
-          patch.source = fish.source;
-        }
-
-        if (Object.keys(patch).length === 0) {
-          return null;
-        }
-
-        return {
-          id: existingItem.id,
-          patch,
-        };
-      }).filter(Boolean);
-      const existingImageUrlBackfills = allowedExisting
+      const hydratedCatalogEntries = dedupedData
+        .filter((item) => isAllowedFishCatalogLatinName(item.latinName))
         .map((item) => {
-          const patch = {};
-          const imagePreviewUrl = String(item?.imagePreviewUrl ?? '').trim();
           const imageUrl = String(item?.imageUrl ?? '').trim();
+          const imagePreviewUrl = String(item?.imagePreviewUrl ?? '').trim();
           const fallbackImageUrl = buildFishCatalogImageUrl(item?.latinName);
 
-          if (!imageUrl && imagePreviewUrl) {
-            patch.imageUrl = imagePreviewUrl;
-          } else if (!imageUrl && fallbackImageUrl) {
-            patch.imageUrl = fallbackImageUrl;
+          if (!fallbackImageUrl) {
+            return item;
           }
 
-          if (!imagePreviewUrl && imageUrl) {
-            patch.imagePreviewUrl = imageUrl;
-          } else if (!imagePreviewUrl && fallbackImageUrl) {
-            patch.imagePreviewUrl = fallbackImageUrl;
-          }
-
-          return Object.keys(patch).length > 0
-            ? {
-                id: item.id,
-                patch,
-              }
-            : null;
-        })
-        .filter(Boolean);
-      const catalogUpdatesById = new Map();
-      [...existingSeedUpdates, ...existingImageUrlBackfills].forEach((item) => {
-        const currentPatch = catalogUpdatesById.get(item.id) ?? {};
-        catalogUpdatesById.set(item.id, {
-          ...currentPatch,
-          ...item.patch,
+          return {
+            ...item,
+            imageUrl: imageUrl || fallbackImageUrl,
+            imagePreviewUrl: imagePreviewUrl || imageUrl || fallbackImageUrl,
+          };
         });
-      });
-      const catalogUpdates = Array.from(catalogUpdatesById.entries()).map(
-        ([id, patch]) => ({
-          id,
-          patch,
-        })
-      );
-
-      let added = [];
-      let patched = [];
-
-      if (missingSeedFish.length > 0) {
-        const createdDocs = await Promise.all(
-          missingSeedFish.map((fish) =>
-            addDocWithTelemetry(
-              'fishCatalog',
-              catalogCollection,
-              {
-                ...fish,
-                commonNameNormalized: normalizeText(fish.commonName),
-                latinNameNormalized: normalizeText(fish.latinName),
-                createdAt: new Date(),
-              },
-              {
-                source: 'sync_fish_catalog_seed',
-              }
-            )
-          )
-        );
-
-        added = createdDocs.map((docRef, index) => ({
-          ...missingSeedFish[index],
-          id: docRef.id,
-        }));
-      }
-
-      if (catalogUpdates.length > 0) {
-        await Promise.all(
-          catalogUpdates.map((item) =>
-            updateDocWithTelemetry(
-              'fishCatalog',
-              doc(db, 'fishCatalog', item.id),
-              item.patch,
-              {
-                source: 'sync_fish_catalog_patch',
-              }
-            )
-          )
-        );
-
-        patched = catalogUpdates.map((item) => ({
-          id: item.id,
-          ...item.patch,
-        }));
-      }
-
-      const patchedById = new Map(patched.map((item) => [item.id, item]));
-      const syncedExisting = allowedExisting.map((item) =>
-        patchedById.has(item.id) ? { ...item, ...patchedById.get(item.id) } : item
-      );
-
-      const combinedCatalog = [...syncedExisting, ...added];
-      const {
-        uniqueEntries: dedupedData,
-        duplicateIds: combinedDuplicateIds,
-      } = dedupeFishCatalogEntriesByLatin(combinedCatalog);
-
-      const duplicateIdsToDelete = combinedDuplicateIds.filter(
-        (itemId) => !duplicateCatalogDocIds.includes(itemId)
-      );
-
-      if (duplicateIdsToDelete.length > 0) {
-        await Promise.all(
-          duplicateIdsToDelete.map((itemId) =>
-            deleteDoc(doc(db, 'fishCatalog', itemId))
-          )
-        );
-      }
 
       const data = sortCatalogEntriesByCommonName(
         localizeFishCatalogEntriesForLanguage(
-          dedupedData.filter((item) => isAllowedFishCatalogLatinName(item.latinName)),
+          hydratedCatalogEntries,
           catalogLanguageRef.current
         ),
         catalogLanguageRef.current
@@ -11757,7 +11700,7 @@ export default function HomeScreen() {
         setFishCatalog(hydratedFallbackData);
       } else {
         alert(
-          'BĹ‚Ä…d pobierania katalogu ryb: ' +
+          'Błąd pobierania katalogu ryb: ' +
             (error instanceof Error ? error.message : '')
         );
       }
@@ -12074,7 +12017,7 @@ export default function HomeScreen() {
       setPlantCatalog(data);
     } catch (error) {
       alert(
-        'BĹ‚Ä…d pobierania katalogu roslin: ' +
+        'Błąd pobierania katalogu roslin: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -12175,7 +12118,7 @@ export default function HomeScreen() {
       'algaeCatalog',
       setAlgaeCatalog,
       setAlgaeCatalogLoading,
-      'BĹ‚Ä…d pobierania katalogu glonow'
+      'Błąd pobierania katalogu glonow'
     );
   }, [fetchIssueCatalog]);
 
@@ -12184,7 +12127,7 @@ export default function HomeScreen() {
       'fishDiseaseCatalog',
       setDiseaseCatalog,
       setDiseaseCatalogLoading,
-      'BĹ‚Ä…d pobierania katalogu chorĂłb ryb'
+      'Błąd pobierania katalogu chorób ryb'
     );
   }, [fetchIssueCatalog]);
 
@@ -12193,7 +12136,7 @@ export default function HomeScreen() {
       'plantDiseaseCatalog',
       setPlantDiseaseCatalog,
       setPlantDiseaseCatalogLoading,
-      'BĹ‚Ä…d pobierania katalogu chorĂłb roslin'
+      'Błąd pobierania katalogu chorób roslin'
     );
   }, [fetchIssueCatalog]);
 
@@ -12219,7 +12162,7 @@ export default function HomeScreen() {
     } catch (error) {
       setEquipmentCatalog([]);
       alert(
-        'BĹ‚Ä…d pobierania katalogu sprzÄ™tu: ' +
+        'Błąd pobierania katalogu sprzętu: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -12676,7 +12619,7 @@ export default function HomeScreen() {
       }
     } catch (error) {
       alert(
-        'BĹ‚Ä…d odĹ›wieĹĽania danych: ' +
+        'Błąd odświeżania danych: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -12734,7 +12677,7 @@ export default function HomeScreen() {
         setPassword('');
         setAuthMode('login');
         alert(
-          'Konto utworzone. WysĹ‚aliĹ›my link weryfikacyjny na email. Zweryfikuj adres i zaloguj si? ponownie.'
+          'Konto utworzone. Wysłaliśmy link weryfikacyjny na email. Zweryfikuj adres i zaloguj się ponownie.'
         );
       } else {
         const credentials = await signInWithEmailAndPassword(
@@ -12750,7 +12693,7 @@ export default function HomeScreen() {
             await sendEmailVerification(refreshedUser);
           } catch (verificationError) {
             console.warn(
-              'BĹ‚Ä…d ponownej wysylki weryfikacji email:',
+              'Błąd ponownej wysylki weryfikacji email:',
               verificationError instanceof Error
                 ? verificationError.message
                 : String(verificationError)
@@ -12760,7 +12703,7 @@ export default function HomeScreen() {
           skipNextUnverifiedAlertRef.current = true;
           await signOut(auth);
           showUnverifiedEmailAlert(
-            'Najpierw zweryfikuj email. WysĹ‚aliĹ›my ponownie link aktywacyjny.'
+            'Najpierw zweryfikuj email. Wysłaliśmy ponownie link aktywacyjny.'
           );
           return;
         }
@@ -12768,7 +12711,7 @@ export default function HomeScreen() {
     } catch (error) {
       skipNextUnverifiedAlertRef.current = false;
       alert(
-        `${authMode === 'register' ? 'BĹ‚Ä…d rejestracji' : 'BĹ‚Ä…d logowania'}: ` +
+        `${authMode === 'register' ? 'Błąd rejestracji' : 'Błąd logowania'}: ` +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -12805,7 +12748,7 @@ export default function HomeScreen() {
           );
         } else {
           alert(
-            'BĹ‚Ä…d logowania Google: ' +
+            'Błąd logowania Google: ' +
               (error instanceof Error ? error.message : '')
           );
         }
@@ -12874,7 +12817,7 @@ export default function HomeScreen() {
       setAuthBusy(false);
     }
     alert(
-      'Logowanie Google wrĂłilo do aplikacji, ale Google nie przekazal tokenu. SprĂłbuj ponownie za chwile.'
+      'Logowanie Google wróilo do aplikacji, ale Google nie przekazal tokenu. Spróbuj ponownie za chwile.'
     );
   }, [
     completeGoogleAuthWithTokens,
@@ -12914,7 +12857,7 @@ export default function HomeScreen() {
 
     if (!googleAuthRequest) {
       alert(
-        'Logowanie Google nie jest jeszcze gotowe. Sprawdz konfiguracje client ID.'
+        'Logowanie Google nie jest jeszcze gotowe. Sprawdź konfiguracje client ID.'
       );
       return;
     }
@@ -12953,7 +12896,7 @@ export default function HomeScreen() {
           setAuthBusy(false);
         }
         alert(
-          'Logowanie Google nie zwrĂłilo tokenu. Sprawdz konfiguracje OAuth i sprĂłbuj ponownie.'
+          'Logowanie Google nie zwróilo tokenu. Sprawdź konfiguracje OAuth i spróbuj ponownie.'
         );
         return;
       }
@@ -12975,7 +12918,7 @@ export default function HomeScreen() {
           ? t('deleteAccountReauthGoogleStartError', {
               value: error instanceof Error ? error.message : String(error ?? ''),
             })
-          : 'BĹ‚Ä…d uruchamiania logowania Google: ' +
+          : 'Błąd uruchamiania logowania Google: ' +
             (error instanceof Error ? error.message : '')
       );
     }
@@ -13006,10 +12949,10 @@ export default function HomeScreen() {
     try {
       await sendPasswordResetEmail(auth, normalizedEmail);
       setIsForgotPasswordModalVisible(false);
-      alert('WysĹ‚aliĹ›my link do resetu hasla na podany email.');
+      alert('Wysłaliśmy link do resetu hasla na podany email.');
     } catch (error) {
       alert(
-        'BĹ‚Ä…d wysylki resetu hasla: ' +
+        'Błąd wysylki resetu hasla: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -13123,7 +13066,7 @@ export default function HomeScreen() {
 
     if (!nextTank) {
       alert(
-        'W obecnym planie nie ma kolejnych aktywnych akwariĂłw do przeĹ‚Ä…czenia.'
+        'W obecnym planie nie ma kolejnych aktywnych akwariów do przełączenia.'
       );
       return;
     }
@@ -13135,7 +13078,7 @@ export default function HomeScreen() {
       await AsyncStorage.setItem(storageKey, nextTank.id);
     } catch (error) {
       alert(
-        'BĹ‚Ä…d zapisu wybranego akwarium: ' +
+        'Błąd zapisu wybranego akwarium: ' +
           (error instanceof Error ? error.message : '')
       );
     }
@@ -13149,7 +13092,7 @@ export default function HomeScreen() {
     const tankIndex = tanks.findIndex((item) => item?.id === tank?.id);
     if (tankIndex >= 0 && isTankLockedByPlan(currentPlan, tankIndex)) {
       alert(
-        'W planie Free moĹĽesz aktywnie prowadzic 1 akwarium. PozostaĹ‚e akwaria sa bezpiecznie zapisane i odblokuj? sie po powrĂłie do Premium.'
+        'W planie Free możesz aktywnie prowadzić 1 akwarium. Pozostałe akwaria są bezpiecznie zapisane i odblokują się po powrocie do Premium.'
       );
       return;
     }
@@ -13167,7 +13110,7 @@ export default function HomeScreen() {
       ]);
     } catch (error) {
       alert(
-        'BĹ‚Ä…d otwierania akwarium: ' +
+        'Błąd otwierania akwarium: ' +
           (error instanceof Error ? error.message : '')
       );
     }
@@ -13224,7 +13167,7 @@ export default function HomeScreen() {
     }
     if (selectedTankLockedByPlan) {
       alert(
-        'To akwarium jest zablokowane przez obecny plan i jest dostÄ™pne tylko do odczytu.'
+        'To akwarium jest zablokowane przez obecny plan i jest dostępne tylko do odczytu.'
       );
       return;
     }
@@ -13344,7 +13287,7 @@ export default function HomeScreen() {
         `${t('subscriptionTankLimitReached', {
           plan: currentSubscriptionTierLabel,
           limit: tankLimit,
-        })}\n\nW planie Free moĹĽesz aktywnie prowadzic 1 akwarium. PozostaĹ‚e akwaria sa bezpiecznie zapisane i odblokuj? sie po powrĂłie do Premium.`
+        })}\n\nW planie Free możesz aktywnie prowadzić 1 akwarium. Pozostałe akwaria są bezpiecznie zapisane i odblokują się po powrocie do Premium.`
       );
       return;
     }
@@ -13807,32 +13750,32 @@ export default function HomeScreen() {
           return false;
         }
         try {
-          parsePositiveNumberOrThrow('litraĹĽ', tankLiters);
+          parsePositiveNumberOrThrow('litraż', tankLiters);
         } catch (error) {
-          alert(error instanceof Error ? error.message : 'Niepoprawny litraĹĽ.');
+          alert(error instanceof Error ? error.message : 'Niepoprawny litraż.');
           return false;
         }
         if (String(tankLengthCm ?? '').trim()) {
           try {
-            parseOptionalNonNegativeNumberOrThrow('dĹ‚ugoĹ›? akwarium', tankLengthCm);
+            parseOptionalNonNegativeNumberOrThrow('długoś? akwarium', tankLengthCm);
           } catch (error) {
-            alert(error instanceof Error ? error.message : 'Niepoprawna dĹ‚ugoĹ›?.');
+            alert(error instanceof Error ? error.message : 'Niepoprawna długoś?.');
             return false;
           }
         }
         if (String(tankWidthCm ?? '').trim()) {
           try {
-            parseOptionalNonNegativeNumberOrThrow('szerokoĹ›? akwarium', tankWidthCm);
+            parseOptionalNonNegativeNumberOrThrow('szerokoś? akwarium', tankWidthCm);
           } catch (error) {
-            alert(error instanceof Error ? error.message : 'Niepoprawna szerokoĹ›?.');
+            alert(error instanceof Error ? error.message : 'Niepoprawna szerokoś?.');
             return false;
           }
         }
         if (String(tankHeightCm ?? '').trim()) {
           try {
-            parseOptionalNonNegativeNumberOrThrow('wysokoĹ›? akwarium', tankHeightCm);
+            parseOptionalNonNegativeNumberOrThrow('wysokoś? akwarium', tankHeightCm);
           } catch (error) {
-            alert(error instanceof Error ? error.message : 'Niepoprawna wysokoĹ›?.');
+            alert(error instanceof Error ? error.message : 'Niepoprawna wysokoś?.');
             return false;
           }
         }
@@ -13873,7 +13816,7 @@ export default function HomeScreen() {
 
       if (stepId === 'substrate') {
         if (!Array.isArray(tankSubstrateLayers) || tankSubstrateLayers.length === 0) {
-          alert('Dodaj przynajmniej jedna warstwe podĹ‚oĹĽa.');
+          alert('Dodaj przynajmniej jedna warstwe podłoża.');
           return false;
         }
         return true;
@@ -13889,7 +13832,7 @@ export default function HomeScreen() {
           alert(
             error instanceof Error
               ? error.message
-              : 'Popraw zakresy parametrĂłw wody.'
+              : 'Popraw zakresy parametrów wody.'
           );
           return false;
         }
@@ -14196,7 +14139,7 @@ export default function HomeScreen() {
           fontSize: 12,
           lineHeight: 17,
         }}>
-        Analiza bedzie porownywac pomiary do tych ustawieĹ„.
+        Analiza bedzie porownywac pomiary do tych ustawień.
       </Text>
       {renderTankWaterProfileSelector(scopeKey)}
       {renderTankWaterTargetRangesGrid(scopeKey)}
@@ -14271,7 +14214,7 @@ export default function HomeScreen() {
           <>
             <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
               Podaj nazwe i pojemnosc akwarium. Na tej podstawie aplikacja bedzie liczyc
-              obsadÄ™, sprzÄ™t i zalecenia.
+              obsadę, sprzęt i zalecenia.
             </Text>
             <TextInput
               placeholder={t('tankNamePlaceholder')}
@@ -14321,7 +14264,7 @@ export default function HomeScreen() {
             {isTankDimensionsExpanded ? (
               <View style={{ marginTop: 8 }}>
                 <TextInput
-                  placeholder="DĹ‚ugoĹ›? akwarium (cm)"
+                  placeholder="Długoś? akwarium (cm)"
                   placeholderTextColor={themePlaceholder}
                   value={tankLengthCm}
                   onChangeText={setTankLengthCm}
@@ -14337,7 +14280,7 @@ export default function HomeScreen() {
                   }}
                 />
                 <TextInput
-                  placeholder="SzerokoĹ›? akwarium (cm)"
+                  placeholder="Szerokoś? akwarium (cm)"
                   placeholderTextColor={themePlaceholder}
                   value={tankWidthCm}
                   onChangeText={setTankWidthCm}
@@ -14353,7 +14296,7 @@ export default function HomeScreen() {
                   }}
                 />
                 <TextInput
-                  placeholder="WysokoĹ›? akwarium (cm)"
+                  placeholder="Wysokoś? akwarium (cm)"
                   placeholderTextColor={themePlaceholder}
                   value={tankHeightCm}
                   onChangeText={setTankHeightCm}
@@ -14454,7 +14397,7 @@ export default function HomeScreen() {
                   </View>
                 ) : (
                   <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
-                    Brak listy akwariĂłw do skopiowania. Miejsce pod integracje jest przygotowane.
+                    Brak listy akwariów do skopiowania. Miejsce pod integracje jest przygotowane.
                   </Text>
                 )}
               </View>
@@ -14468,7 +14411,7 @@ export default function HomeScreen() {
               Czy chcesz, zeby aplikacja prowadzila Cie krok po kroku?
             </Text>
             <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
-              Onboarding pomoĹĽe zaplanowac pierwsze dni dziaĹ‚ania zbiornika, kontrolÄ™ parametrĂłw,
+              Onboarding pomoże zaplanowac pierwsze dni działania zbiornika, kontrolę parametrów,
               dojrzewanie filtra i moment bezpiecznego wpuszczania obsady.
             </Text>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
@@ -14507,7 +14450,7 @@ export default function HomeScreen() {
         {currentStepId === 'profile' ? (
           <>
             <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
-              Wybierz profil akwarium. Profil ustawia domyslne zakresy parametrĂłw.
+              Wybierz profil akwarium. Profil ustawia domyslne zakresy parametrów.
             </Text>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
               {ADD_TANK_PROFILE_OPTIONS.map((option) => {
@@ -14565,7 +14508,7 @@ export default function HomeScreen() {
                 </Text>
               </View>
               <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
-                Chce wprowadziÄ‡ parametry recznie
+                Chce wprowadzić parametry recznie
               </Text>
             </Pressable>
           </>
@@ -14574,7 +14517,7 @@ export default function HomeScreen() {
         {currentStepId === 'substrate' ? (
           <>
             <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
-              Dodaj warstwy podĹ‚oĹĽa. MoĹĽesz Ĺ‚Ä…czyÄ‡ kilka typow.
+              Dodaj warstwy podłoża. Możesz łączyć kilka typow.
             </Text>
             <View style={{ gap: 8 }}>
               {tankSubstrateLayers.map((layer, index) => (
@@ -14623,7 +14566,7 @@ export default function HomeScreen() {
                     })}
                   </View>
                   <TextInput
-                    placeholder="WysokoĹ›? warstwy (cm) - opcjonalnie"
+                    placeholder="Wysokoś? warstwy (cm) - opcjonalnie"
                     placeholderTextColor={themePlaceholder}
                     value={layer.heightCm ?? ''}
                     onChangeText={(value) =>
@@ -14696,7 +14639,7 @@ export default function HomeScreen() {
                 backgroundColor: themeCardBg,
               }}>
               <Text style={{ color: themeTextPrimary, fontWeight: '700', textAlign: 'center' }}>
-                Dodaj podĹ‚oĹĽe
+                Dodaj podłoże
               </Text>
             </Pressable>
           </>
@@ -14705,7 +14648,7 @@ export default function HomeScreen() {
         {currentStepId === 'water' ? (
           <>
             <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
-              MoĹĽesz zostawic wartosci domyslne albo dopasowac zakresy do swojej obsady, roslin
+              Możesz zostawic wartosci domyslne albo dopasowac zakresy do swojej obsady, roslin
               i sposobu prowadzenia akwarium.
             </Text>
             {renderTankWaterTargetsSection(`${scopeKey}-water`)}
@@ -14716,7 +14659,7 @@ export default function HomeScreen() {
           <>
             <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
               Podaj docelowa temperature wody oraz typowa temperature w pomieszczeniu. Dla oceny
-              grzalki najwazniejsza jest roznica miÄ™dzy docelowa temperatura wody a najniĹĽsza
+              grzalki najwazniejsza jest roznica między docelowa temperatura wody a najniższa
               temperatura pomieszczenia.
             </Text>
             <Text
@@ -14868,7 +14811,7 @@ export default function HomeScreen() {
                 Nazwa: <Text style={{ color: themeTextPrimary }}>{tankName || '-'}</Text>
               </Text>
               <Text style={{ color: themeTextSecondary }}>
-                LitraĹĽ: <Text style={{ color: themeTextPrimary }}>{tankLiters || '-'} l</Text>
+                Litraż: <Text style={{ color: themeTextPrimary }}>{tankLiters || '-'} l</Text>
               </Text>
               <Text style={{ color: themeTextSecondary }}>
                 Sposob uruchomienia:{' '}
@@ -14890,7 +14833,7 @@ export default function HomeScreen() {
                 Profil: <Text style={{ color: themeTextPrimary }}>{wizardProfileLabel(tankWizardProfile)}</Text>
               </Text>
               <Text style={{ color: themeTextSecondary }}>
-                PodĹ‚oĹĽe:{' '}
+                Podłoże:{' '}
                 <Text style={{ color: themeTextPrimary }}>
                   {tankSubstrateLayers.length > 0
                     ? tankSubstrateLayers
@@ -15146,7 +15089,7 @@ export default function HomeScreen() {
       setEquipmentCatalogSearch('');
     } catch (error) {
       alert(
-        'BĹ‚Ä…d zapisu sprzÄ™tu: ' +
+        'Błąd zapisu sprzętu: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -15171,7 +15114,7 @@ export default function HomeScreen() {
     const brand = String(customEquipmentBrand ?? '').trim();
     const model = String(customEquipmentModel ?? '').trim();
     if (!model) {
-      alert('Podaj model lub nazwe sprzÄ™tu.');
+      alert('Podaj model lub nazwe sprzętu.');
       return;
     }
 
@@ -15237,11 +15180,11 @@ export default function HomeScreen() {
           ? parsePositiveNumberOrThrow('moc grzalki (W)', customEquipmentPrimaryValue)
           : parsePositiveNumberOrThrow('wydajnosc filtra (l/h)', customEquipmentPrimaryValue);
       const tankMinLiters = parseOptionalNonNegativeNumberOrThrow(
-        'min litraĹĽ',
+        'min litraż',
         customEquipmentTankMinLiters
       );
       const tankMaxLiters = parseOptionalNonNegativeNumberOrThrow(
-        'max litraĹĽ',
+        'max litraż',
         customEquipmentTankMaxLiters
       );
 
@@ -15250,7 +15193,7 @@ export default function HomeScreen() {
         Number.isFinite(Number(tankMaxLiters)) &&
         Number(tankMaxLiters) < Number(tankMinLiters)
       ) {
-        throw new Error('Maksymalny litraĹĽ nie moĹĽe byc mniejszy niĹĽ minimalny.');
+        throw new Error('Maksymalny litraż nie może byc mniejszy niż minimalny.');
       }
 
       const customEquipmentItem = {
@@ -15300,7 +15243,7 @@ export default function HomeScreen() {
       setEquipmentCatalogSearch('');
     } catch (error) {
       alert(
-        'BĹ‚Ä…d zapisu innego sprzÄ™tu: ' +
+        'Błąd zapisu innego sprzętu: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -15365,7 +15308,7 @@ export default function HomeScreen() {
       await fetchTanks(user.uid, selectedTank.id);
     } catch (error) {
       alert(
-        'BĹ‚Ä…d aktualizacji sprzÄ™tu: ' +
+        'Błąd aktualizacji sprzętu: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -15403,7 +15346,7 @@ export default function HomeScreen() {
       await fetchTanks(user.uid, selectedTank.id);
     } catch (error) {
       alert(
-        'BĹ‚Ä…d aktualizacji oĹ›wietlenia: ' +
+        'Błąd aktualizacji oświetlenia: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -15423,14 +15366,14 @@ export default function HomeScreen() {
 
     let lightHours = 0;
     try {
-      lightHours = parsePositiveNumberOrThrow('godziny Ĺ›wiecenia', equipmentLightHoursDraft);
+      lightHours = parsePositiveNumberOrThrow('godziny świecenia', equipmentLightHoursDraft);
     } catch (error) {
-      alert(error instanceof Error ? error.message : 'Niepoprawna liczba godzin Ĺ›wiecenia.');
+      alert(error instanceof Error ? error.message : 'Niepoprawna liczba godzin świecenia.');
       return;
     }
 
     if (!Number.isFinite(lightHours) || lightHours < 1 || lightHours > 24) {
-      alert('Godziny Ĺ›wiecenia musza byc w zakresie 1-24.');
+      alert('Godziny świecenia musza byc w zakresie 1-24.');
       return;
     }
 
@@ -15450,7 +15393,7 @@ export default function HomeScreen() {
       setEquipmentLightHoursDraft(String(lightHours));
     } catch (error) {
       alert(
-        'BĹ‚Ä…d zapisu czasu Ĺ›wiecenia: ' +
+        'Błąd zapisu czasu świecenia: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -15489,18 +15432,18 @@ export default function HomeScreen() {
     try {
       durationDays = parsePositiveInteger(
         parsePositiveNumberOrThrow(
-          'czas dziaĹ‚ania kulek nawozowych (dni)',
+          'czas działania kulek nawozowych (dni)',
           rootTabsDurationDaysInput
         ),
         ROOT_TABS_DEFAULT_DURATION_DAYS
       );
     } catch (error) {
-      alert(error instanceof Error ? error.message : 'Niepoprawny czas dziaĹ‚ania kulek');
+      alert(error instanceof Error ? error.message : 'Niepoprawny czas działania kulek');
       return;
     }
 
     if (durationDays > 365) {
-      alert('Czas dziaĹ‚ania kulek ustaw w zakresie 1-365 dni');
+      alert('Czas działania kulek ustaw w zakresie 1-365 dni');
       return;
     }
 
@@ -15549,7 +15492,7 @@ export default function HomeScreen() {
       alert('Kulki nawozowe dodane do harmonogramu.');
     } catch (error) {
       alert(
-        'BĹ‚Ä…d zapisu nawozenia: ' + (error instanceof Error ? error.message : '')
+        'Błąd zapisu nawozenia: ' + (error instanceof Error ? error.message : '')
       );
     } finally {
       setPlantFertilizationBusy(false);
@@ -15612,18 +15555,18 @@ export default function HomeScreen() {
     try {
       durationDays = parsePositiveInteger(
         parsePositiveNumberOrThrow(
-          'czas dziaĹ‚ania kulek nawozowych (dni)',
+          'czas działania kulek nawozowych (dni)',
           editingRootTabsDurationDaysInput
         ),
         ROOT_TABS_DEFAULT_DURATION_DAYS
       );
     } catch (error) {
-      alert(error instanceof Error ? error.message : 'Niepoprawny czas dziaĹ‚ania kulek');
+      alert(error instanceof Error ? error.message : 'Niepoprawny czas działania kulek');
       return;
     }
 
     if (durationDays > 365) {
-      alert('Czas dziaĹ‚ania kulek ustaw w zakresie 1-365 dni');
+      alert('Czas działania kulek ustaw w zakresie 1-365 dni');
       return;
     }
 
@@ -15668,7 +15611,7 @@ export default function HomeScreen() {
       handleCancelEditPlantFertilizationEntry();
     } catch (error) {
       alert(
-        'BĹ‚Ä…d edycji wpisu nawozenia: ' +
+        'Błąd edycji wpisu nawozenia: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -15714,7 +15657,7 @@ export default function HomeScreen() {
       }
     } catch (error) {
       alert(
-        'BĹ‚Ä…d usuwania wpisu nawozenia: ' +
+        'Błąd usuwania wpisu nawozenia: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -15732,7 +15675,7 @@ export default function HomeScreen() {
         `${t('subscriptionTankLimitReached', {
           plan: currentSubscriptionTierLabel,
           limit: tankLimit,
-        })}\n\nW planie Free moĹĽesz aktywnie prowadzic 1 akwarium. PozostaĹ‚e akwaria sa bezpiecznie zapisane i odblokuj? sie po powrĂłie do Premium.`
+        })}\n\nW planie Free możesz aktywnie prowadzić 1 akwarium. Pozostałe akwaria są bezpiecznie zapisane i odblokują się po powrocie do Premium.`
       );
       return;
     }
@@ -15751,7 +15694,7 @@ export default function HomeScreen() {
         throw new Error('Pole nazwa akwarium jest wymagane');
       }
 
-      const liters = parsePositiveNumberOrThrow('litraĹĽ', tankLiters);
+      const liters = parsePositiveNumberOrThrow('litraż', tankLiters);
       const startType = normalizeAddTankStartType(tankStartType);
       const profileMapping = mapWizardProfileToModel(tankWizardProfile);
       const aquariumType = normalizeAquariumType(
@@ -15761,15 +15704,15 @@ export default function HomeScreen() {
         throw new Error('Wybierz typ akwarium przed zapisaniem onboardingu.');
       }
       const lengthCm = parseOptionalNonNegativeNumberOrThrow(
-        'dĹ‚ugoĹ›? akwarium',
+        'długoś? akwarium',
         tankLengthCm
       );
       const widthCm = parseOptionalNonNegativeNumberOrThrow(
-        'szerokoĹ›? akwarium',
+        'szerokoś? akwarium',
         tankWidthCm
       );
       const heightCm = parseOptionalNonNegativeNumberOrThrow(
-        'wysokoĹ›? akwarium',
+        'wysokoś? akwarium',
         tankHeightCm
       );
       const targetTemperatureC = parsePositiveNumberOrThrow(
@@ -15839,7 +15782,7 @@ export default function HomeScreen() {
           : draftTargetRanges;
 
       if (substrateTypes.length === 0) {
-        throw new Error('Wybierz przynajmniej 1 rodzaj podĹ‚oĹĽa');
+        throw new Error('Wybierz przynajmniej 1 rodzaj podłoża');
       }
 
       if (waterProfile === 'single_species') {
@@ -15847,7 +15790,7 @@ export default function HomeScreen() {
           throw new Error('Dla akwarium jednogatunkowego wybierz gatunek ryby');
         }
         if (!singleSpeciesFish) {
-          throw new Error('Wybrany gatunek ryby nie jest dostÄ™pny w katalogu');
+          throw new Error('Wybrany gatunek ryby nie jest dostępny w katalogu');
         }
       }
 
@@ -16103,7 +16046,7 @@ export default function HomeScreen() {
         setActiveEditTankSectionDraft(null);
         if (savedInCompatibilityMode) {
           alert(
-            'Akwarium zaktualizowane w trybie zgodnosci. Aby wszystkie nowe ustawieĹ„ia zapisywaly sie od razu, opublikuj aktualne reguly Firestore.'
+            'Akwarium zaktualizowane w trybie zgodnosci. Aby wszystkie nowe ustawieńia zapisywaly sie od razu, opublikuj aktualne reguly Firestore.'
           );
         } else {
           alert('Akwarium zaktualizowane');
@@ -16135,25 +16078,25 @@ export default function HomeScreen() {
         }
         if (savedInCompatibilityMode) {
           alert(
-            'Akwarium dodane w trybie zgodnosci. Aby wszystkie nowe ustawieĹ„ia zapisywaly sie od razu, opublikuj aktualne reguly Firestore.'
+            'Akwarium dodane w trybie zgodnosci. Aby wszystkie nowe ustawieńia zapisywaly sie od razu, opublikuj aktualne reguly Firestore.'
           );
         } else {
           if (!onboardingEnabled) {
-            alert('Akwarium dodane. Onboarding jest wyĹ‚Ä…czony.');
+            alert('Akwarium dodane. Onboarding jest wyłączony.');
           } else {
             alert(
               onboardingMode === 'fresh_start'
-                ? 'Akwarium dodane. WĹ‚Ä…czylismy onboarding fresh start (dzieĹ„ 1/14).'
+                ? 'Akwarium dodane. Włączylismy onboarding fresh start (dzień 1/14).'
                 : onboardingMode === 'restart'
-                  ? 'Akwarium dodane. WĹ‚Ä…czylismy onboarding restartu (dzieĹ„ 1/14).'
-                  : 'Akwarium dodane. WĹ‚Ä…czylismy onboarding startu na dojrzalym medium (dzieĹ„ 1/14).'
+                  ? 'Akwarium dodane. Włączylismy onboarding restartu (dzień 1/14).'
+                  : 'Akwarium dodane. Włączylismy onboarding startu na dojrzalym medium (dzień 1/14).'
             );
           }
         }
       }
     } catch (error) {
       alert(
-        `BĹ‚Ä…d ${editingTankId ? 'edycji' : 'dodawania'} akwarium: ` +
+        `Błąd ${editingTankId ? 'edycji' : 'dodawania'} akwarium: ` +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -16170,11 +16113,11 @@ export default function HomeScreen() {
 
     Alert.alert(
       'Usun akwarium',
-      `Czy na pewno chcesz usunÄ…Ä‡ akwarium "${tankToDelete.name}"?\n\nTej operacji nie da sie cofnÄ…Ä‡ (nieodwracalne).`,
+      `Czy na pewno chcesz usunąć akwarium "${tankToDelete.name}"?\n\nTej operacji nie da sie cofnąć (nieodwracalne).`,
       [
         { text: 'Anuluj', style: 'cancel' },
         {
-          text: 'Usu?',
+          text: 'Usuń',
           style: 'destructive',
           onPress: async () => {
             if (!user?.uid || !tankToDelete.id || addTankBusy) {
@@ -16212,10 +16155,10 @@ export default function HomeScreen() {
 
               await fetchTanks(user.uid);
               await fetchHomeData(user.uid);
-              alert('Akwarium i powiazane dane zostaĹ‚y usuniete.');
+              alert('Akwarium i powiazane dane zostały usuniete.');
             } catch (error) {
               alert(
-                'BĹ‚Ä…d usuwania akwarium: ' +
+                'Błąd usuwania akwarium: ' +
                   (error instanceof Error ? error.message : '')
               );
             } finally {
@@ -16232,7 +16175,7 @@ export default function HomeScreen() {
       return;
     }
     if (stockBusy) {
-      alert('Trwa zapisywanie poprzedniej zmiany. Sprobuj ponownie za chwile.');
+      alert('Trwa zapisywanie poprzedniej zmiany. Spróbuj ponownie za chwile.');
       return;
     }
 
@@ -16324,7 +16267,7 @@ export default function HomeScreen() {
         } else {
           const manualFishName = searchPhrase.replace(/\s+/g, ' ').trim();
           if (manualFishName.length < 2) {
-            throw new Error('Wpisz peĹ‚na nazwe ryby (minimum 2 znaki).');
+            throw new Error('Wpisz pełna nazwe ryby (minimum 2 znaki).');
           }
 
           payload = {
@@ -16390,7 +16333,7 @@ export default function HomeScreen() {
 
         if (selectedPlants.length !== uniqueSelectedPlantIds.length) {
           throw new Error(
-            'Jedna z wybranych roslin nie istnieje w katalogu. OdĹ›wieĹĽ liste i sprĂłbuj ponownie.'
+            'Jedna z wybranych roslin nie istnieje w katalogu. Odśwież liste i spróbuj ponownie.'
           );
         }
 
@@ -16616,7 +16559,7 @@ export default function HomeScreen() {
         );
         if (['caution', 'high_risk', 'incompatible'].includes(dynamicAssessment.overallStatus)) {
           addWarnings.push(
-            `Wplyw na obsade: ${dynamicAssessment.overallUiStatus} (${dynamicAssessment.score}/100).`
+            `Wplyw na obsade: ${dynamicAssessment.overallUiStatus} (${dynamicAssessment.score}%).`
           );
           const topWarnings = (dynamicAssessment.warnings ?? []).slice(0, 2);
           if (topWarnings.length > 0) {
@@ -16631,7 +16574,7 @@ export default function HomeScreen() {
 
       if (Number(selectedTank.liters) < minLiters) {
         addWarnings.push(
-          'Uwaga: minimalny litraĹĽ tej pozycji jest wiÄ™kszy niĹĽ litraĹĽ aktywnego akwarium.'
+          'Uwaga: minimalny litraż tej pozycji jest większy niż litraż aktywnego akwarium.'
         );
       }
 
@@ -16648,7 +16591,7 @@ export default function HomeScreen() {
       }
     } catch (error) {
       alert(
-        'BĹ‚Ä…d dodawania obsady: ' +
+        'Błąd dodawania obsady: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -16698,7 +16641,7 @@ export default function HomeScreen() {
       return true;
     } catch (error) {
       alert(
-        'BĹ‚Ä…d aktualizacji ilosci: ' +
+        'Błąd aktualizacji ilosci: ' +
           (error instanceof Error ? error.message : '')
       );
       return false;
@@ -16719,16 +16662,16 @@ export default function HomeScreen() {
         : 'Pozycja usunieta z obsady';
     const errorMessage =
       itemType === 'plant'
-        ? 'BĹ‚Ä…d usuwania rosliny z obsady: '
-        : 'BĹ‚Ä…d usuwania obsady: ';
+        ? 'Błąd usuwania rosliny z obsady: '
+        : 'Błąd usuwania obsady: ';
 
     Alert.alert(
       'Potwierdz usuniecie',
-      `Czy na pewno chcesz usunÄ…Ä‡ ${itemLabel} z obsady? Tej zmiany nie da sie cofnÄ…Ä‡.`,
+      `Czy na pewno chcesz usunąć ${itemLabel} z obsady? Tej zmiany nie da sie cofnąć.`,
       [
         { text: 'Anuluj', style: 'cancel' },
         {
-          text: 'Usu?',
+          text: 'Usuń',
           style: 'destructive',
           onPress: async () => {
             if (!user || !selectedTank?.id || stockBusy) {
@@ -16913,7 +16856,7 @@ export default function HomeScreen() {
 
       if (measurementInputRows.length === 0) {
         throw new Error(
-          'W ustawieniach wĹ‚Ä…cz przynajmniej 1 pole, aby pokazac je w formularzu.'
+          'W ustawieniach włącz przynajmniej 1 pole, aby pokazac je w formularzu.'
         );
       }
 
@@ -17036,8 +16979,8 @@ export default function HomeScreen() {
       }
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : 'nieznany bĹ‚Ä…d';
-      alert('BĹ‚Ä…d: ' + message);
+        error instanceof Error ? error.message : 'nieznany błąd';
+      alert('Błąd: ' + message);
     } finally {
       setSaveBusy(false);
     }
@@ -17054,11 +16997,11 @@ export default function HomeScreen() {
 
     Alert.alert(
       'Usun wpis z historii',
-      'Czy na pewno chcesz usunÄ…Ä‡ ten wpis pomiaru? Tej operacji nie da sie cofnÄ…Ä‡ (nieodwracalne).',
+      'Czy na pewno chcesz usunąć ten wpis pomiaru? Tej operacji nie da sie cofnąć (nieodwracalne).',
       [
         { text: 'Anuluj', style: 'cancel' },
         {
-          text: 'Usu?',
+          text: 'Usuń',
           style: 'destructive',
           onPress: async () => {
             if (!user?.uid || !selectedTank?.id || measurementDeleteBusy) {
@@ -17079,10 +17022,10 @@ export default function HomeScreen() {
 
               await fetchMeasurements(user.uid, selectedTank.id);
               await fetchHomeData(user.uid);
-              alert('Wpis z historii zostaĹ‚ usuniety.');
+              alert('Wpis z historii został usuniety.');
             } catch (error) {
               alert(
-                'BĹ‚Ä…d usuwania wpisu z historii: ' +
+                'Błąd usuwania wpisu z historii: ' +
                   (error instanceof Error ? error.message : '')
               );
             } finally {
@@ -17107,12 +17050,12 @@ export default function HomeScreen() {
 
     const issueName = String(issueEntry?.issueName ?? t('noData')).trim();
     Alert.alert(
-      'Usun wpis z historii problemĂłw',
-      `Czy na pewno chcesz usunÄ…Ä‡ "${issueName}"? Tej operacji nie da sie cofnÄ…Ä‡ (nieodwracalne).`,
+      'Usun wpis z historii problemów',
+      `Czy na pewno chcesz usunąć "${issueName}"? Tej operacji nie da sie cofnąć (nieodwracalne).`,
       [
         { text: 'Anuluj', style: 'cancel' },
         {
-          text: 'Usu?',
+          text: 'Usuń',
           style: 'destructive',
           onPress: async () => {
             if (
@@ -17130,10 +17073,10 @@ export default function HomeScreen() {
               await fetchTankDiseaseCases(user.uid, selectedTank.id);
               await fetchHomeData(user.uid);
               setExpandedHistoryIssueId((prev) => (prev === issueId ? null : prev));
-              alert('Wpis z historii problemĂłw zostaĹ‚ usuniety.');
+              alert('Wpis z historii problemów został usuniety.');
             } catch (error) {
               alert(
-                'BĹ‚Ä…d usuwania wpisu z historii problemĂłw: ' +
+                'Błąd usuwania wpisu z historii problemów: ' +
                   (error instanceof Error ? error.message : '')
               );
             } finally {
@@ -17188,7 +17131,7 @@ export default function HomeScreen() {
       });
     } catch (error) {
       alert(
-        'BĹ‚Ä…d zapisu statusu zadania onboardingu: ' +
+        'Błąd zapisu statusu zadania onboardingu: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -17251,10 +17194,10 @@ export default function HomeScreen() {
                 : {}),
             }
       );
-      alert(nextEnabled ? 'Onboarding wĹ‚Ä…czony.' : 'Onboarding wyĹ‚Ä…czony.');
+      alert(nextEnabled ? 'Onboarding włączony.' : 'Onboarding wyłączony.');
     } catch (error) {
       alert(
-        'BĹ‚Ä…d zmiany statusu onboardingu: ' +
+        'Błąd zmiany statusu onboardingu: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -17323,7 +17266,7 @@ export default function HomeScreen() {
         });
       } catch (error) {
         alert(
-          'BĹ‚Ä…d zapisu akcji kalendarza: ' +
+          'Błąd zapisu akcji kalendarza: ' +
             (error instanceof Error ? error.message : '')
         );
       } finally {
@@ -17372,7 +17315,7 @@ export default function HomeScreen() {
       return;
     }
     if (stockBusy) {
-      alert('Trwa zapisywanie poprzedniej zmiany. Sprobuj ponownie za chwile.');
+      alert('Trwa zapisywanie poprzedniej zmiany. Spróbuj ponownie za chwile.');
       return;
     }
 
@@ -17556,7 +17499,7 @@ export default function HomeScreen() {
       );
       if (['caution', 'high_risk', 'incompatible'].includes(dynamicAssessment.overallStatus)) {
         addWarnings.push(
-          `Wplyw na obsade: ${dynamicAssessment.overallUiStatus} (${dynamicAssessment.score}/100).`
+          `Wplyw na obsade: ${dynamicAssessment.overallUiStatus} (${dynamicAssessment.score}%).`
         );
         const topWarnings = (dynamicAssessment.warnings ?? []).slice(0, 2);
         if (topWarnings.length > 0) {
@@ -17570,7 +17513,7 @@ export default function HomeScreen() {
 
       if (Number(tank?.liters) < minLiters) {
         addWarnings.push(
-          'Uwaga: minimalny litraĹĽ tej ryby jest wiÄ™kszy niĹĽ litraĹĽ wybranego akwarium.'
+          'Uwaga: minimalny litraż tej ryby jest większy niż litraż wybranego akwarium.'
         );
       }
 
@@ -17581,7 +17524,7 @@ export default function HomeScreen() {
       }
     } catch (error) {
       alert(
-        'BĹ‚Ä…d dodawania ryby do akwarium: ' +
+        'Błąd dodawania ryby do akwarium: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -17631,7 +17574,7 @@ export default function HomeScreen() {
       return true;
     } catch (error) {
       alert(
-        'BĹ‚Ä…d aktualizacji ilosci: ' +
+        'Błąd aktualizacji ilosci: ' +
           (error instanceof Error ? error.message : '')
       );
       return false;
@@ -17645,7 +17588,7 @@ export default function HomeScreen() {
       return;
     }
     if (stockBusy) {
-      alert('Trwa zapisywanie poprzedniej zmiany. Sprobuj ponownie za chwile.');
+      alert('Trwa zapisywanie poprzedniej zmiany. Spróbuj ponownie za chwile.');
       return;
     }
 
@@ -17742,7 +17685,7 @@ export default function HomeScreen() {
       const addWarnings = [];
       if (Number(tank?.liters) < minLiters) {
         addWarnings.push(
-          'Uwaga: minimalny litraĹĽ tej rosliny jest wiÄ™kszy niĹĽ litraĹĽ wybranego akwarium.'
+          'Uwaga: minimalny litraż tej rosliny jest większy niż litraż wybranego akwarium.'
         );
       }
 
@@ -17753,7 +17696,7 @@ export default function HomeScreen() {
       }
     } catch (error) {
       alert(
-        'BĹ‚Ä…d dodawania rosliny do akwarium: ' +
+        'Błąd dodawania rosliny do akwarium: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -17868,13 +17811,13 @@ export default function HomeScreen() {
 
     const summaryParts = [
       `Akwarium: ${String(tank?.name ?? 'Akwarium').trim()}`,
-      Number.isFinite(Number(tank?.liters)) ? `LitraĹĽ: ${Math.round(Number(tank.liters))} l` : '',
+      Number.isFinite(Number(tank?.liters)) ? `Litraż: ${Math.round(Number(tank.liters))} l` : '',
       String(tank?.waterProfile ?? '').trim()
         ? `Profil: ${String(tank.waterProfile).trim()}`
         : '',
       latestMeasurement
         ? `Ostatni pomiar: pH ${latestMeasurement.ph ?? '-'}, NO2 ${latestMeasurement.no2 ?? '-'}, NO3 ${latestMeasurement.no3 ?? '-'}, temp ${latestMeasurement.temperature ?? '-'}`
-        : 'Brak pomiarĂłw dla tego akwarium.',
+        : 'Brak pomiarów dla tego akwarium.',
     ].filter(Boolean);
 
     return summaryParts.join('. ');
@@ -17896,11 +17839,11 @@ export default function HomeScreen() {
       setCatalogAiContextTankId(tank.id);
       setCatalogAiContextSummary(contextSummary);
       if (!contextSummary) {
-        setCatalogAiError('Nie udalo sie zbudowac kontekstu. Sprawdz dane akwarium.');
+        setCatalogAiError('Nie udało się zbudować kontekstu. Sprawdź dane akwarium.');
       }
     } catch (error) {
       setCatalogAiError(
-        'BĹ‚Ä…d pobierania parametrĂłw z akwarium: ' +
+        'Błąd pobierania parametrów z akwarium: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -17915,15 +17858,15 @@ export default function HomeScreen() {
     tankId = null,
   }) => {
     if (!hasAiAssistantAccess) {
-      setCatalogAiError('Asystent AI jest dostÄ™pny w planie Pro.');
+      setCatalogAiError('Asystent AI jest dostępny w planie Pro.');
       return;
     }
     if (!appSettings.aiConsentDataProcessing) {
-      setCatalogAiError('WĹ‚Ä…cz zgod? na przetwarzanie danych AI, aby uruchomi? analizÄ™.');
+      setCatalogAiError('Włącz zgodę na przetwarzanie danych AI, aby uruchomić analizę.');
       return;
     }
     if (!user?.getIdToken) {
-      setCatalogAiError('Brak aktywnej sesji. Zaloguj si? ponownie.');
+      setCatalogAiError('Brak aktywnej sesji. Zaloguj się ponownie.');
       return;
     }
 
@@ -17935,7 +17878,7 @@ export default function HomeScreen() {
       const contextFromTank = catalogAiContextSummary || fallbackContext;
       const userProblem = String(catalogAiProblemInput ?? '').trim().slice(0, 500);
       const effectiveQuestion = userProblem
-        ? `${String(question ?? '').trim()}\nUwzglednij dodatkowy problem uĹĽytkownika: ${userProblem}`
+        ? `${String(question ?? '').trim()}\nUwzglednij dodatkowy problem użytkownika: ${userProblem}`
         : String(question ?? '').trim();
       const additionalInfo = [contextFromTank, contextDetails]
         .map((value) => String(value ?? '').trim())
@@ -17966,7 +17909,7 @@ export default function HomeScreen() {
         rawError instanceof AiChatRequestError
           ? rawError
           : new AiChatRequestError(
-              'BĹ‚Ä…d analizy AI w katalogu. SprĂłbuj ponownie.',
+              'Błąd analizy AI w katalogu. Spróbuj ponownie.',
               'AIW_INTERNAL',
               true
             );
@@ -17978,12 +17921,12 @@ export default function HomeScreen() {
 
   const handlePickCatalogAiImage = async (source) => {
     if (!hasAiAssistantAccess) {
-      setCatalogAiError('Asystent AI jest dostÄ™pny w planie Pro.');
+      setCatalogAiError('Asystent AI jest dostępny w planie Pro.');
       return;
     }
     if (!appSettings.aiConsentDataProcessing || !appSettings.aiConsentImageAnalysis) {
       setCatalogAiError(
-        'Aby analizowac zdjÄ™cia, wĹ‚Ä…cz zgody: przetwarzanie danych AI i analiza obrazow.'
+        'Aby analizowac zdjęcia, włącz zgody: przetwarzanie danych AI i analiza obrazow.'
       );
       return;
     }
@@ -18006,7 +17949,7 @@ export default function HomeScreen() {
         rawError instanceof AiChatRequestError
           ? rawError
           : new AiChatRequestError(
-              'Nie udalo sie wybrac zdjÄ™cia. SprĂłbuj ponownie.',
+              'Nie udało się wybrać zdjęcia. Spróbuj ponownie.',
               'AIW_INTERNAL',
               true
             );
@@ -18023,21 +17966,21 @@ export default function HomeScreen() {
     tankId = null,
   }) => {
     if (!hasAiAssistantAccess) {
-      setCatalogAiError('Asystent AI jest dostÄ™pny w planie Pro.');
+      setCatalogAiError('Asystent AI jest dostępny w planie Pro.');
       return;
     }
     if (!appSettings.aiConsentDataProcessing || !appSettings.aiConsentImageAnalysis) {
       setCatalogAiError(
-        'Aby analizowac zdjÄ™cia, wĹ‚Ä…cz zgody: przetwarzanie danych AI i analiza obrazow.'
+        'Aby analizowac zdjęcia, włącz zgody: przetwarzanie danych AI i analiza obrazow.'
       );
       return;
     }
     if (!user?.uid || !user?.getIdToken) {
-      setCatalogAiError('Brak aktywnej sesji. Zaloguj si? ponownie.');
+      setCatalogAiError('Brak aktywnej sesji. Zaloguj się ponownie.');
       return;
     }
     if (!catalogAiSelectedImage?.uri) {
-      setCatalogAiError('Dodaj zdjÄ™cie z aparatu lub galerii przed analiza.');
+      setCatalogAiError('Dodaj zdjęcie z aparatu lub galerii przed analiza.');
       return;
     }
 
@@ -18049,7 +17992,7 @@ export default function HomeScreen() {
       const contextFromTank = catalogAiContextSummary || fallbackContext;
       const userProblem = String(catalogAiProblemInput ?? '').trim().slice(0, 500);
       const effectiveQuestion = userProblem
-        ? `${String(question ?? '').trim()}\nUwzglednij dodatkowy problem uĹĽytkownika: ${userProblem}`
+        ? `${String(question ?? '').trim()}\nUwzglednij dodatkowy problem użytkownika: ${userProblem}`
         : String(question ?? '').trim();
       const additionalInfo = [contextFromTank, contextDetails]
         .map((value) => String(value ?? '').trim())
@@ -18093,7 +18036,7 @@ export default function HomeScreen() {
         rawError instanceof AiChatRequestError
           ? rawError
           : new AiChatRequestError(
-              'BĹ‚Ä…d analizy AI w katalogu. SprĂłbuj ponownie.',
+              'Błąd analizy AI w katalogu. Spróbuj ponownie.',
               'AIW_INTERNAL',
               true
             );
@@ -18228,7 +18171,7 @@ export default function HomeScreen() {
       alert(
         aiAssistantUpgradePromptMessage ||
           aiAssistantLockMessage ||
-          'Asystent AI jest dostepny w planie Pro.'
+          'Asystent AI jest dostępny w planie Pro.'
       );
       return;
     }
@@ -18317,7 +18260,7 @@ export default function HomeScreen() {
 
   const handleOpenDiseaseAiAnalyzer = () => {
     if (!hasAiAssistantAccess) {
-      alert(aiAssistantUpgradePromptMessage || aiAssistantLockMessage || 'Asystent AI jest dostepny w planie Pro.');
+      alert(aiAssistantUpgradePromptMessage || aiAssistantLockMessage || 'Asystent AI jest dostępny w planie Pro.');
       return;
     }
     const initialTankId = String(selectedTank?.id || tanks[0]?.id || '').trim();
@@ -18334,7 +18277,7 @@ export default function HomeScreen() {
 
   const handlePickDiseaseAiImage = async (source) => {
     if (!hasAiAssistantAccess) {
-      setDiseaseAiError('Asystent AI jest dostepny w planie Pro.');
+      setDiseaseAiError('Asystent AI jest dostępny w planie Pro.');
       return;
     }
     if (!appSettings.aiConsentDataProcessing || !appSettings.aiConsentImageAnalysis) {
@@ -18355,7 +18298,7 @@ export default function HomeScreen() {
         mimeType: String(picked.mimeType || 'image/jpeg'),
       });
     } catch (error) {
-      setDiseaseAiError(error instanceof Error ? error.message : 'Nie udalo sie dodac zdjecia.');
+      setDiseaseAiError(error instanceof Error ? error.message : 'Nie udało się dodać zdjęcia.');
     } finally {
       setDiseaseAiBusy(false);
     }
@@ -18363,11 +18306,11 @@ export default function HomeScreen() {
 
   const handleAnalyzeDiseaseWithAi = async () => {
     if (!hasAiAssistantAccess) {
-      setDiseaseAiError(aiAssistantUpgradePromptMessage || 'Asystent AI jest dostepny w planie Pro.');
+      setDiseaseAiError(aiAssistantUpgradePromptMessage || 'Asystent AI jest dostępny w planie Pro.');
       return;
     }
     if (!appSettings.aiConsentDataProcessing) {
-      setDiseaseAiError('Wlacz zgod? na przetwarzanie danych AI.');
+      setDiseaseAiError('Włącz zgodę na przetwarzanie danych AI.');
       return;
     }
     if (!user?.uid || !user?.getIdToken) {
@@ -18388,7 +18331,7 @@ export default function HomeScreen() {
       return;
     }
     if (hasImage && !appSettings.aiConsentImageAnalysis) {
-      setDiseaseAiError('Wlacz zgod? na analize obrazow AI.');
+      setDiseaseAiError('Włącz zgodę na analizę obrazów AI.');
       return;
     }
 
@@ -18413,7 +18356,7 @@ export default function HomeScreen() {
       const latest = diseaseAiLatestMeasurement;
       const waterLine = latest
         ? `Ostatnie parametry: NO2 ${latest.no2 ?? '-'}, NO3 ${latest.no3 ?? '-'}, NH3/NH4 ${latest.nh3nh4 ?? '-'}, pH ${latest.ph ?? '-'}, GH ${latest.gh ?? '-'}, KH ${latest.kh ?? '-'}, temp ${latest.temperature ?? '-'}.`
-        : 'Brak aktualnych parametrow wody.';
+        : 'Brak aktualnych parametrów wody.';
       const additionalInfo = [
         `Akwarium: ${tank.name ?? 'Akwarium'}, litraz ${tank.liters ?? '-'} l.`,
         selectedFishOption?.label
@@ -18511,7 +18454,7 @@ export default function HomeScreen() {
         selectedFishId: selectedFishOption?.id || null,
       });
     } catch (error) {
-      setDiseaseAiError(error instanceof Error ? error.message : 'Nie udalo sie uruchomi? analizy AI.');
+      setDiseaseAiError(error instanceof Error ? error.message : 'Nie udało się uruchomić analizy AI.');
     } finally {
       setDiseaseAiBusy(false);
     }
@@ -18637,7 +18580,7 @@ export default function HomeScreen() {
       alert('Podejrzenie zapisane w akwarium.');
       setIsDiseaseAiAnalyzerVisible(false);
     } catch (error) {
-      setDiseaseAiError(error instanceof Error ? error.message : 'Nie udalo sie zapisac podejrzenia.');
+      setDiseaseAiError(error instanceof Error ? error.message : 'Nie udało się zapisać podejrzenia.');
     } finally {
       setDiseaseAiSavingBusy(false);
     }
@@ -18648,7 +18591,7 @@ export default function HomeScreen() {
       alert(
         aiAssistantUpgradePromptMessage ||
           aiAssistantLockMessage ||
-          'Asystent AI jest dostepny w planie Pro.'
+          'Asystent AI jest dostępny w planie Pro.'
       );
       return;
     }
@@ -18666,7 +18609,7 @@ export default function HomeScreen() {
 
   const handlePickPlantDiseaseAiImage = async (source) => {
     if (!hasAiAssistantAccess) {
-      setPlantDiseaseAiError('Asystent AI jest dostepny w planie Pro.');
+      setPlantDiseaseAiError('Asystent AI jest dostępny w planie Pro.');
       return;
     }
     if (!appSettings.aiConsentDataProcessing || !appSettings.aiConsentImageAnalysis) {
@@ -18687,7 +18630,7 @@ export default function HomeScreen() {
         mimeType: String(picked.mimeType || 'image/jpeg'),
       });
     } catch (error) {
-      setPlantDiseaseAiError(error instanceof Error ? error.message : 'Nie udalo sie dodac zdjecia.');
+      setPlantDiseaseAiError(error instanceof Error ? error.message : 'Nie udało się dodać zdjęcia.');
     } finally {
       setPlantDiseaseAiBusy(false);
     }
@@ -18696,12 +18639,12 @@ export default function HomeScreen() {
   const handleAnalyzePlantDiseaseWithAi = async () => {
     if (!hasAiAssistantAccess) {
       setPlantDiseaseAiError(
-        aiAssistantUpgradePromptMessage || 'Asystent AI jest dostepny w planie Pro.'
+        aiAssistantUpgradePromptMessage || 'Asystent AI jest dostępny w planie Pro.'
       );
       return;
     }
     if (!appSettings.aiConsentDataProcessing) {
-      setPlantDiseaseAiError('Wlacz zgod? na przetwarzanie danych AI.');
+      setPlantDiseaseAiError('Włącz zgodę na przetwarzanie danych AI.');
       return;
     }
     if (!user?.uid || !user?.getIdToken) {
@@ -18722,7 +18665,7 @@ export default function HomeScreen() {
       return;
     }
     if (hasImage && !appSettings.aiConsentImageAnalysis) {
-      setPlantDiseaseAiError('Wlacz zgod? na analize obrazow AI.');
+      setPlantDiseaseAiError('Włącz zgodę na analizę obrazów AI.');
       return;
     }
 
@@ -18778,7 +18721,7 @@ export default function HomeScreen() {
         .join(', ');
       const waterLine = latest
         ? `Ostatnie parametry: NO3 ${latest.no3 ?? '-'}, PO4 ${latest.po4 ?? '-'}, K ${latest.k ?? '-'}, Fe ${latest.fe ?? '-'}, pH ${latest.ph ?? '-'}, GH ${latest.gh ?? '-'}, KH ${latest.kh ?? '-'}, temp ${latest.temperature ?? '-'}.`
-        : 'Brak aktualnych parametrow wody.';
+        : 'Brak aktualnych parametrów wody.';
       const additionalInfo = [
         `Akwarium: ${tank.name ?? 'Akwarium'}, litraz ${tank.liters ?? '-'} l.`,
         selectedPlantOption?.label
@@ -18888,7 +18831,7 @@ export default function HomeScreen() {
       });
     } catch (error) {
       setPlantDiseaseAiError(
-        error instanceof Error ? error.message : 'Nie udalo sie uruchomi? analizy AI.'
+        error instanceof Error ? error.message : 'Nie udało się uruchomić analizy AI.'
       );
     } finally {
       setPlantDiseaseAiBusy(false);
@@ -19013,7 +18956,7 @@ export default function HomeScreen() {
       setIsPlantDiseaseAiAnalyzerVisible(false);
     } catch (error) {
       setPlantDiseaseAiError(
-        error instanceof Error ? error.message : 'Nie udalo sie zapisac podejrzenia.'
+        error instanceof Error ? error.message : 'Nie udało się zapisać podejrzenia.'
       );
     } finally {
       setPlantDiseaseAiSavingBusy(false);
@@ -19025,7 +18968,7 @@ export default function HomeScreen() {
       alert(
         aiAssistantUpgradePromptMessage ||
           aiAssistantLockMessage ||
-          'Asystent AI jest dostepny w planie AI Pro.'
+          'Asystent AI jest dostępny w planie AI Pro.'
       );
       return;
     }
@@ -19043,7 +18986,7 @@ export default function HomeScreen() {
 
   const handlePickAlgaeAiImage = async (source) => {
     if (!hasAiAssistantAccess) {
-      setAlgaeAiError('Asystent AI jest dostepny w planie AI Pro.');
+      setAlgaeAiError('Asystent AI jest dostępny w planie AI Pro.');
       return;
     }
     if (!appSettings.aiConsentDataProcessing || !appSettings.aiConsentImageAnalysis) {
@@ -19064,7 +19007,7 @@ export default function HomeScreen() {
         mimeType: String(picked.mimeType || 'image/jpeg'),
       });
     } catch (error) {
-      setAlgaeAiError(error instanceof Error ? error.message : 'Nie udalo sie dodac zdjecia.');
+      setAlgaeAiError(error instanceof Error ? error.message : 'Nie udało się dodać zdjęcia.');
     } finally {
       setAlgaeAiBusy(false);
     }
@@ -19088,12 +19031,12 @@ export default function HomeScreen() {
   const handleAnalyzeAlgaeWithAi = async () => {
     if (!hasAiAssistantAccess) {
       setAlgaeAiError(
-        aiAssistantUpgradePromptMessage || 'Asystent AI jest dostepny w planie AI Pro.'
+        aiAssistantUpgradePromptMessage || 'Asystent AI jest dostępny w planie AI Pro.'
       );
       return;
     }
     if (!appSettings.aiConsentDataProcessing) {
-      setAlgaeAiError('Wlacz zgod? na przetwarzanie danych AI.');
+      setAlgaeAiError('Włącz zgodę na przetwarzanie danych AI.');
       return;
     }
     if (!user?.uid || !user?.getIdToken) {
@@ -19114,7 +19057,7 @@ export default function HomeScreen() {
       return;
     }
     if (hasImage && !appSettings.aiConsentImageAnalysis) {
-      setAlgaeAiError('Wlacz zgod? na analize obrazow AI.');
+      setAlgaeAiError('Włącz zgodę na analizę obrazów AI.');
       return;
     }
 
@@ -19169,7 +19112,7 @@ export default function HomeScreen() {
         }.`,
         latest
           ? `Parametry: NO2 ${latest.no2 ?? '-'}, NO3 ${latest.no3 ?? '-'}, PO4 ${latest.po4 ?? '-'}, pH ${latest.ph ?? '-'}, GH ${latest.gh ?? '-'}, KH ${latest.kh ?? '-'}, temp ${latest.temperature ?? '-'}, CO2 ${latest.co2 ?? '-'}.`
-          : 'Brak aktualnych parametrow wody.',
+          : 'Brak aktualnych parametrów wody.',
         `Oswietlenie: ${profile?.lightModelName || '-'}, czas swiecenia ${profile?.lightHours ?? '-'} h, lm/l ${profile?.lumensPerLiter ?? '-'}.`,
         `Obsada ryb (szt): ${fishInTargetTank}.`,
         substrateLabels ? `Podloze: ${substrateLabels}.` : '',
@@ -19271,8 +19214,8 @@ export default function HomeScreen() {
       });
     } catch (error) {
       const mappedError =
-        error instanceof Error ? error : new Error('Nie udalo sie uruchomi? analizy AI.');
-      setAlgaeAiError(mappedError.message || 'Nie udalo sie uruchomi? analizy AI.');
+        error instanceof Error ? error : new Error('Nie udało się uruchomić analizy AI.');
+      setAlgaeAiError(mappedError.message || 'Nie udało się uruchomić analizy AI.');
       trackAiRequestFailure(mappedError, {
         source: 'algae_catalog_analysis',
         mode: 'algae_analysis',
@@ -19432,7 +19375,7 @@ export default function HomeScreen() {
       setIsAlgaeAiAnalyzerVisible(false);
     } catch (error) {
       setAlgaeAiError(
-        error instanceof Error ? error.message : 'Nie udalo sie zapisac podejrzenia.'
+        error instanceof Error ? error.message : 'Nie udało się zapisać podejrzenia.'
       );
     } finally {
       setAlgaeAiSavingBusy(false);
@@ -19517,10 +19460,10 @@ export default function HomeScreen() {
         await fetchTankDiseaseCases(user.uid, tank.id);
       }
 
-      alert(`Dodano do akwarium "${tank.name}". SzczegĂłĹ‚y pojawily sie w sekcji akwarium.`);
+      alert(`Dodano do akwarium "${tank.name}". Szczegóły pojawily sie w sekcji akwarium.`);
     } catch (error) {
       alert(
-        'BĹ‚Ä…d dodawania choroby do akwarium: ' +
+        'Błąd dodawania choroby do akwarium: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -19610,10 +19553,10 @@ export default function HomeScreen() {
         await fetchTankDiseaseCases(user.uid, tank.id);
       }
 
-      alert(`Dodano chorobÄ™ roslin do akwarium "${tank.name}". SzczegĂłĹ‚y pojawily sie w sekcji akwarium.`);
+      alert(`Dodano chorobę roslin do akwarium "${tank.name}". Szczegóły pojawily sie w sekcji akwarium.`);
     } catch (error) {
       alert(
-        'BĹ‚Ä…d dodawania choroby roslin do akwarium: ' +
+        'Błąd dodawania choroby roslin do akwarium: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -19706,10 +19649,10 @@ export default function HomeScreen() {
         await fetchTankDiseaseCases(user.uid, tank.id);
       }
 
-      alert(`Dodano glony do akwarium "${tank.name}". SzczegĂłĹ‚y pojawily sie w sekcji akwarium.`);
+      alert(`Dodano glony do akwarium "${tank.name}". Szczegóły pojawily sie w sekcji akwarium.`);
     } catch (error) {
       alert(
-        'BĹ‚Ä…d dodawania glonow do akwarium: ' +
+        'Błąd dodawania glonow do akwarium: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -19761,7 +19704,7 @@ export default function HomeScreen() {
 
       if (errorMessage && stage >= 1) {
         console.warn(
-          `Nie udalo sie zaladowac miniatury choroby (${diseaseId}, etap ${stage + 1}):`,
+          `Nie udało się załadować miniatury choroby (${diseaseId}, etap ${stage + 1}):`,
           errorMessage
         );
       }
@@ -19791,7 +19734,7 @@ export default function HomeScreen() {
       const nextStage = Math.min(2, prevStage + 1);
       if (errorMessage && prevStage >= 1) {
         console.warn(
-          `Nie udalo sie zaladowac zdjÄ™cia choroby (etap ${prevStage + 1}):`,
+          `Nie udało się załadować zdjęcia choroby (etap ${prevStage + 1}):`,
           errorMessage
         );
       }
@@ -19843,7 +19786,7 @@ export default function HomeScreen() {
     try {
       await WebBrowser.openBrowserAsync(normalizedUrl);
     } catch (_error) {
-      const message = fallbackMessage || 'Nie udalo sie otworzyc linku.';
+      const message = fallbackMessage || 'Nie udało się otworzyć linku.';
       alert(message);
     }
   }, []);
@@ -19854,7 +19797,7 @@ export default function HomeScreen() {
       'https://play.google.com/store/account/subscriptions';
     void handleOpenExternalUrl(
       managementUrl,
-      'Nie udalo sie otworzyc ustawien subskrypcji.'
+      'Nie udało się otworzyć ustawien subskrypcji.'
     );
   }, [handleOpenExternalUrl, subscriptionManagementUrl]);
 
@@ -19869,7 +19812,7 @@ export default function HomeScreen() {
     if (!tier || tier === subscription.tier) {
       const refreshed = await refreshSubscriptionFromBilling();
       if (!refreshed) {
-        alert('Nie udalo sie odswiezyc statusu subskrypcji.');
+        alert('Nie udało się odświeżyć statusu subskrypcji.');
       }
       return;
     }
@@ -19884,7 +19827,7 @@ export default function HomeScreen() {
     try {
       const purchaseStarted = await purchaseSubscriptionTier(tier);
       if (!purchaseStarted) {
-        alert('Nie udalo sie uruchomic zakupu dla wybranego planu.');
+        alert('Nie udało się uruchomić zakupu dla wybranego planu.');
       }
     } catch (error) {
       alert(mapBillingErrorToUserMessage(error, 'purchase'));
@@ -19899,7 +19842,7 @@ export default function HomeScreen() {
 
     try {
       await restoreSubscriptionPurchases();
-      alert('Zakupy zostaĹ‚y przywrĂłone.');
+      alert('Zakupy zostały przywróone.');
     } catch (error) {
       alert(mapBillingErrorToUserMessage(error, 'restore'));
     }
@@ -20191,8 +20134,8 @@ export default function HomeScreen() {
     const successLabel = isAlgaeCase
       ? 'Problem z glonami oznaczono jako usuniety.'
       : isPlantDiseaseCase
-        ? 'Chorob? roslin oznaczono jako wyleczona.'
-        : 'Chorob? oznaczono jako wyleczona.';
+        ? 'Chorobę roślin oznaczono jako wyleczona.'
+        : 'Chorobę oznaczono jako wyleczona.';
 
     Alert.alert(
       confirmLabel,
@@ -20245,7 +20188,7 @@ export default function HomeScreen() {
               alert(successLabel);
             } catch (error) {
               alert(
-                'BĹ‚Ä…d aktualizacji statusu: ' +
+                'Błąd aktualizacji statusu: ' +
                   (error instanceof Error ? error.message : '')
               );
             } finally {
@@ -22686,13 +22629,13 @@ export default function HomeScreen() {
               <Text
                 key={`${resultKey}-ver-${index}`}
                 style={{ color: themeTextSecondary, marginTop: 3, fontSize: 12 }}>
-                Sprawdz: {entry}
+                Sprawdź: {entry}
               </Text>
             ))
           : null}
         {result?.unreadableImageFallback ? (
           <Text style={{ color: themeWarningText, fontSize: 12, marginTop: 6 }}>
-            ZdjÄ™cie moĹĽe byÄ‡ nieczytelne. Dodaj wyraĹşniejsze ujÄ™cie.
+            Zdjęcie może być nieczytelne. Dodaj wyraźniejsze ujęcie.
           </Text>
         ) : null}
       </View>
@@ -22846,12 +22789,12 @@ export default function HomeScreen() {
       { key: 'name', title: 'Nazwa', summary: tankName || '-' },
       {
         key: 'liters',
-        title: 'LitraĹĽ',
+        title: 'Litraż',
         summary: String(tankLiters ?? '').trim() ? `${tankLiters} l` : '-',
       },
       {
         key: 'substrate',
-        title: 'PodĹ‚oĹĽe',
+        title: 'Podłoże',
         summary: getSubstrateLabels(tankSubstrateTypes),
       },
       {
@@ -22861,7 +22804,7 @@ export default function HomeScreen() {
       },
       {
         key: 'ranges',
-        title: 'Zakres parametrĂłw',
+        title: 'Zakres parametrów',
         summary: editTankRangesSummary,
       },
       {
@@ -22944,7 +22887,7 @@ export default function HomeScreen() {
         return (
           <>
             <Text style={{ color: themeTextSecondary, marginBottom: 8, fontSize: 12 }}>
-              MoĹĽesz zaznaczyc wiÄ™cej niĹĽ jedno podĹ‚oĹĽe.
+              Możesz zaznaczyc więcej niż jedno podłoże.
             </Text>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
               {SUBSTRATE_OPTIONS.map((option) => (
@@ -23108,7 +23051,7 @@ export default function HomeScreen() {
         return (
           <>
             <Text style={{ color: themeTextSecondary, marginBottom: 8, fontSize: 12 }}>
-              Uzupelnij minimalne i maksymalne zakresy dla parametrĂłw.
+              Uzupelnij minimalne i maksymalne zakresy dla parametrów.
             </Text>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -4 }}>
               {WATER_TARGET_FIELDS.map((field) => (
@@ -23450,7 +23393,7 @@ export default function HomeScreen() {
         AI - kontekst akwarium
       </Text>
       <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
-        Wybierz akwarium, opisz problem i opcjonalnie dodaj zdjÄ™cie do analizy.
+        Wybierz akwarium, opisz problem i opcjonalnie dodaj zdjęcie do analizy.
       </Text>
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
         {tanks.map((tankItem) => {
@@ -23522,7 +23465,7 @@ export default function HomeScreen() {
             opacity: catalogAiBusy ? 0.7 : 1,
           }}>
           <Text style={{ color: themeTextPrimary, textAlign: 'center', fontWeight: '700', fontSize: 12 }}>
-            Dodaj zdjÄ™cie (galeria)
+            Dodaj zdjęcie (galeria)
           </Text>
         </Pressable>
         <Pressable
@@ -23538,7 +23481,7 @@ export default function HomeScreen() {
             opacity: catalogAiBusy ? 0.7 : 1,
           }}>
           <Text style={{ color: themeTextPrimary, textAlign: 'center', fontWeight: '700', fontSize: 12 }}>
-            ZrĂłb zdjÄ™cie (aparat)
+            Zrób zdjęcie (aparat)
           </Text>
         </Pressable>
       </View>
@@ -23567,7 +23510,7 @@ export default function HomeScreen() {
               backgroundColor: themeCardBg,
             }}>
             <Text style={{ color: themeTextSecondary, textAlign: 'center', fontSize: 12 }}>
-              Usun zdjÄ™cie
+              Usun zdjęcie
             </Text>
           </Pressable>
         </View>
@@ -23680,13 +23623,13 @@ export default function HomeScreen() {
       'lepsze wykresy i trendy',
       'zaawansowane przypomnienia',
       'pelniejsza organizacja obsady, sprzetu i roslin',
-      'eksport danych (jesli dostepny)',
+      'eksport danych (jesli dostępny)',
     ],
     pro: [
       'wszystko z Plus',
       'analiza AI problemow w akwarium',
       'analiza zdjec glonow, chorob i roslin',
-      'analiza historii parametrow',
+      'analiza historii parametrów',
       'podpowiedzi dopasowane do konkretnego zbiornika',
       'rekomendowane kolejne kroki',
     ],
@@ -24039,35 +23982,35 @@ export default function HomeScreen() {
             : formatEquipmentTankRange(item);
 
         let fitsTank = nominalFitsTank;
-        let fitBadgeLabel = fitsTank ? 'Pasuje' : 'Sprawdz';
+        let fitBadgeLabel = fitsTank ? 'Pasuje' : 'Sprawdź';
         let fitBadgeTone = fitsTank ? 'ok' : 'neutral';
         let fitMessage = fitsTank
-          ? 'Zakres litraĹĽu wyglada sensownie dla Twojego akwarium.'
-          : 'Model jest poza zalecanym zakresem litraĹĽu dla tego zbiornika.';
+          ? 'Zakres litrażu wyglada sensownie dla Twojego akwarium.'
+          : 'Model jest poza zalecanym zakresem litrażu dla tego zbiornika.';
 
         if (item.type === 'filter') {
           if (!Number.isFinite(selectedTankLiters) || selectedTankLiters <= 0) {
             fitsTank = false;
-            fitBadgeLabel = 'Sprawdz';
+            fitBadgeLabel = 'Sprawdź';
             fitBadgeTone = 'neutral';
             fitMessage =
-              'Ustaw litraĹĽ akwarium, aby ocenic filtr na bazie realnego przepĹ‚ywu.';
+              'Ustaw litraż akwarium, aby ocenic filtr na bazie realnego przepływu.';
           } else if (!Number.isFinite(Number(flowRatio))) {
             fitsTank = false;
-            fitBadgeLabel = 'Sprawdz';
+            fitBadgeLabel = 'Sprawdź';
             fitBadgeTone = 'neutral';
             fitMessage =
-              'Brak danych o przepĹ‚ywie filtra. Uzupelnij model lub wydajnosc.';
+              'Brak danych o przepływie filtra. Uzupelnij model lub wydajnosc.';
           } else if (Number(flowRatio) < 5) {
             fitsTank = false;
-            fitBadgeLabel = 'Za sĹ‚aby';
+            fitBadgeLabel = 'Za słaby';
             fitBadgeTone = Number(flowRatio) < 3 ? 'danger' : 'warning';
-            fitMessage = `Realny obrot ${flowRatio}x/h jest niski dla tego litraĹĽu (cel zwykle 5-10x/h).`;
+            fitMessage = `Realny obrot ${flowRatio}x/h jest niski dla tego litrażu (cel zwykle 5-10x/h).`;
           } else if (Number(flowRatio) > 10) {
             fitsTank = false;
             fitBadgeLabel = 'Za mocny';
             fitBadgeTone = Number(flowRatio) > 14 ? 'danger' : 'warning';
-            fitMessage = `Realny obrot ${flowRatio}x/h jest wysoki dla tego litraĹĽu (cel zwykle 5-10x/h).`;
+            fitMessage = `Realny obrot ${flowRatio}x/h jest wysoki dla tego litrażu (cel zwykle 5-10x/h).`;
           } else {
             fitsTank = true;
             fitBadgeLabel = 'Pasuje';
@@ -24086,24 +24029,24 @@ export default function HomeScreen() {
               : '';
           if (!Number.isFinite(selectedTankLiters) || selectedTankLiters <= 0) {
             fitsTank = false;
-            fitBadgeLabel = 'Sprawdz';
+            fitBadgeLabel = 'Sprawdź';
             fitBadgeTone = 'neutral';
-            fitMessage = 'Ustaw litraĹĽ akwarium, aby ocenic grzalke na bazie wymaganej mocy.';
+            fitMessage = 'Ustaw litraż akwarium, aby ocenic grzalke na bazie wymaganej mocy.';
           } else if (heaterStatus === 'no_heater_needed') {
             fitsTank = true;
             fitBadgeLabel = 'Opcjonalna';
             fitBadgeTone = 'neutral';
             fitMessage =
-              'Przy obecnych zalozeniach grzalka nie jest konieczna do osiagniecia celu temperatury, ale moĹĽe stabilizowac wahania.';
+              'Przy obecnych zalozeniach grzalka nie jest konieczna do osiagniecia celu temperatury, ale może stabilizowac wahania.';
           } else if (!Number.isFinite(heaterRequiredPowerW) || heaterRequiredPowerW <= 0) {
             fitsTank = false;
-            fitBadgeLabel = 'Sprawdz';
+            fitBadgeLabel = 'Sprawdź';
             fitBadgeTone = 'neutral';
             fitMessage =
-              'Brak danych o wymaganej mocy. Uzupelnij temperature docelowa i litraĹĽ, aby ocenic grzalke.';
+              'Brak danych o wymaganej mocy. Uzupelnij temperature docelowa i litraż, aby ocenic grzalke.';
           } else if (!Number.isFinite(heaterPowerW) || heaterPowerW <= 0) {
             fitsTank = false;
-            fitBadgeLabel = 'Sprawdz';
+            fitBadgeLabel = 'Sprawdź';
             fitBadgeTone = 'neutral';
             fitMessage = 'Brak danych o mocy grzalki w katalogu.';
           } else {
@@ -24119,7 +24062,7 @@ export default function HomeScreen() {
               fitsTank = false;
               fitBadgeLabel = 'Raczej slaba';
               fitBadgeTone = 'warning';
-              fitMessage = `Moc ${Math.round(heaterPowerW)} W moĹĽe byc za slaba wzgledem wymaganych ~${Math.round(
+              fitMessage = `Moc ${Math.round(heaterPowerW)} W może byc za slaba wzgledem wymaganych ~${Math.round(
                 heaterRequiredPowerW
               )} W${heaterContextLabel}.`;
             } else if (heaterRatio <= 1.5) {
@@ -24663,7 +24606,7 @@ export default function HomeScreen() {
           tankId: selectedTank.id,
           acceptanceKey,
         });
-        alert('Nie udalo sie zapisac akceptacji problemu. Sprobuj ponownie.');
+        alert('Nie udało się zapisać akceptacji problemu. Spróbuj ponownie.');
       } finally {
         setAcceptedProblemBusyKey('');
       }
@@ -24679,8 +24622,8 @@ export default function HomeScreen() {
   const handleConfirmAcceptSuggestionProblem = useCallback(
     (item) => {
       Alert.alert(
-        'UkryÄ‡ ten problem?',
-        'Ta akcja ukrywa problem tylko na tej liĹ›cie. Nie rozwiÄ…zuje go i nie zmienia scoringu. Problem wrĂłci po zmianach w tej samej sekcji, jeĹ›li nadal wystÄ™puje.',
+        'Ukryć ten problem?',
+        'Ta akcja ukrywa problem tylko na tej liście. Nie rozwiązuje go i nie zmienia scoringu. Problem wróci po zmianach w tej samej sekcji, jeśli nadal występuje.',
         [
           {
             text: 'Anuluj',
@@ -25782,7 +25725,7 @@ export default function HomeScreen() {
                   </Text>
                   {shouldShowFirstRunEntry ? (
                     <Text style={{ color: themeTextSecondary, marginTop: 8, fontSize: 12 }}>
-                      Start obejmuje tylko minimum potrzebne na poczatek: nazwa, litraĹĽ, typ
+                      Start obejmuje tylko minimum potrzebne na poczatek: nazwa, litraż, typ
                       akwarium, start i temperature.
                     </Text>
                   ) : null}
@@ -26039,7 +25982,7 @@ export default function HomeScreen() {
                     backgroundColor: themeCardBgAlt,
                   }}>
                   <Text style={{ color: themeTextPrimary, fontSize: 12 }}>
-                    W planie Free moĹĽesz aktywnie prowadzic 1 akwarium. PozostaĹ‚e akwaria sa bezpiecznie zapisane i odblokuj? sie po powrĂłie do Premium.
+                    W planie Free możesz aktywnie prowadzić 1 akwarium. Pozostałe akwaria są bezpiecznie zapisane i odblokują się po powrocie do Premium.
                   </Text>
                 </View>
               ) : null}
@@ -26131,7 +26074,7 @@ export default function HomeScreen() {
                       lineHeight: 21,
                     }}>
                     Wybierz aktywne akwarium, a tutaj pokazemy jego profil
-                    oraz ustawieĹ„ia w bardziej czytelnym widoku.
+                    oraz ustawieńia w bardziej czytelnym widoku.
                   </Text>
                 </View>
               ) : (
@@ -26193,7 +26136,7 @@ export default function HomeScreen() {
                           fontSize: 14,
                           lineHeight: 21,
                         }}>
-                        Szybki profil zbiornika i jego ustawieĹ„ w jednym miejscu.
+                        Szybki profil zbiornika i jego ustawień w jednym miejscu.
                       </Text>
                     </View>
 
@@ -26248,7 +26191,7 @@ export default function HomeScreen() {
                     }}>
                     {[
                       {
-                        label: 'LitraĹĽ',
+                        label: 'Litraż',
                         value: formatLiters(selectedTank.liters),
                       },
                       {
@@ -26325,7 +26268,7 @@ export default function HomeScreen() {
                   </Pressable>
                   {selectedTankLockedByPlan ? (
                     <Text style={{ color: themeWarningText, marginTop: 8, fontSize: 12 }}>
-                      To akwarium jest zablokowane przez plan i jest dostÄ™pne tylko do odczytu.
+                      To akwarium jest zablokowane przez plan i jest dostępne tylko do odczytu.
                     </Text>
                   ) : null}
                 </View>
@@ -26336,9 +26279,9 @@ export default function HomeScreen() {
                   {[
                     {
                       key: 'heater',
-                      title: 'GrzaĹ‚ka',
+                      title: 'Grzałka',
                       data: tankEquipmentAssessment.heater,
-                      actionLabel: 'Dodaj grzaĹ‚kÄ™ z katalogu',
+                      actionLabel: 'Dodaj grzałkę z katalogu',
                     },
                     {
                       key: 'filter',
@@ -26414,7 +26357,7 @@ export default function HomeScreen() {
                       ? String((entry.data.actions ?? [])[0] ?? '').trim() ||
                         (assessmentStatus === 'ok'
                           ? 'Wszystko wyglada dobrze, nic nie trzeba zmieniac.'
-                          : 'Sprawdz dobor sprzetu i ustawienia dla tej sekcji.')
+                          : 'Sprawdź dobor sprzetu i ustawienia dla tej sekcji.')
                       : 'W planie Free mozesz dodawac sprzet. Ocena sekcji jest dostepna od planu Plus.';
                     const adviceColor = hasEquipmentAssessmentAccess
                       ? assessmentStatus === 'ok'
@@ -26545,7 +26488,7 @@ export default function HomeScreen() {
                                   fontSize: 13,
                                   lineHeight: 19,
                                 }}>
-                                Brak przypisanego sprzÄ™tu. Dodaj model z katalogu.
+                                Brak przypisanego sprzętu. Dodaj model z katalogu.
                               </Text>
                             </View>
                         ) : (
@@ -26629,7 +26572,7 @@ export default function HomeScreen() {
                                           fontSize: 11,
                                           fontWeight: '700',
                                         }}>
-                                        UsuĹ„
+                                        Usuń
                                       </Text>
                                     </Pressable>
                                   ) : null}
@@ -26725,7 +26668,7 @@ export default function HomeScreen() {
                             fontSize: 18,
                             lineHeight: 22,
                           }}>
-                          OĹ›wietlenie
+                          Oświetlenie
                         </Text>
                         <Text
                           style={{
@@ -26869,8 +26812,8 @@ export default function HomeScreen() {
                               fontSize: 13,
                             }}>
                             {selectedTankLighting.isDaylightOnly
-                              ? 'Dodaj lampÄ™ z katalogu'
-                              : 'ZmieĹ„ lampÄ™'}
+                              ? 'Dodaj lampę z katalogu'
+                              : 'Zmień lampę'}
                           </Text>
                         </Pressable>
                         {!selectedTankLighting.isDaylightOnly ? (
@@ -26893,7 +26836,7 @@ export default function HomeScreen() {
                                 fontWeight: '700',
                                 fontSize: 13,
                               }}>
-                              Ustaw tylko Ĺ›wiatĹ‚o dzienne
+                              Ustaw tylko światło dzienne
                             </Text>
                           </Pressable>
                         ) : null}
@@ -26952,7 +26895,7 @@ export default function HomeScreen() {
                     fontSize: 14,
                     lineHeight: 21,
                   }}>
-                  Wybierz aktywne akwarium, aby zobaczyÄ‡ przypisany sprzÄ™t.
+                  Wybierz aktywne akwarium, aby zobaczyć przypisany sprzęt.
                 </Text>
               </View>
               ))}
@@ -27239,7 +27182,7 @@ export default function HomeScreen() {
                               {formatRange(plant.tempMin, plant.tempMax, 'C')}
                             </Text>
                             <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
-                              Minimalny litraĹĽ: {Math.max(0, Math.round(Number(plant.minLiters) || 0))} l
+                              Minimalny litraż: {Math.max(0, Math.round(Number(plant.minLiters) || 0))} l
                             </Text>
                             {!plant.notes ? null : (
                               <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 6 }}>
@@ -27355,14 +27298,15 @@ export default function HomeScreen() {
                               'Skala oceny obsady',
                               [
                                 Number.isFinite(scoreValue)
-                                  ? `Aktualnie: ${Math.round(scoreValue)}/100 - ${label}`
+                                  ? `Aktualnie: ${Math.round(scoreValue)}% - ${label}`
                                   : `Aktualnie: Brak danych`,
                                 '',
-                                '85-100: bardzo dobra obsada',
-                                '70-84: dobra, drobne uwagi',
-                                '55-69: srednia, wymaga korekt',
-                                '40-54: problematyczna',
-                                '0-39: niezalecana / niezgodna',
+                                '0-60: bezpiecznie',
+                                '61-80: dobrze',
+                                '81-95: wysoko',
+                                '96-110: granicznie',
+                                '111-130: przekroczone',
+                                '131+: mocno przekroczone',
                               ].join('\n')
                             );
                           }}
@@ -27375,10 +27319,10 @@ export default function HomeScreen() {
                             backgroundColor: themeCardBg,
                           }}>
                           <Text style={{ color: themeTextMuted, fontSize: 10, fontWeight: '700' }}>
-                            WYNIK
+                            OBCIAZENIE
                           </Text>
                           <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 18 }}>
-                            {stockingCompatibility.score}/100
+                            {stockingCompatibility.score}%
                           </Text>
                         </Pressable>
                       </View>
@@ -27394,7 +27338,7 @@ export default function HomeScreen() {
                         backgroundColor: themeCardBgAlt,
                       }}>
                       <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 14 }}>
-                        Ocena szczegĂłĹ‚owa obsady
+                        Ocena szczegółowa obsady
                       </Text>
                       <View style={{ marginTop: 8 }}>
                         {stockingCompatibilitySections.map((section) => (
@@ -27734,8 +27678,8 @@ export default function HomeScreen() {
                       {plantCareTips.length === 0 ? (
                         <Text style={{ color: themeTextSecondary, marginTop: 6, fontSize: 12 }}>
                           {hasPlantMeasurements
-                            ? 'Brak pilnych wskazowek nawozenia/CO2 na podstawie aktualnych pomiarĂłw.'
-                            : 'Brak pomiarĂłw. Dodaj pierwszy pomiar, aby uruchomi? analizÄ™ skladnikow i CO2.'}
+                            ? 'Brak pilnych wskazowek nawozenia/CO2 na podstawie aktualnych pomiarów.'
+                            : 'Brak pomiarów. Dodaj pierwszy pomiar, aby uruchomić analizę składników i CO2.'}
                         </Text>
                       ) : (
                         plantCareTips.map((tip, tipIndex) => (
@@ -28791,7 +28735,7 @@ export default function HomeScreen() {
                               </Text>
                               {String(stockFishSearch ?? '').trim().length > 0 ? (
                                 <Text style={{ color: themeTextSecondary, marginBottom: 10 }}>
-                                  Nie ma takiej ryby w katalogu. MoĹĽesz dodac wpis recznie tym samym
+                                  Nie ma takiej ryby w katalogu. Możesz dodac wpis recznie tym samym
                                   przyciskiem powyzej.
                                 </Text>
                               ) : null}
@@ -28815,7 +28759,7 @@ export default function HomeScreen() {
                                     fontSize: 12,
                                     marginBottom: 10,
                                   }}>
-                                  Dla szybszego dziaĹ‚ania na iPhonie w Expo Go pokazuje teraz
+                                  Dla szybszego działania na iPhonie w Expo Go pokazuje teraz
                                   pierwsze {visibleFilteredFishCatalog.length} pozycji. Wpisz nazwe,
                                   aby zawezic wyniki.
                                 </Text>
@@ -29158,7 +29102,7 @@ export default function HomeScreen() {
                               fontSize: 12,
                               marginBottom: 10,
                             }}>
-                            Dla szybszego dziaĹ‚ania na iPhonie w Expo Go pokazuje teraz pierwsze{' '}
+                            Dla szybszego działania na iPhonie w Expo Go pokazuje teraz pierwsze{' '}
                             {visibleFilteredPlantCatalog.length} pozycji. Wpisz nazwe, aby zawezic
                             wyniki.
                           </Text>
@@ -29395,7 +29339,7 @@ export default function HomeScreen() {
                   Nie wiesz, co dolega rybie?
                 </Text>
                 <Text style={{ color: themeAccentOnStrong, fontSize: 12, marginTop: 4 }}>
-                  Opisz objawy, dodaj zdjecie i sprawdz mozliwe przyczyny z AI.
+                  Opisz objawy, dodaj zdjecie i sprawdź mozliwe przyczyny z AI.
                 </Text>
                 <Pressable
                   onPress={handleOpenDiseaseAiAnalyzer}
@@ -29414,7 +29358,7 @@ export default function HomeScreen() {
                       fontWeight: '700',
                       fontSize: 12,
                     }}>
-                    Sprawdz objawy z AI
+                    Sprawdź objawy z AI
                   </Text>
                 </Pressable>
               </View>
@@ -29450,7 +29394,7 @@ export default function HomeScreen() {
                       textAlign: 'center',
                       fontWeight: diseaseMode === 'catalog' ? '700' : '400',
                     }}>
-                    Katalog rybich chorĂłb
+                    Katalog rybich chorób
                   </Text>
                 </Pressable>
                 <Pressable
@@ -29636,7 +29580,7 @@ export default function HomeScreen() {
                                   marginTop: 4,
                                   fontSize: 11,
                                 }}>
-                                ZdjÄ™cie poglÄ…dowe: {disease.imageSourceLabel}
+                                Zdjęcie poglądowe: {disease.imageSourceLabel}
                               </Text>
                             )}
                             <Text style={{ color: themeSuccessText, marginTop: 8, fontSize: 12 }}>
@@ -29717,7 +29661,7 @@ export default function HomeScreen() {
                               onPress={() =>
                                 runCatalogAiChat({
                                   resultKey: diseaseCatalogAiResultKey,
-                                  question: `Przeanalizuj chorobÄ™ "${disease.name}" w kontekscie wybranego akwarium i podaj kroki dziaĹ‚ania.`,
+                                  question: `Przeanalizuj chorobę "${disease.name}" w kontekscie wybranego akwarium i podaj kroki działania.`,
                                   contextDetails: [
                                     `Objawy katalogowe: ${symptomSummary}`,
                                     `Podsumowanie: ${disease.summary ?? ''}`,
@@ -29747,14 +29691,14 @@ export default function HomeScreen() {
                                   fontWeight: '700',
                                   fontSize: 12,
                                 }}>
-                                {catalogAiBusy ? 'AI analizuje...' : 'Zapytaj AI o te chorobÄ™'}
+                                {catalogAiBusy ? 'AI analizuje...' : 'Zapytaj AI o te chorobę'}
                               </Text>
                             </Pressable>
                             <Pressable
                               onPress={() =>
                                 runCatalogAiVision({
                                   resultKey: diseaseCatalogAiResultKey,
-                                  question: `Przeanalizuj zdjÄ™cie pod katem choroby "${disease.name}" i zaproponuj plan weryfikacji oraz dziaĹ‚ania.`,
+                                  question: `Przeanalizuj zdjęcie pod katem choroby "${disease.name}" i zaproponuj plan weryfikacji oraz działania.`,
                                   contextDetails: [
                                     `Objawy katalogowe: ${symptomSummary}`,
                                     `Podsumowanie: ${disease.summary ?? ''}`,
@@ -29784,7 +29728,7 @@ export default function HomeScreen() {
                                   fontWeight: '700',
                                   fontSize: 12,
                                 }}>
-                                {catalogAiBusy ? 'AI analizuje...' : 'Analizuj zdjÄ™cie dla tej choroby'}
+                                {catalogAiBusy ? 'AI analizuje...' : 'Analizuj zdjęcie dla tej choroby'}
                               </Text>
                             </Pressable>
                             {renderCatalogAiResultCard(diseaseCatalogAiResultKey)}
@@ -29830,7 +29774,7 @@ export default function HomeScreen() {
                     Zaznacz objawy
                   </Text>
                   <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 10 }}>
-                    Im wiÄ™cej trafnych objawow wybierzesz, tym sensowniejsza bedzie
+                    Im więcej trafnych objawow wybierzesz, tym sensowniejsza bedzie
                     podpowiedz.
                   </Text>
 
@@ -30019,7 +29963,7 @@ export default function HomeScreen() {
                       </Text>
                       <Text style={{ color: themeDangerText, marginTop: 4, fontSize: 12 }}>
                         {selectedEmergencyState?.summary ||
-                          'Wykonaj natychmiastowa podmianÄ™ wody, mocne napowietrzanie i pilna konsultacje.'}
+                          'Wykonaj natychmiastowa podmianę wody, mocne napowietrzanie i pilna konsultacje.'}
                       </Text>
                       {(selectedEmergencyState?.steps ?? []).slice(0, 3).map((step, index) => (
                         <Text
@@ -30040,16 +29984,16 @@ export default function HomeScreen() {
 
                   {!diseaseSafetyConfirmed ? (
                     <Text style={{ color: themeWarningText, fontSize: 12 }}>
-                      Najpierw zaznacz potwierdzenie bezpieczenstwa, aby zobaczyÄ‡
+                      Najpierw zaznacz potwierdzenie bezpieczenstwa, aby zobaczyć
                       sugestie.
                     </Text>
                   ) : selectedDiseaseSymptomIds.length < 2 ? (
                     <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
-                      Zaznacz minimum 2 objawy, aby uruchomi? analizÄ™.
+                      Zaznacz minimum 2 objawy, aby uruchomić analizę.
                     </Text>
                   ) : diseaseSuggestions.length === 0 ? (
                     <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
-                      Brak jednoznacznego dopasowania. Sprawdz parametry, obserwuj
+                      Brak jednoznacznego dopasowania. Sprawdź parametry, obserwuj
                       24h i rozwaz konsultacje specjalistyczna.
                     </Text>
                   ) : (
@@ -30130,7 +30074,7 @@ export default function HomeScreen() {
                               marginTop: 6,
                               fontSize: 12,
                             }}>
-                            Plan dziaĹ‚aĹ„ 24h:
+                            Plan działań 24h:
                           </Text>
                           {(item.timelinePlan?.h24 ?? item.treatment ?? []).slice(0, 3).map((step, index) => (
                             <Text
@@ -30256,7 +30200,7 @@ export default function HomeScreen() {
                   Sekcja edukacyjna. Pomaga rozpoznac najczestsze problemy roslin.
                 </Text>
                 <Text style={{ color: themeWarningText, fontSize: 12 }}>
-                  Zabezpieczenie: to nie jest pewna diagnoza. WprowadĹşaj zmiany
+                  Zabezpieczenie: to nie jest pewna diagnoza. Wprowadźaj zmiany
                   stopniowo i obserwuj reakcje zbiornika.
                 </Text>
               </View>
@@ -30278,7 +30222,7 @@ export default function HomeScreen() {
                   Nie wiesz, co dzieje sie z roslina?
                 </Text>
                 <Text style={{ color: themeAccentOnStrong, fontSize: 12, marginTop: 4 }}>
-                  Opisz objawy, dodaj zdjecie i sprawdz mozliwe przyczyny z AI.
+                  Opisz objawy, dodaj zdjecie i sprawdź mozliwe przyczyny z AI.
                 </Text>
                 <Pressable
                   onPress={handleOpenPlantDiseaseAiAnalyzer}
@@ -30297,7 +30241,7 @@ export default function HomeScreen() {
                       fontWeight: '700',
                       fontSize: 12,
                     }}>
-                    Sprawdz problem z AI
+                    Sprawdź problem z AI
                   </Text>
                 </Pressable>
               </View>
@@ -30336,7 +30280,7 @@ export default function HomeScreen() {
                       textAlign: 'center',
                       fontWeight: plantDiseaseMode === 'catalog' ? '700' : '400',
                     }}>
-                    Katalog chorĂłb roslin
+                    Katalog chorób roslin
                   </Text>
                 </Pressable>
                 <Pressable
@@ -30527,7 +30471,7 @@ export default function HomeScreen() {
                                   marginTop: 4,
                                   fontSize: 11,
                                 }}>
-                                ZdjÄ™cie poglÄ…dowe: {disease.imageSourceLabel}
+                                Zdjęcie poglądowe: {disease.imageSourceLabel}
                               </Text>
                             )}
                             <Text style={{ color: themeSuccessText, marginTop: 8, fontSize: 12 }}>
@@ -30647,7 +30591,7 @@ export default function HomeScreen() {
                   </Text>
                   <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 10 }}>
                     Zaznacz to, co obserwujesz. Otrzymasz liste najbardziej
-                    prawdopodobnych problemĂłw i sugestie.
+                    prawdopodobnych problemów i sugestie.
                   </Text>
 
                   <Pressable
@@ -30823,16 +30767,16 @@ export default function HomeScreen() {
 
                   {!plantDiseaseSafetyConfirmed ? (
                     <Text style={{ color: themeWarningText, fontSize: 12 }}>
-                      Najpierw zaznacz potwierdzenie bezpieczenstwa, aby zobaczyÄ‡
+                      Najpierw zaznacz potwierdzenie bezpieczenstwa, aby zobaczyć
                       sugestie.
                     </Text>
                   ) : selectedPlantDiseaseSymptomIds.length < 2 ? (
                     <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
-                      Zaznacz minimum 2 objawy, aby uruchomi? analizÄ™.
+                      Zaznacz minimum 2 objawy, aby uruchomić analizę.
                     </Text>
                   ) : plantDiseaseSuggestions.length === 0 ? (
                     <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
-                      Brak jednoznacznego dopasowania. WprowadĹşaj zmiany etapami i
+                      Brak jednoznacznego dopasowania. Wprowadźaj zmiany etapami i
                       obserwuj nowe przyrosty przez 7-14 dni.
                     </Text>
                   ) : (
@@ -30913,7 +30857,7 @@ export default function HomeScreen() {
                               marginTop: 6,
                               fontSize: 12,
                             }}>
-                            Plan dziaĹ‚aĹ„ 24h:
+                            Plan działań 24h:
                           </Text>
                           {(item.timelinePlan?.h24 ?? item.treatment ?? []).slice(0, 3).map((step, index) => (
                             <Text
@@ -31036,7 +30980,7 @@ export default function HomeScreen() {
                   Glony i rozrost
                 </Text>
                 <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
-                  Sprawdz rodzaj glonow, przyczyne i plan: usuniecie + prewencja
+                  Sprawdź rodzaj glonow, przyczyne i plan: usuniecie + prewencja
                   nawrotu.
                 </Text>
                 <Text style={{ color: themeWarningText, fontSize: 12 }}>
@@ -31062,7 +31006,7 @@ export default function HomeScreen() {
                   Nie wiesz, jaki to glon?
                 </Text>
                 <Text style={{ color: themeAccentOnStrong, fontSize: 12, marginTop: 4 }}>
-                  Dodaj zdjecie, opisz problem i sprawdz mozliwe przyczyny z AI.
+                  Dodaj zdjecie, opisz problem i sprawdź mozliwe przyczyny z AI.
                 </Text>
                 <Pressable
                   onPress={handleOpenAlgaeAiAnalyzer}
@@ -31081,7 +31025,7 @@ export default function HomeScreen() {
                       fontWeight: '700',
                       fontSize: 12,
                     }}>
-                    Sprawdz glony z AI
+                    Sprawdź glony z AI
                   </Text>
                 </Pressable>
               </View>
@@ -31303,7 +31247,7 @@ export default function HomeScreen() {
                                   marginTop: 4,
                                   fontSize: 11,
                                 }}>
-                                ZdjÄ™cie poglÄ…dowe: {algae.imageSourceLabel}
+                                Zdjęcie poglądowe: {algae.imageSourceLabel}
                               </Text>
                             )}
                             <Text style={{ color: themeSuccessText, marginTop: 8, fontSize: 12 }}>
@@ -31443,7 +31387,7 @@ export default function HomeScreen() {
                   </Text>
                   <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 10 }}>
                     Zaznacz to, co widzisz w akwarium. Otrzymasz dopasowanie i plan
-                    dziaĹ‚aĹ„.
+                    działań.
                   </Text>
 
                   <Pressable
@@ -31616,12 +31560,12 @@ export default function HomeScreen() {
 
                   {!algaeSafetyConfirmed ? (
                     <Text style={{ color: themeWarningText, fontSize: 12 }}>
-                      Najpierw zaznacz potwierdzenie bezpieczenstwa, aby zobaczyÄ‡
+                      Najpierw zaznacz potwierdzenie bezpieczenstwa, aby zobaczyć
                       sugestie.
                     </Text>
                   ) : selectedAlgaeSymptomIds.length < 2 ? (
                     <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
-                      Zaznacz minimum 2 objawy, aby uruchomi? analizÄ™.
+                      Zaznacz minimum 2 objawy, aby uruchomić analizę.
                     </Text>
                   ) : algaeSuggestions.length === 0 ? (
                     <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
@@ -31701,7 +31645,7 @@ export default function HomeScreen() {
                               marginTop: 6,
                               fontSize: 12,
                             }}>
-                            Plan dziaĹ‚aĹ„ 24h:
+                            Plan działań 24h:
                           </Text>
                           {(item.timelinePlan?.h24 ??
                             [
@@ -31961,7 +31905,7 @@ export default function HomeScreen() {
                     backgroundColor: themeCardBgAlt,
                   }}>
                   <Text style={{ color: themeTextSecondary }}>
-                    Najpierw wybierz aktywne akwarium, aby uruchomi? Asystenta AI w kontekscie
+                    Najpierw wybierz aktywne akwarium, aby uruchomić Asystenta AI w kontekscie
                     tego zbiornika.
                   </Text>
                 </View>
@@ -32970,7 +32914,7 @@ export default function HomeScreen() {
                       backgroundColor: themeAccentStrongBg,
                     }}>
                     <Text style={{ color: themeTextPrimary, fontWeight: '700' }}>
-                      PrzejdĹş dalej
+                      Przejdź dalej
                     </Text>
                   </Pressable>
                 </View>
@@ -33020,10 +32964,10 @@ export default function HomeScreen() {
                           marginTop: 4,
                         }}>
                         {equipmentCatalogType === 'heater'
-                          ? 'Porownaj modele po mocy i zalecanym litraĹĽu.'
+                          ? 'Porownaj modele po mocy i zalecanym litrażu.'
                           : equipmentCatalogType === 'filter'
-                            ? 'Porownaj modele po wydajnosci, litraĹĽu i sile przepĹ‚ywu.'
-                            : 'Porownaj modele po lumenach i dopasowaniu lm/l do litraĹĽu.'}
+                            ? 'Porownaj modele po wydajnosci, litrażu i sile przepływu.'
+                            : 'Porownaj modele po lumenach i dopasowaniu lm/l do litrażu.'}
                       </Text>
                     </View>
                     <Pressable
@@ -33068,7 +33012,7 @@ export default function HomeScreen() {
                           fontWeight: '700',
                           marginBottom: 4,
                         }}>
-                        Wybierz model sprzÄ™tu
+                        Wybierz model sprzętu
                       </Text>
                       <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
                         Karty pokazuja najwazniejsze parametry i szybkie dopasowanie do Twojego
@@ -33120,7 +33064,7 @@ export default function HomeScreen() {
                           }}>
                           {isCustomEquipmentFormVisible
                             ? 'Ukryj formularz "Inne"'
-                            : 'Nie ma na liĹ›cie Dodaj "Inne"'}
+                            : 'Nie ma na liście Dodaj "Inne"'}
                         </Text>
                       </Pressable>
 
@@ -33133,7 +33077,7 @@ export default function HomeScreen() {
                               marginBottom: 8,
                               lineHeight: 17,
                             }}>
-                            Podaj podstawowe dane sprzÄ™tu, a zapisze go bezposrednio do
+                            Podaj podstawowe dane sprzętu, a zapisze go bezposrednio do
                             aktywnego akwarium.
                           </Text>
                           <TextInput
@@ -33243,7 +33187,7 @@ export default function HomeScreen() {
                                 marginBottom: 10,
                               }}>
                               <TextInput
-                                placeholder="Min litraĹĽ (opcjonalnie)"
+                                placeholder="Min litraż (opcjonalnie)"
                                 placeholderTextColor={themePlaceholder}
                                 value={customEquipmentTankMinLiters}
                                 onChangeText={setCustomEquipmentTankMinLiters}
@@ -33260,7 +33204,7 @@ export default function HomeScreen() {
                                 }}
                               />
                               <TextInput
-                                placeholder="Max litraĹĽ (opcjonalnie)"
+                                placeholder="Max litraż (opcjonalnie)"
                                 placeholderTextColor={themePlaceholder}
                                 value={customEquipmentTankMaxLiters}
                                 onChangeText={setCustomEquipmentTankMaxLiters}
@@ -33297,7 +33241,7 @@ export default function HomeScreen() {
                                 fontWeight: '700',
                                 fontSize: 13,
                               }}>
-                              Dodaj inny sprzÄ™t
+                              Dodaj inny sprzęt
                             </Text>
                           </Pressable>
                         </View>
@@ -33460,8 +33404,8 @@ export default function HomeScreen() {
                                     fontWeight: '700',
                                   }}>
                                   {item.type === 'light'
-                                    ? item.lightFitLabel || 'Sprawdz'
-                                    : item.fitBadgeLabel || 'Sprawdz'}
+                                    ? item.lightFitLabel || 'Sprawdź'
+                                    : item.fitBadgeLabel || 'Sprawdź'}
                                 </Text>
                               </View>
                             </View>
@@ -34140,7 +34084,7 @@ export default function HomeScreen() {
             <BottomSheetModal
               visible
               onClose={handleCloseMeasurementTileDetails}
-              title={`${selectedMeasurementTileDetails.label} - szczegĂłĹ‚y`}
+              title={`${selectedMeasurementTileDetails.label} - szczegóły`}
               themeCardBg={themeCardBg}
               themeBorder={themeBorder}
               themeTextPrimary={themeTextPrimary}
@@ -34215,7 +34159,7 @@ export default function HomeScreen() {
                     marginTop: 10,
                   }}>
                   <Text style={{ color: themeTextSecondary, fontWeight: '700', fontSize: 12 }}>
-                    Co zrĂłbic teraz
+                    Co zróbic teraz
                   </Text>
                   <Text style={{ color: themeTextPrimary, marginTop: 6 }}>
                     {selectedMeasurementTileDetails.action}
@@ -34300,7 +34244,7 @@ export default function HomeScreen() {
                         marginBottom: 12,
                         fontSize: 12,
                       }}>
-                      Widoczne pola z ustawieĹ„ (zalecane):{' '}
+                      Widoczne pola z ustawień (zalecane):{' '}
                       {visibleMeasurementOptionLabels.join(', ') || t('noData')}
                     </Text>
                     <Text
@@ -34319,7 +34263,7 @@ export default function HomeScreen() {
                           fontSize: 12,
                         }}>
                         {fullMeasurementFeatureLockMessage ||
-                          `PeĹ‚ne parametry od planu ${getPlanLabel(fullMeasurementFeatureTargetPlan)}.`}{' '}
+                          `Pełne parametry od planu ${getPlanLabel(fullMeasurementFeatureTargetPlan)}.`}{' '}
                         Zablokowane: {lockedMeasurementFields.join(', ')}.
                       </Text>
                     ) : null}
@@ -34331,7 +34275,7 @@ export default function HomeScreen() {
                           marginBottom: 10,
                           fontSize: 12,
                         }}>
-                        W ustawieniach wybierz pola, ktore chcesz widziec w formularzu pomiarĂłw.
+                        W ustawieniach wybierz pola, ktore chcesz widziec w formularzu pomiarów.
                       </Text>
                     ) : null}
 
@@ -34891,16 +34835,16 @@ export default function HomeScreen() {
               )}
 
               <Text style={{ color: themeTextSecondary, marginBottom: 8, fontSize: 12 }}>
-                Widoczne pola z ustawieĹ„ (zalecane):{' '}
+                Widoczne pola z ustawień (zalecane):{' '}
                 {visibleMeasurementOptionLabels.join(', ') || t('noData')}
               </Text>
               <Text style={{ color: themeTextSecondary, marginBottom: 10, fontSize: 12 }}>
-                Pola pozostaja opcjonalne. Wpisz tylko te wartosci, ktore chcesz teraz zapisac.
+                Pola pozostaja opcjonalne. Wpisz tylko te wartosci, ktore chcesz teraz zapisać.
               </Text>
               {lockedMeasurementFields.length > 0 ? (
                 <Text style={{ color: themeTextSecondary, marginBottom: 10, fontSize: 12 }}>
                   {fullMeasurementFeatureLockMessage ||
-                    `PeĹ‚ne parametry od planu ${getPlanLabel(fullMeasurementFeatureTargetPlan)}.`}{' '}
+                    `Pełne parametry od planu ${getPlanLabel(fullMeasurementFeatureTargetPlan)}.`}{' '}
                   Zablokowane: {lockedMeasurementFields.join(', ')}.
                 </Text>
               ) : null}
@@ -34938,7 +34882,7 @@ export default function HomeScreen() {
 
               {measurementInputRows.length === 0 ? (
                 <Text style={{ color: themeWarningText, marginBottom: 10, fontSize: 12 }}>
-                  W ustawieniach wybierz pola, ktore chcesz widziec w formularzu pomiarĂłw.
+                  W ustawieniach wybierz pola, ktore chcesz widziec w formularzu pomiarów.
                 </Text>
               ) : (
                 measurementInputRows.map((field) => (
@@ -35921,7 +35865,7 @@ export default function HomeScreen() {
                         <Text style={{ color: themeWarningText, marginTop: 8, fontSize: 12 }}>
                           {aiAssistantUpgradePromptMessage ||
                             aiAssistantLockMessage ||
-                            'Asystent AI jest dostepny w planie Pro.'}
+                            'Asystent AI jest dostępny w planie Pro.'}
                         </Text>
                       ) : null}
 
@@ -36526,7 +36470,7 @@ export default function HomeScreen() {
                     fontWeight: '700',
                     fontSize: 13,
                   }}>
-                  {diseaseAiBusy ? 'AI analizuje...' : 'Sprawdz z AI'}
+                  {diseaseAiBusy ? 'AI analizuje...' : 'Sprawdź z AI'}
                 </Text>
               </Pressable>
 
@@ -36658,7 +36602,7 @@ export default function HomeScreen() {
                   {normalizeArray(diseaseAiResult?.verificationSteps).length > 0 ? (
                     <>
                       <Text style={{ color: themeTextPrimary, fontWeight: '700', marginTop: 10, fontSize: 12 }}>
-                        Co sprawdzic teraz
+                        Co sprawdzić teraz
                       </Text>
                       {normalizeArray(diseaseAiResult?.verificationSteps).slice(0, 6).map((step, index) => (
                         <Text
@@ -37047,7 +36991,7 @@ export default function HomeScreen() {
                     fontWeight: '700',
                     fontSize: 13,
                   }}>
-                  {plantDiseaseAiBusy ? 'AI analizuje...' : 'Sprawdz z AI'}
+                  {plantDiseaseAiBusy ? 'AI analizuje...' : 'Sprawdź z AI'}
                 </Text>
               </Pressable>
 
@@ -37183,7 +37127,7 @@ export default function HomeScreen() {
                   {normalizeArray(plantDiseaseAiResult?.verificationSteps).length > 0 ? (
                     <>
                       <Text style={{ color: themeTextPrimary, fontWeight: '700', marginTop: 10, fontSize: 12 }}>
-                        Co sprawdzic teraz
+                        Co sprawdzić teraz
                       </Text>
                       {normalizeArray(plantDiseaseAiResult?.verificationSteps)
                         .slice(0, 6)
@@ -37542,7 +37486,7 @@ export default function HomeScreen() {
                     fontWeight: '700',
                     fontSize: 13,
                   }}>
-                  {algaeAiBusy ? 'AI analizuje...' : 'Sprawdz z AI'}
+                  {algaeAiBusy ? 'AI analizuje...' : 'Sprawdź z AI'}
                 </Text>
               </Pressable>
 
@@ -37674,7 +37618,7 @@ export default function HomeScreen() {
                   {normalizeArray(algaeAiResult?.verificationSteps).length > 0 ? (
                     <>
                       <Text style={{ color: themeTextPrimary, fontWeight: '700', marginTop: 10, fontSize: 12 }}>
-                        Co sprawdzic teraz
+                        Co sprawdzić teraz
                       </Text>
                       {normalizeArray(algaeAiResult?.verificationSteps).slice(0, 6).map((step, index) => (
                         <Text
@@ -38129,7 +38073,7 @@ export default function HomeScreen() {
                   onPress={() => {
                     void handleOpenExternalUrl(
                       TERMS_URL,
-                      'Nie udalo sie otworzyc Regulaminu.'
+                      'Nie udało się otworzyć Regulaminu.'
                     );
                   }}
                   style={{ marginRight: 14 }}>
@@ -38141,7 +38085,7 @@ export default function HomeScreen() {
                   onPress={() => {
                     void handleOpenExternalUrl(
                       PRIVACY_POLICY_URL,
-                      'Nie udalo sie otworzyc Polityki prywatnosci.'
+                      'Nie udało się otworzyć Polityki prywatnosci.'
                     );
                   }}>
                   <Text style={{ color: themeActionText, fontWeight: '700', fontSize: 12 }}>
@@ -38307,7 +38251,7 @@ export default function HomeScreen() {
                   flex: 1,
                   paddingRight: 10,
                 }}>
-                {diseaseImageModalTitle || 'ZdjÄ™cie choroby'}
+                {diseaseImageModalTitle || 'Zdjęcie choroby'}
               </Text>
               <Pressable
                 onPress={handleCloseDiseaseImageModal}
@@ -38434,6 +38378,3 @@ export default function HomeScreen() {
     </SafeAreaView>
   );
 }
-
-
-

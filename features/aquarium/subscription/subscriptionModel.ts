@@ -189,6 +189,7 @@ export type SubscriptionState = {
   tier: SubscriptionTier;
   status: SubscriptionStatus;
   source: SubscriptionSource;
+  productId: string | null;
   startedAt: string | null;
   expiresAt: string | null;
   renewsAt: string | null;
@@ -643,6 +644,7 @@ export const DEFAULT_SUBSCRIPTION_STATE: SubscriptionState = {
   tier: 'free',
   status: 'active',
   source: 'system',
+  productId: null,
   startedAt: null,
   expiresAt: null,
   renewsAt: null,
@@ -730,6 +732,7 @@ export function normalizeSubscriptionState(
       source === 'admin'
         ? source
         : DEFAULT_SUBSCRIPTION_STATE.source,
+    productId: String((value as { productId?: unknown })?.productId ?? '').trim() || null,
     featureOverrides: Array.isArray(value?.featureOverrides)
       ? value.featureOverrides.filter((item): item is SubscriptionFeatureKey =>
           SUBSCRIPTION_FEATURE_CATALOG.some((entry) => entry.key === item)
@@ -888,10 +891,10 @@ export function getFeatureLockMessage(
   const messages: Record<SubscriptionFeatureKey, string> = {
     core_access: '',
     critical_alerts: '',
-    full_measurements: 'Pełny zestaw parametrów jest dostepny w Premium.',
+    full_measurements: 'Pełny zestaw parametrów jest dostępny w Premium.',
     stocking_compatibility:
       'Zaawansowana analiza obsady jest dostepna w Premium.',
-    smart_action_plan: 'Plan działania krok po kroku jest dostepny w Pro.',
+    smart_action_plan: 'Plan działania krok po kroku jest dostępny w Pro.',
     full_history:
       'W planie Free widoczna jest historia z ostatnich 30 dni. Pełna historia jest dostepna w Premium.',
     multiple_tanks: 'Osiagnieto limit akwariów w obecnym planie.',
@@ -902,9 +905,9 @@ export function getFeatureLockMessage(
     fish_disease_diagnosis: 'Diagnoza chorób ryb jest dostepna od planu Premium.',
     plant_disease_diagnosis:
       'Diagnoza chorób roslin jest dostepna od planu Premium.',
-    automatic_tasks: 'Automatyczne zadania sa dostepne od planu Premium.',
-    ai_assistant: 'Asystent AI jest dostepny w planie Pro.',
-    export_data: 'Eksport danych jest dostepny od planu Premium.',
+    automatic_tasks: 'Automatyczne zadania sa dostępne od planu Premium.',
+    ai_assistant: 'Asystent AI jest dostępny w planie Pro.',
+    export_data: 'Eksport danych jest dostępny od planu Premium.',
   };
 
   return messages[featureKey] || `Ta funkcja jest dostepna od planu ${getPlanLabel(requiredPlan)}.`;

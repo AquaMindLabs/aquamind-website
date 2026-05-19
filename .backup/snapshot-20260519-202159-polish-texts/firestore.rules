@@ -1,0 +1,757 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwnerUid(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isOwnerData(data) {
+      return isSignedIn() && data.userId == request.auth.uid;
+    }
+
+    function isAdmin() {
+      return isSignedIn() &&
+        request.auth.token is map &&
+        ('admin' in request.auth.token) &&
+        request.auth.token.admin == true;
+    }
+
+    function optionalString(data, field, maxLen) {
+      return !(field in data) || (data[field] is string && data[field].size() <= maxLen);
+    }
+
+    function optionalStringOrNull(data, field, maxLen) {
+      return !(field in data) ||
+        data[field] == null ||
+        (data[field] is string && data[field].size() <= maxLen);
+    }
+
+    function optionalTimestamp(data, field) {
+      return !(field in data) || data[field] is timestamp || data[field] == null;
+    }
+
+    function optionalMap(data, field, maxSize) {
+      return !(field in data) || (data[field] is map && data[field].size() <= maxSize);
+    }
+
+    function optionalList(data, field, maxSize) {
+      return !(field in data) || (data[field] is list && data[field].size() <= maxSize);
+    }
+
+    function inRangeNumber(value, minValue, maxValue) {
+      return value is number && value >= minValue && value <= maxValue;
+    }
+
+    function validAquariumType(value) {
+      return value == 'plant' ||
+        value == 'shrimp' ||
+        value == 'mixed' ||
+        value == 'general' ||
+        value == 'biotope' ||
+        value == 'species_only' ||
+        value == 'custom' ||
+        value == 'planted_low_tech' ||
+        value == 'planted_high_tech' ||
+        value == 'malawi' ||
+        value == 'tanganyika' ||
+        value == 'betta_or_calm_fish' ||
+        value == '';
+    }
+
+    function validLightIntensity(value) {
+      return value == 'low' ||
+        value == 'medium' ||
+        value == 'high' ||
+        value == '';
+    }
+
+    function validOnboardingMode(value) {
+      return value == 'fresh_start' ||
+        value == 'existing_running' ||
+        value == 'restart' ||
+        value == 'mature_media_start';
+    }
+
+    function validRoomTemperatureMode(value) {
+      return value == 'cold' ||
+        value == 'normal' ||
+        value == 'warm' ||
+        value == 'very_warm' ||
+        value == 'custom';
+    }
+
+    function validDensityLevel(value) {
+      return value == 'none' ||
+        value == 'low' ||
+        value == 'medium' ||
+        value == 'high';
+    }
+
+    function validWaterProfile(value) {
+      return value == '' ||
+        value == 'general' ||
+        value == 'plant' ||
+        value == 'low_tech' ||
+        value == 'high_tech' ||
+        value == 'tanganyika' ||
+        value == 'malawi' ||
+        value == 'single_species' ||
+        value == 'shrimp';
+    }
+
+    function validStockType(value) {
+      return value == 'fish' || value == 'plant';
+    }
+
+    function validStockSource(value) {
+      return value == 'catalog' ||
+        value == 'manual' ||
+        value == 'custom' ||
+        value == '';
+    }
+
+    function validPlantDemandLevel(value) {
+      return value == 'low' || value == 'medium' || value == 'high';
+    }
+
+    function validPlantDifficulty(value) {
+      return value == 'easy' || value == 'medium' || value == 'hard';
+    }
+
+    function validPlantType(value) {
+      return value == 'epiphyte' ||
+        value == 'rooted' ||
+        value == 'stem' ||
+        value == 'floating' ||
+        value == 'moss' ||
+        value == 'carpet' ||
+        value == 'rosette';
+    }
+
+    function validPlantPlacementZone(value) {
+      return value == 'foreground' ||
+        value == 'midground' ||
+        value == 'background' ||
+        value == 'floating' ||
+        value == 'hardscape';
+    }
+
+    function validCaseType(value) {
+      return value == 'disease' || value == 'plant_disease' || value == 'algae';
+    }
+
+    function validIssueStatus(value) {
+      return value == 'active' ||
+        value == 'resolved' ||
+        value == 'removed' ||
+        value == 'suspected' ||
+        value == 'observing' ||
+        value == 'adjusting' ||
+        value == 'confirmed' ||
+        value == 'dismissed';
+    }
+
+    function validSeverity(value) {
+      return value == 'low' || value == 'medium' || value == 'high' || value == 'critical';
+    }
+
+    function isValidTankDoc(data) {
+      return data.keys().hasAll(['userId', 'name', 'liters', 'createdAt']) &&
+        data.keys().hasOnly([
+          'userId',
+          'name',
+          'liters',
+          'aquariumType',
+          'substrateType',
+          'substrateTypes',
+          'lightIntensity',
+          'lightHours',
+          'lightModelId',
+          'lightModelName',
+          'lightLumens',
+          'targetTemperatureC',
+          'ambientTemperatureC',
+          'roomTemperatureMode',
+          'lengthCm',
+          'widthCm',
+          'heightCm',
+          'plantDensity',
+          'hardscapeDensity',
+          'hidingPlacesCount',
+          'hidingPlacesEstimated',
+          'lineOfSightBreaks',
+          'zones',
+          'waterProfile',
+          'singleSpeciesFishId',
+          'targetRanges',
+          'onboardingMode',
+          'onboardingEnabled',
+          'onboardingStartAt',
+          'onboardingTaskChecks',
+          'maintenanceActionState',
+          'acceptedProblemAcks',
+          'plantFertilizationEntries',
+          'heaterEquipments',
+          'filterEquipments',
+          'heaterEquipment',
+          'filterEquipment',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        isOwnerData(data) &&
+        data.name is string &&
+        data.name.size() >= 1 &&
+        data.name.size() <= 80 &&
+        inRangeNumber(data.liters, 1, 20000) &&
+        optionalString(data, 'aquariumType', 20) &&
+        optionalString(data, 'substrateType', 40) &&
+        optionalList(data, 'substrateTypes', 12) &&
+        optionalString(data, 'lightIntensity', 20) &&
+        optionalString(data, 'lightModelId', 120) &&
+        optionalString(data, 'lightModelName', 160) &&
+        optionalString(data, 'roomTemperatureMode', 30) &&
+        optionalString(data, 'plantDensity', 20) &&
+        optionalString(data, 'hardscapeDensity', 20) &&
+        optionalString(data, 'hidingPlacesEstimated', 20) &&
+        optionalString(data, 'lineOfSightBreaks', 20) &&
+        optionalString(data, 'waterProfile', 30) &&
+        optionalString(data, 'singleSpeciesFishId', 128) &&
+        optionalMap(data, 'targetRanges', 40) &&
+        optionalMap(data, 'zones', 20) &&
+        (!('onboardingEnabled' in data) || data.onboardingEnabled is bool) &&
+        optionalTimestamp(data, 'onboardingStartAt') &&
+        optionalTimestamp(data, 'updatedAt') &&
+        optionalList(data, 'plantFertilizationEntries', 200) &&
+        optionalList(data, 'heaterEquipments', 30) &&
+        optionalList(data, 'filterEquipments', 30) &&
+        optionalMap(data, 'heaterEquipment', 30) &&
+        optionalMap(data, 'filterEquipment', 30) &&
+        optionalMap(data, 'onboardingTaskChecks', 300) &&
+        optionalMap(data, 'maintenanceActionState', 80) &&
+        optionalMap(data, 'acceptedProblemAcks', 180) &&
+        (!('aquariumType' in data) || validAquariumType(data.aquariumType)) &&
+        (!('lightIntensity' in data) || validLightIntensity(data.lightIntensity)) &&
+        (!('lightHours' in data) || inRangeNumber(data.lightHours, 1, 24)) &&
+        (!('lightLumens' in data) || inRangeNumber(data.lightLumens, 1, 200000)) &&
+        (!('targetTemperatureC' in data) || inRangeNumber(data.targetTemperatureC, 5, 40)) &&
+        (!('ambientTemperatureC' in data) || inRangeNumber(data.ambientTemperatureC, 0, 45)) &&
+        (!('lengthCm' in data) || inRangeNumber(data.lengthCm, 0, 2000)) &&
+        (!('widthCm' in data) || inRangeNumber(data.widthCm, 0, 2000)) &&
+        (!('heightCm' in data) || inRangeNumber(data.heightCm, 0, 2000)) &&
+        (!('hidingPlacesCount' in data) || inRangeNumber(data.hidingPlacesCount, 0, 500)) &&
+        (!('roomTemperatureMode' in data) || validRoomTemperatureMode(data.roomTemperatureMode)) &&
+        (!('plantDensity' in data) || validDensityLevel(data.plantDensity)) &&
+        (!('hardscapeDensity' in data) || validDensityLevel(data.hardscapeDensity)) &&
+        (!('hidingPlacesEstimated' in data) || validDensityLevel(data.hidingPlacesEstimated)) &&
+        (!('lineOfSightBreaks' in data) || validDensityLevel(data.lineOfSightBreaks)) &&
+        (!('waterProfile' in data) || validWaterProfile(data.waterProfile)) &&
+        (!('onboardingMode' in data) || validOnboardingMode(data.onboardingMode));
+    }
+
+    function isValidMeasurementDoc(data) {
+      return data.keys().hasAll(['userId', 'tankId', 'tankName', 'createdAt']) &&
+        data.keys().hasOnly([
+          'userId',
+          'tankId',
+          'tankName',
+          'note',
+          'measuredAt',
+          'ph',
+          'gh',
+          'kh',
+          'no2',
+          'no3',
+          'temperature',
+          'nh3nh4',
+          'po4',
+          'fe',
+          'ca',
+          'mg',
+          'k',
+          'tds',
+          'co2',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        isOwnerData(data) &&
+        data.tankId is string &&
+        data.tankId.size() >= 1 &&
+        data.tankId.size() <= 128 &&
+        data.tankName is string &&
+        data.tankName.size() >= 1 &&
+        data.tankName.size() <= 80 &&
+        optionalString(data, 'note', 1000) &&
+        optionalTimestamp(data, 'measuredAt') &&
+        optionalTimestamp(data, 'updatedAt') &&
+        (!('ph' in data) || inRangeNumber(data.ph, 0, 14)) &&
+        (!('gh' in data) || inRangeNumber(data.gh, 0, 60)) &&
+        (!('kh' in data) || inRangeNumber(data.kh, 0, 40)) &&
+        (!('no2' in data) || inRangeNumber(data.no2, 0, 30)) &&
+        (!('no3' in data) || inRangeNumber(data.no3, 0, 500)) &&
+        (!('temperature' in data) || inRangeNumber(data.temperature, -5, 50)) &&
+        (!('nh3nh4' in data) || inRangeNumber(data.nh3nh4, 0, 20)) &&
+        (!('po4' in data) || inRangeNumber(data.po4, 0, 30)) &&
+        (!('fe' in data) || inRangeNumber(data.fe, 0, 10)) &&
+        (!('ca' in data) || inRangeNumber(data.ca, 0, 500)) &&
+        (!('mg' in data) || inRangeNumber(data.mg, 0, 300)) &&
+        (!('k' in data) || inRangeNumber(data.k, 0, 200)) &&
+        (!('tds' in data) || inRangeNumber(data.tds, 0, 3000)) &&
+        (!('co2' in data) || inRangeNumber(data.co2, 0, 200));
+    }
+
+    function isValidStockItemDoc(data) {
+      return data.keys().hasAll([
+          'userId',
+          'tankId',
+          'tankName',
+          'type',
+          'name',
+          'commonName',
+          'latinName',
+          'phMin',
+          'phMax',
+          'ghMin',
+          'ghMax',
+          'tempMin',
+          'tempMax',
+          'minLiters',
+          'notes',
+          'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'userId',
+          'tankId',
+          'tankName',
+          'type',
+          'source',
+          'name',
+          'commonName',
+          'latinName',
+          'catalogFishId',
+          'catalogPlantId',
+          'lightLumenMinPerLiter',
+          'lightLumenMaxPerLiter',
+          'lightHoursMin',
+          'lightHoursMax',
+          'lightDemand',
+          'co2Demand',
+          'growthRate',
+          'difficulty',
+          'fertilizationDemand',
+          'plantType',
+          'placementZone',
+          'carboSensitivity',
+          'parameterStabilitySensitivity',
+          'minTankHeightCm',
+          'minTankVolumeL',
+          'compatibleWithDiggers',
+          'phMin',
+          'phMax',
+          'ghMin',
+          'ghMax',
+          'tempMin',
+          'tempMax',
+          'quantity',
+          'minLiters',
+          'isSchooling',
+          'minGroupSize',
+          'aggressionLevel',
+          'fishProfile',
+          'notes',
+          'createdAt'
+        ]) &&
+        isOwnerData(data) &&
+        data.tankId is string &&
+        data.tankId.size() >= 1 &&
+        data.tankId.size() <= 128 &&
+        data.tankName is string &&
+        data.tankName.size() >= 1 &&
+        data.tankName.size() <= 80 &&
+        validStockType(data.type) &&
+        data.name is string &&
+        data.name.size() >= 1 &&
+        data.name.size() <= 120 &&
+        data.commonName is string &&
+        data.commonName.size() >= 1 &&
+        data.commonName.size() <= 120 &&
+        optionalString(data, 'source', 20) &&
+        optionalMap(data, 'fishProfile', 40) &&
+        data.latinName is string &&
+        data.latinName.size() >= 1 &&
+        data.latinName.size() <= 120 &&
+        data.notes is string &&
+        data.notes.size() <= 1000 &&
+        inRangeNumber(data.phMin, 0, 14) &&
+        inRangeNumber(data.phMax, 0, 14) &&
+        inRangeNumber(data.ghMin, 0, 60) &&
+        inRangeNumber(data.ghMax, 0, 60) &&
+        inRangeNumber(data.tempMin, -5, 50) &&
+        inRangeNumber(data.tempMax, -5, 50) &&
+        inRangeNumber(data.minLiters, 1, 20000) &&
+        (!('source' in data) || validStockSource(data.source)) &&
+        (!('lightLumenMinPerLiter' in data) || inRangeNumber(data.lightLumenMinPerLiter, 1, 200)) &&
+        (!('lightLumenMaxPerLiter' in data) || inRangeNumber(data.lightLumenMaxPerLiter, 1, 250)) &&
+        (!('lightHoursMin' in data) || inRangeNumber(data.lightHoursMin, 1, 24)) &&
+        (!('lightHoursMax' in data) || inRangeNumber(data.lightHoursMax, 1, 24)) &&
+        (!('lightDemand' in data) || validPlantDemandLevel(data.lightDemand)) &&
+        (!('co2Demand' in data) || validPlantDemandLevel(data.co2Demand)) &&
+        (!('growthRate' in data) || validPlantDemandLevel(data.growthRate)) &&
+        (!('difficulty' in data) || validPlantDifficulty(data.difficulty)) &&
+        (!('fertilizationDemand' in data) || validPlantDemandLevel(data.fertilizationDemand)) &&
+        (!('plantType' in data) || validPlantType(data.plantType)) &&
+        (!('placementZone' in data) || validPlantPlacementZone(data.placementZone)) &&
+        (!('carboSensitivity' in data) || validPlantDemandLevel(data.carboSensitivity)) &&
+        (!('parameterStabilitySensitivity' in data) || validPlantDemandLevel(data.parameterStabilitySensitivity)) &&
+        (!('minTankHeightCm' in data) || inRangeNumber(data.minTankHeightCm, 5, 200)) &&
+        (!('minTankVolumeL' in data) || inRangeNumber(data.minTankVolumeL, 1, 20000)) &&
+        (!('compatibleWithDiggers' in data) || data.compatibleWithDiggers is bool) &&
+        (
+          (data.type == 'fish' &&
+            ('catalogFishId' in data) &&
+            data.catalogFishId is string &&
+            data.catalogFishId.size() >= 1 &&
+            data.catalogFishId.size() <= 128 &&
+            ('quantity' in data) &&
+            data.quantity is int &&
+            data.quantity >= 1 &&
+            data.quantity <= 10000 &&
+            ('isSchooling' in data) &&
+            data.isSchooling is bool &&
+            ('minGroupSize' in data) &&
+            data.minGroupSize is int &&
+            data.minGroupSize >= 1 &&
+            data.minGroupSize <= 1000 &&
+            ('aggressionLevel' in data) &&
+            data.aggressionLevel is string &&
+            data.aggressionLevel.size() <= 20
+          ) ||
+          (data.type == 'plant' &&
+            ('catalogPlantId' in data) &&
+            data.catalogPlantId is string &&
+            data.catalogPlantId.size() >= 1 &&
+            data.catalogPlantId.size() <= 128 &&
+            (!('quantity' in data) ||
+              (data.quantity is int && data.quantity >= 1 && data.quantity <= 10000)) &&
+            !('isSchooling' in data) &&
+            !('minGroupSize' in data) &&
+            !('aggressionLevel' in data)
+          )
+        );
+    }
+
+    function isValidTankDiseaseCaseDoc(data) {
+      return data.keys().hasAll([
+          'userId',
+          'tankId',
+          'tankName',
+          'caseType',
+          'issueId',
+          'issueName',
+          'diseaseId',
+          'diseaseName',
+          'severity',
+          'diseaseSummary',
+          'causes',
+          'caution',
+          'treatmentPlan',
+          'schedule',
+          'status',
+          'createdAt',
+          'startedAt',
+          'nextReviewAt'
+        ]) &&
+        data.keys().hasOnly([
+          'userId',
+          'tankId',
+          'tankName',
+          'caseType',
+          'issueId',
+          'issueName',
+          'diseaseId',
+          'diseaseName',
+          'severity',
+          'diseaseSummary',
+          'causes',
+          'caution',
+          'treatmentPlan',
+          'schedule',
+          'status',
+          'createdAt',
+          'startedAt',
+          'nextReviewAt',
+          'closedAt',
+          'closedReason',
+          'source',
+          'suspectedAlgae',
+          'locationTags',
+          'appearanceTags',
+          'userDescription',
+          'durationLabel',
+          'imageUrls',
+          'aiSummary',
+          'verificationSteps',
+          'recommendations',
+          'warnings',
+          'resolvedAt',
+          'updatedAt'
+        ]) &&
+        isOwnerData(data) &&
+        data.tankId is string &&
+        data.tankId.size() >= 1 &&
+        data.tankId.size() <= 128 &&
+        data.tankName is string &&
+        data.tankName.size() >= 1 &&
+        data.tankName.size() <= 80 &&
+        validCaseType(data.caseType) &&
+        data.issueId is string &&
+        data.issueId.size() >= 1 &&
+        data.issueId.size() <= 120 &&
+        data.issueName is string &&
+        data.issueName.size() >= 1 &&
+        data.issueName.size() <= 200 &&
+        (
+          (data.diseaseId is string &&
+            data.diseaseId.size() >= 1 &&
+            data.diseaseId.size() <= 120) ||
+          data.diseaseId == null
+        ) &&
+        data.diseaseName is string &&
+        data.diseaseName.size() >= 1 &&
+        data.diseaseName.size() <= 200 &&
+        validSeverity(data.severity) &&
+        data.diseaseSummary is string &&
+        data.diseaseSummary.size() <= 3000 &&
+        data.causes is list &&
+        data.causes.size() <= 30 &&
+        data.caution is string &&
+        data.caution.size() <= 3000 &&
+        data.treatmentPlan is list &&
+        data.treatmentPlan.size() <= 50 &&
+        data.schedule is list &&
+        data.schedule.size() <= 60 &&
+        validIssueStatus(data.status) &&
+        data.createdAt is timestamp &&
+        data.startedAt is timestamp &&
+        data.nextReviewAt is timestamp &&
+        optionalTimestamp(data, 'closedAt') &&
+        optionalString(data, 'closedReason', 80) &&
+        optionalString(data, 'source', 24) &&
+        optionalList(data, 'suspectedAlgae', 10) &&
+        optionalList(data, 'locationTags', 16) &&
+        optionalList(data, 'appearanceTags', 16) &&
+        optionalString(data, 'userDescription', 1000) &&
+        optionalString(data, 'durationLabel', 80) &&
+        optionalList(data, 'imageUrls', 12) &&
+        optionalString(data, 'aiSummary', 3000) &&
+        optionalList(data, 'verificationSteps', 12) &&
+        optionalList(data, 'recommendations', 12) &&
+        optionalList(data, 'warnings', 8) &&
+        optionalTimestamp(data, 'resolvedAt') &&
+        optionalTimestamp(data, 'updatedAt');
+    }
+
+    function isValidRequestDoc(data, expectedType) {
+      return data.keys().hasAll([
+          'type',
+          'commonName',
+          'latinName',
+          'userId',
+          'userEmail',
+          'tankId',
+          'tankName',
+          'status',
+          'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'type',
+          'commonName',
+          'latinName',
+          'userId',
+          'userEmail',
+          'tankId',
+          'tankName',
+          'status',
+          'createdAt'
+        ]) &&
+        isOwnerData(data) &&
+        data.type == expectedType &&
+        data.commonName is string &&
+        data.commonName.size() >= 1 &&
+        data.commonName.size() <= 120 &&
+        data.latinName is string &&
+        data.latinName.size() <= 120 &&
+        data.userEmail is string &&
+        data.userEmail.size() <= 200 &&
+        data.tankId is string &&
+        data.tankId.size() <= 128 &&
+        data.tankName is string &&
+        data.tankName.size() <= 80 &&
+        data.status == 'new' &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidTelemetryDoc(data) {
+      return data.keys().hasAll([
+          'uid',
+          'platform',
+          'appVersion',
+          'runtimeVersion',
+          'createdAt',
+          'localTimestamp',
+          'type',
+          'name',
+          'level'
+        ]) &&
+        data.keys().hasOnly([
+          'uid',
+          'platform',
+          'appVersion',
+          'runtimeVersion',
+          'createdAt',
+          'localTimestamp',
+          'type',
+          'name',
+          'level',
+          'payload',
+          'message',
+          'stack',
+          'context'
+        ]) &&
+        isSignedIn() &&
+        data.uid == request.auth.uid &&
+        data.platform is string &&
+        data.platform.size() <= 20 &&
+        (data.appVersion is string || data.appVersion == null) &&
+        (data.runtimeVersion is string || data.runtimeVersion == null) &&
+        data.localTimestamp is string &&
+        data.localTimestamp.size() <= 60 &&
+        data.type is string &&
+        (data.type == 'event' || data.type == 'error') &&
+        data.name is string &&
+        data.name.size() >= 1 &&
+        data.name.size() <= 140 &&
+        data.level is string &&
+        data.level.size() <= 20 &&
+        (!('message' in data) || (data.message is string && data.message.size() <= 1600)) &&
+        (!('stack' in data) || (data.stack is string && data.stack.size() <= 1600)) &&
+        optionalMap(data, 'payload', 80) &&
+        optionalMap(data, 'context', 80);
+    }
+
+    match /tanks/{tankId} {
+      allow read: if isOwnerData(resource.data) || isAdmin();
+      allow create: if isValidTankDoc(request.resource.data);
+      allow update: if isOwnerData(resource.data) &&
+        request.resource.data.userId == resource.data.userId &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        isValidTankDoc(request.resource.data);
+      allow delete: if isOwnerData(resource.data);
+    }
+
+    match /measurements/{measurementId} {
+      allow read: if isOwnerData(resource.data) || isAdmin();
+      allow create: if isValidMeasurementDoc(request.resource.data);
+      allow update: if isOwnerData(resource.data) &&
+        request.resource.data.userId == resource.data.userId &&
+        request.resource.data.tankId == resource.data.tankId &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        isValidMeasurementDoc(request.resource.data);
+      allow delete: if isOwnerData(resource.data);
+    }
+
+    match /stockItems/{stockItemId} {
+      allow read: if isOwnerData(resource.data) || isAdmin();
+      allow create: if isValidStockItemDoc(request.resource.data);
+      allow update: if isOwnerData(resource.data) &&
+        request.resource.data.userId == resource.data.userId &&
+        request.resource.data.tankId == resource.data.tankId &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        isValidStockItemDoc(request.resource.data);
+      allow delete: if isOwnerData(resource.data);
+    }
+
+    match /tankDiseaseCases/{caseId} {
+      allow read: if isOwnerData(resource.data) || isAdmin();
+      allow create: if isValidTankDiseaseCaseDoc(request.resource.data);
+      allow update: if isOwnerData(resource.data) &&
+        request.resource.data.userId == resource.data.userId &&
+        request.resource.data.tankId == resource.data.tankId &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        isValidTankDiseaseCaseDoc(request.resource.data);
+      allow delete: if isOwnerData(resource.data);
+    }
+
+    match /fishCatalogRequests/{requestId} {
+      allow create: if isValidRequestDoc(request.resource.data, 'missing_fish');
+      allow read, update, delete: if isOwnerData(resource.data) || isAdmin();
+    }
+
+    match /plantCatalogRequests/{requestId} {
+      allow create: if isValidRequestDoc(request.resource.data, 'missing_plant');
+      allow read, update, delete: if isOwnerData(resource.data) || isAdmin();
+    }
+
+    match /adminNotifications/{notificationId} {
+      allow create: if isSignedIn() &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.createdAt is timestamp;
+      allow read, update, delete: if false;
+    }
+
+    match /telemetryEvents/{eventId} {
+      allow create: if isValidTelemetryDoc(request.resource.data) &&
+        request.resource.data.type == 'event';
+      allow read, update, delete: if isOwnerUid(resource.data.uid);
+    }
+
+    match /telemetryErrors/{errorId} {
+      allow create: if isValidTelemetryDoc(request.resource.data) &&
+        request.resource.data.type == 'error';
+      allow read, update, delete: if isOwnerUid(resource.data.uid);
+    }
+
+    match /fishCatalog/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /plantCatalog/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /algaeCatalog/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /fishDiseaseCatalog/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /plantDiseaseCatalog/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /equipmentCatalog/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /userSubscriptions/{uid} {
+      allow read: if isAdmin() || isOwnerUid(uid);
+      allow write: if isAdmin();
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

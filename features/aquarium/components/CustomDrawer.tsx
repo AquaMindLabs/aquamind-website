@@ -36,6 +36,14 @@ export default function CustomDrawer({ navigation }: CustomDrawerProps) {
     navigation.closeDrawer();
   };
   const isSectionActive = (sectionId: string) => {
+    if (activeSection === 'fish' || activeSection === 'plant') {
+      if (sectionId === 'review') {
+        return true;
+      }
+      if (sectionId === 'fish' || sectionId === 'plant') {
+        return false;
+      }
+    }
     return activeSection === sectionId;
   };
 

@@ -199,7 +199,7 @@ export function generateAdaptiveTaskSchedule(tank, context = {}) {
     key: 'water-tests',
     title: 'Testy wody',
     details:
-      'Sprawdz zestaw podstawowy: NO2, NO3, NH3/NH4, pH i temperature. Czestotliwosc adaptowana do ryzyka i trendow.',
+      'Sprawdź zestaw podstawowy: NO2, NO3, NH3/NH4, pH i temperature. Czestotliwosc adaptowana do ryzyka i trendow.',
     baseIntervalDays: tankAgeDays <= 21 ? 1 : tankAgeDays <= 45 ? 3 : 7,
     intervalModifierDays: no2nh3Risk || no2Trend.direction === 'up' ? -1 : 0,
     riskBoost: 8,
@@ -210,7 +210,7 @@ export function generateAdaptiveTaskSchedule(tank, context = {}) {
     key: 'filter-maintenance',
     title: 'Kontrola i czyszczenie filtra',
     details:
-      'Sprawdz przepływ, droznosc i stan mediow. Nie płucz wszystkich mediow biologicznych naraz.',
+      'Sprawdź przepływ, droznosc i stan mediow. Nie płucz wszystkich mediow biologicznych naraz.',
     baseIntervalDays: 14,
     intervalModifierDays:
       String(equipmentAssessment?.filter?.status ?? '').toLowerCase() === 'warning'
@@ -248,7 +248,7 @@ export function generateAdaptiveTaskSchedule(tank, context = {}) {
     key: 'pruning',
     title: 'Przycinka roslin',
     details:
-      'Usuwaj nadmierny przyrost i słabe liście, zeby poprawic cyrkulacje i ograniczy? ryzyko glonow.',
+      'Usuwaj nadmierny przyrost i słabe liście, zeby poprawic cyrkulacje i ograniczyć ryzyko glonow.',
     baseIntervalDays: plantCount >= 12 ? 7 : plantCount >= 5 ? 10 : 21,
     intervalModifierDays: plantCount > 0 && no3Trend.direction === 'up' ? -2 : 0,
     riskBoost: plantCount > 0 ? 2 : -10,
@@ -280,7 +280,7 @@ export function generateAdaptiveTaskSchedule(tank, context = {}) {
     key: 'equipment-service',
     title: 'Serwis sprzetu',
     details:
-      'Sprawdz stan wirnika, przewodow, uszczelek i oświetlenia. Zapobiegaj awariom przez regularny serwis.',
+      'Sprawdź stan wirnika, przewodow, uszczelek i oświetlenia. Zapobiegaj awariom przez regularny serwis.',
     baseIntervalDays: 30,
     intervalModifierDays:
       String(equipmentAssessment?.filter?.status ?? '').toLowerCase() === 'critical' ? -20 : 0,
@@ -459,7 +459,7 @@ export function buildTodayActionPlanService(tank, context = {}) {
       'important',
       'important-toxins',
       'Podwyzszone toksyny',
-      'NO2 lub NH3/NH4 jest podwyzszone. Sprawdz filtracje i powtorz test po korekcie.',
+      'NO2 lub NH3/NH4 jest podwyzszone. Sprawdź filtracje i powtorz test po korekcie.',
       'water',
       84
     );
@@ -601,7 +601,7 @@ export function buildTodayActionPlanService(tank, context = {}) {
       String(
         equipmentAssessment?.filter?.actions?.[0] ??
           equipmentAssessment?.filter?.details ??
-          'Sprawdz działanie i wydajnosc filtra.'
+          'Sprawdź działanie i wydajnosc filtra.'
       ),
       'equipment',
       92
@@ -628,7 +628,7 @@ export function buildTodayActionPlanService(tank, context = {}) {
       String(
         equipmentAssessment?.heater?.actions?.[0] ??
           equipmentAssessment?.heater?.details ??
-          'Sprawdz stabilność temperatury.'
+          'Sprawdź stabilność temperatury.'
       ),
       'equipment',
       66
@@ -664,7 +664,7 @@ export function buildTodayActionPlanService(tank, context = {}) {
       'important',
       'important-active-issues',
       `Aktywne problemy: ${activeIssueCount}`,
-      'Sprawdz harmonogram leczenia lub plan ograniczania glonow.',
+      'Sprawdź harmonogram leczenia lub plan ograniczania glonow.',
       'issues',
       62
     );
@@ -721,7 +721,7 @@ export function buildTodayActionPlanService(tank, context = {}) {
       'important',
       'important-no-measurements',
       'Brak aktualnych pomiarów',
-      'Dodaj podstawowy pomiar wody, aby odświeżyc analizę.',
+      'Dodaj podstawowy pomiar wody, aby odświeżyć analizę.',
       'water',
       78
     );
@@ -732,7 +732,7 @@ export function buildTodayActionPlanService(tank, context = {}) {
         'important',
         'important-measurement-stale',
         `Pomiary sa nieaktualne (${daysSinceMeasurement} dni)`,
-        'Wykonaj kontrolny zestaw testow.',
+        'Wykonaj kontrolny zestaw testów.',
         'water',
         67
       );
@@ -846,7 +846,7 @@ const ONBOARDING_STEP_LIBRARY = {
       recommendedDay: 2,
       delayDays: 1,
       actions: [
-        'Sprawdz, czy filtr dziala poprawnie.',
+        'Sprawdź, czy filtr dziala poprawnie.',
         'Kontroluj temperature.',
         'Nie czysc filtra i unikaj duzych zmian.',
       ],
@@ -980,7 +980,7 @@ const ONBOARDING_STEP_LIBRARY = {
       delayDays: 3,
       actions: [
         'Zakoncz onboarding.',
-        'Przejd? do standardowego harmonogramu podmian i testow.',
+        'Przejdź do standardowego harmonogramu podmian i testów.',
       ],
       tests: ['NO2', 'NO3', 'temperatura'],
       requiredMeasurements: ['no2', 'no3', 'temperature'],
@@ -1037,7 +1037,7 @@ const ONBOARDING_STEP_LIBRARY = {
       recommendedDay: 3,
       delayDays: 2,
       actions: [
-        'Sprawdz NO2 i NO3.',
+        'Sprawdź NO2 i NO3.',
         'Wstrzymaj dodawanie obsady przy wykrywalnym NO2.',
       ],
       tests: ['NO2', 'NO3'],
@@ -1168,7 +1168,7 @@ const ONBOARDING_STEP_LIBRARY = {
       actions: [
         'Dodaj maksymalnie 20-30% planowanej obsady.',
         'Nie dodawaj pełnej obsady naraz.',
-        'Sprawdz NO2 po zwiększeniu obciążenia.',
+        'Sprawdź NO2 po zwiększeniu obciążenia.',
       ],
       tests: ['NO2', 'NO3'],
       requiredMeasurements: ['no2', 'temperature'],

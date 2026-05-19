@@ -42,16 +42,50 @@ function assertEnv() {
 
 async function loadSeedCatalogs(repoRoot) {
   const fishUrl = pathToFileURL(path.join(repoRoot, 'data', 'fishCatalogStarter.js')).href;
+  const fishExpandedUrl = pathToFileURL(
+    path.join(repoRoot, 'data', 'fishCatalogExpanded.js')
+  ).href;
   const plantUrl = pathToFileURL(path.join(repoRoot, 'data', 'plantCatalogStarter.js')).href;
+  const plantExpandedUrl = pathToFileURL(
+    path.join(repoRoot, 'data', 'plantCatalogExpanded.js')
+  ).href;
   const fishModule = await import(fishUrl);
+  const fishExpandedModule = await import(fishExpandedUrl);
   const plantModule = await import(plantUrl);
+  const plantExpandedModule = await import(plantExpandedUrl);
 
-  const fish = Array.isArray(fishModule.FISH_CATALOG_STARTER)
+  const starterFish = Array.isArray(fishModule.FISH_CATALOG_STARTER)
     ? fishModule.FISH_CATALOG_STARTER
     : [];
-  const plants = Array.isArray(plantModule.PLANT_CATALOG_STARTER)
+  const expandedFish = Array.isArray(fishExpandedModule.FISH_CATALOG_EXPANDED)
+    ? fishExpandedModule.FISH_CATALOG_EXPANDED
+    : [];
+  const fishByLatin = new Map();
+  [...starterFish, ...expandedFish].forEach((item) => {
+    const key = normalizeLatinCatalogKey(item?.latinName);
+    if (!key || fishByLatin.has(key)) {
+      return;
+    }
+    fishByLatin.set(key, item);
+  });
+  const fish = [...fishByLatin.values()];
+  const starterPlants = Array.isArray(plantModule.PLANT_CATALOG_STARTER)
     ? plantModule.PLANT_CATALOG_STARTER
     : [];
+  const expandedPlants = Array.isArray(plantExpandedModule.PLANT_CATALOG_EXPANDED)
+    ? plantExpandedModule.PLANT_CATALOG_EXPANDED
+    : [];
+  const preferredPlants =
+    expandedPlants.length > 0 ? expandedPlants : starterPlants;
+  const plantsByLatin = new Map();
+  preferredPlants.forEach((item) => {
+    const key = normalizeLatinCatalogKey(item?.latinName);
+    if (!key || plantsByLatin.has(key)) {
+      return;
+    }
+    plantsByLatin.set(key, item);
+  });
+  const plants = [...plantsByLatin.values()];
 
   return { fish, plants };
 }

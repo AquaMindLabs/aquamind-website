@@ -65,7 +65,7 @@ function mapDiagnosticCodeToUserMessage(code: string): string {
     return 'Analiza obrazu trwa zbyt dlugo. Spróbuj ponownie za chwile.';
   }
   if (code === AI_DIAGNOSTIC_CODES.VALIDATION) {
-    return 'Nie udalo sie odczytac zdjęcia. Wybierz wyrazniejsze ujecie.';
+    return 'Nie udało się odczytac zdjęcia. Wybierz wyrazniejsze ujecie.';
   }
   if (code === AI_DIAGNOSTIC_CODES.PROVIDER_ERROR) {
     return 'Analiza obrazu jest chwilowo niedostepna. Spróbuj ponownie za moment.';
@@ -134,7 +134,7 @@ async function loadImagePickerModule() {
     return await import('expo-image-picker');
   } catch {
     throw new AiChatRequestError(
-      'Modul wyboru zdjęć nie jest dostepny w tym buildzie.',
+      'Modul wyboru zdjęć nie jest dostępny w tym buildzie.',
       AI_DIAGNOSTIC_CODES.UNAVAILABLE,
       false
     );

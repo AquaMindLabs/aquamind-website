@@ -48,7 +48,7 @@ const TRANSLATIONS = {
     settingsThemeLight: 'Jasny',
     settingsTests: 'Testy użytkownika',
     settingsTestsHint: 'Te parametry beda widoczne w formularzu dodawania pomiaru.',
-    settingsTestsSummary: 'Włączone: {enabled} z {available} dostepnych.',
+    settingsTestsSummary: 'Włączone: {enabled} z {available} dostępnych.',
     settingsMeasurementPrefillFromLast:
       'Domyslnie uzupelniaj nowy pomiar ostatnimi wartosciami',
     settingsMeasurementPrefillFromLastHint:
@@ -68,7 +68,7 @@ const TRANSLATIONS = {
     settingsSubscriptionArchitectureReady:
       'Model planow, helpery dostepu i miejsce pod limity sa przygotowane do dalszego wdrozenia.',
     settingsSubscriptionLocalMode:
-      'Na razie to tryb lokalny do testow. Synchronizacje z platnosciami dodamy pozniej.',
+      'Na razie to tryb lokalny do testów. Synchronizacje z platnosciami dodamy pozniej.',
     settingsSubscriptionTapToCompare:
       'Dotknij, aby zobaczyc porownanie planow.',
     settingsSubscriptionTestingHint:
@@ -106,8 +106,8 @@ const TRANSLATIONS = {
     trendDirectionStable: 'Trend stabilny',
     trendDirectionNeutral: 'Trend neutralny',
     subscriptionChartsLocked:
-      'Wykresy parametrow sa dostepne od planu Premium.',
-    chartAccessLevelFree: 'Plan Free: wykresy niedostepne.',
+      'Wykresy parametrów sa dostępne od planu Premium.',
+    chartAccessLevelFree: 'Plan Free: wykresy niedostępne.',
     chartAccessLevelPremium: 'Plan Premium: wykresy podstawowe.',
     chartAccessLevelPro: 'Plan Pro: wykresy zaawansowane.',
     historyAiExplainButton: 'Wyjasnij pomiary z AI',
@@ -117,7 +117,7 @@ const TRANSLATIONS = {
     historyTabAi: 'Wyjasnij pomiary z AI',
     historyAiConsentDataProcessing: 'Używanie danych akwarium do odpowiedzi AI',
     historyAiActionsNowTitle: 'Co zrobic teraz',
-    historyAiWarningsTitle: 'Warto sprawdzic',
+    historyAiWarningsTitle: 'Warto sprawdzić',
     historyAiUpdatedAt: 'Analiza AI: {value}',
     historyAiEmptyAnswer:
       'Analiza moze byc mniej dokładna, bo brakuje danych lub sa nieaktualne.',
@@ -129,31 +129,31 @@ const TRANSLATIONS = {
       'Brak aktywnej sesji. Zaloguj sie ponownie i spróbuj jeszcze raz.',
     historyAiErrorNoTank: 'Wybierz akwarium, aby uruchomic analize historii.',
     historyAiErrorUnexpected:
-      'Nie udalo sie przeanalizowac historii pomiarow. Spróbuj ponownie.',
+      'Nie udało się przeanalizowac historii pomiarow. Spróbuj ponownie.',
     subscriptionAlertsSimple: 'Plan Free: alerty proste.',
     subscriptionAlertsExtended: 'Plan Premium: alerty rozszerzone.',
     subscriptionAlertsSmart: 'Plan Pro: alerty inteligentne.',
     subscriptionAlertsExtendedLocked:
-      'Rozszerzone alerty sa dostepne od planu Premium.',
+      'Rozszerzone alerty sa dostępne od planu Premium.',
     subscriptionTasksLocked:
-      'Przypomnienia i taski sa dostepne od planu Premium.',
+      'Przypomnienia i taski sa dostępne od planu Premium.',
     subscriptionTasksReminders: 'Plan Premium: przypomnienia.',
     subscriptionTasksChecklists: 'Plan Pro: checklisty i plan dzialan.',
     subscriptionTasksPlanLocked:
-      'Checklisty i plan dzialan sa dostepne w planie Pro.',
+      'Checklisty i plan dzialan sa dostępne w planie Pro.',
     nextReminder: 'Najbliższe przypomnienie',
-    subscriptionEquipmentLocked: 'Sprzęt jest dostepny od planu Premium.',
+    subscriptionEquipmentLocked: 'Sprzęt jest dostępny od planu Premium.',
     subscriptionEquipmentAnalysisLocked:
-      'Analiza i rekomendacje sprzętu sa dostepne w planie Pro.',
+      'Analiza i rekomendacje sprzętu sa dostępne w planie Pro.',
     equipmentSavedStatus: 'Zapisany model',
     equipmentNoSavedStatus: 'Brak zapisanego sprzętu',
     equipmentNoSavedDetails: 'Nie wybrano jeszcze modelu dla tego akwarium.',
     subscriptionRecommendationsLocked:
-      'Rekomendacje sa dostepne od planu Premium.',
+      'Rekomendacje sa dostępne od planu Premium.',
     subscriptionRecommendationsGuided:
       'Plan Pro: rekomendacje krok po kroku.',
     subscriptionRecommendationsGuidedLocked:
-      'Rekomendacje krok po kroku sa dostepne w planie Pro.',
+      'Rekomendacje krok po kroku sa dostępne w planie Pro.',
     guidedRecommendationPlanTitle: 'Plan krok po kroku',
     chartMetricPoints: 'Punkty',
     chartMetricAverage: 'Srednia',
@@ -161,10 +161,10 @@ const TRANSLATIONS = {
     subscriptionParameterPlanSummary:
       'Plan {plan} okresla, które parametry mozesz włączyc i zobaczyc w aplikacji.',
     subscriptionParameterLocked:
-      'Parametr {parameter} jest dostepny od planu {plan}.',
+      'Parametr {parameter} jest dostępny od planu {plan}.',
     subscriptionParameterLockedShort: 'Dostepne od planu {plan}.',
     subscriptionParameterAnalysisLocked:
-      'Szczegolowa analiza parametrow jest dostepna od planu Premium.',
+      'Szczegolowa analiza parametrów jest dostepna od planu Premium.',
     subscriptionHistoryLimitUsage:
       'Historia w planie {plan}: pokazujemy ostatnie {limit} wpisow z {current}.',
     subscriptionHistoryLimitUsageUnlimited:
@@ -178,7 +178,7 @@ const TRANSLATIONS = {
     subscriptionHistoryUpgradeHint:
       'Aby zobaczyc pelna historie, zmień plan na wyzszy.',
     subscriptionHistoryTrendsLocked:
-      'Trendy historii i sugestie na podstawie historii sa dostepne w planie Pro.',
+      'Trendy historii i sugestie na podstawie historii sa dostępne w planie Pro.',
     subscriptionTankLimitUsage: 'Plan {plan}: {current}/{limit} akwariow.',
     subscriptionTankLimitUsageUnlimited:
       'Plan {plan}: {current} akwariow. Brak limitu.',
@@ -199,10 +199,10 @@ const TRANSLATIONS = {
     issueTankPickerTitleDisease: 'Dodaj chorobę do akwarium',
     issueTankPickerTitlePlantDisease: 'Dodaj chorobę roślin do akwarium',
     issueTankPickerTitleAlgae: 'Dodaj glony do akwarium',
-    issueTankPickerHintDisease: 'W którym akwarium chcesz zapisac "{name}"?',
+    issueTankPickerHintDisease: 'W którym akwarium chcesz zapisać "{name}"?',
     issueTankPickerHintPlantDisease:
-      'W którym akwarium chcesz zapisac "{name}"?',
-    issueTankPickerHintAlgae: 'W którym akwarium chcesz zapisac "{name}"?',
+      'W którym akwarium chcesz zapisać "{name}"?',
+    issueTankPickerHintAlgae: 'W którym akwarium chcesz zapisać "{name}"?',
     noActiveDiseases: 'Brak aktywnych chorób przypisanych do tego akwarium.',
     noActivePlantDiseases:
       'Brak aktywnych chorób roślin przypisanych do tego akwarium.',
@@ -445,7 +445,7 @@ const TRANSLATIONS = {
     urgentActionsTodayTomorrow: 'Akcje na dzis i jutro',
     todayWithDate: 'Dzis ({date})',
     tomorrowWithDate: 'Jutro ({date})',
-    waterTestingSchedule: 'Harmonogram testow wody',
+    waterTestingSchedule: 'Harmonogram testów wody',
     nextTestWithDate: 'Nastepny test: {date}',
     extraTestAfterWaterChange:
       'Przy duzych odchyleniach wykonaj dodatkowy test po kazdej podmianie wody.',
@@ -455,14 +455,14 @@ const TRANSLATIONS = {
     analysisBasedOnRecent: 'Analiza na podstawie ostatnich pomiarow.',
     lastValue: 'ostatnio: {value}',
     stockCompatibility: 'Kompatybilnosc obsady: {status}',
-    noStockToCheck: 'Brak obsady do sprawdzenia.',
+    noStockToCheck: 'Brak obsady do sprawdźenia.',
     stockCompatibilityOk:
-      'Obsada wyglada sensownie pod katem parametrow, wzajemnego doboru, litrazu oraz profilu podłoża i światła.',
-    moreProblems: '... oraz {count} kolejnych rzeczy do sprawdzenia.',
-    addMeasurementNeedTankHint: 'Aby zapisac pomiar, dodaj i wybierz aktywne akwarium.',
+      'Obsada wyglada sensownie pod katem parametrów, wzajemnego doboru, litrazu oraz profilu podłoża i światła.',
+    moreProblems: '... oraz {count} kolejnych rzeczy do sprawdźenia.',
+    addMeasurementNeedTankHint: 'Aby zapisać pomiar, dodaj i wybierz aktywne akwarium.',
     selectTankForHistory: 'Wybierz akwarium, aby zobaczyc historie.',
-    parameterChart: 'Wykres parametrow',
-    switchParameterHint: 'Przełącz parametr i sprawdz zmiany w czasie.',
+    parameterChart: 'Wykres parametrów',
+    switchParameterHint: 'Przełącz parametr i sprawdź zmiany w czasie.',
     noDataForParameter: 'Brak danych dla parametru {value}.',
     range: 'Zakres: {min} - {max} {unit}',
     historyData: 'Dane historyczne',
@@ -489,14 +489,14 @@ const TRANSLATIONS = {
     lightMedium: 'Srednia',
     lightHigh: 'Wysoka',
     notificationsMissingModule:
-      'Powiadomienia: nie mozna zaladowac modulu expo-notifications.',
+      'Powiadomienia: nie mozna załadować modulu expo-notifications.',
     notificationsPermissionDenied:
       'Powiadomienia: brak zgody na powiadomienia, przypomnienie nie zostalo ustawione.',
-    notificationChannelName: 'Przypomnienia testow wody',
+    notificationChannelName: 'Przypomnienia testów wody',
     notificationDailyWithTank:
-      'Przypomnienie dzienne (13:00): sprawdz harmonogram i testy dla akwarium "{name}".',
+      'Przypomnienie dzienne (13:00): sprawdź harmonogram i testy dla akwarium "{name}".',
     notificationDailyNoTank:
-      'Przypomnienie dzienne (13:00): sprawdz harmonogram i testy wody.',
+      'Przypomnienie dzienne (13:00): sprawdź harmonogram i testy wody.',
     notificationTitleWithTank: 'Test wody - {name}',
     notificationTitle: 'Test wody',
     notificationScheduleError: 'Blad planowania powiadomienia o tescie wody:',
