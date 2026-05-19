@@ -652,10 +652,15 @@ export const DEFAULT_SUBSCRIPTION_STATE: SubscriptionState = {
   limitOverrides: {},
 };
 
-function readOptionalStoreProductId(name: string): string | null {
-  const raw = process.env[name];
-  const normalized = String(raw ?? '').trim();
-  return normalized ? normalized : null;
+function readOptionalStoreProductId(names: string | string[], fallback: string | null = null): string | null {
+  const keys = Array.isArray(names) ? names : [names];
+  for (const name of keys) {
+    const normalized = String(process.env[name] ?? '').trim();
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return fallback;
 }
 
 export const SUBSCRIPTION_STORE_PRODUCT_MAP: SubscriptionStoreProductMap = {
@@ -668,13 +673,21 @@ export const SUBSCRIPTION_STORE_PRODUCT_MAP: SubscriptionStoreProductMap = {
       'EXPO_PUBLIC_SUBSCRIPTION_PREMIUM_IOS_PRODUCT_ID'
     ),
     android: readOptionalStoreProductId(
-      'EXPO_PUBLIC_SUBSCRIPTION_PREMIUM_ANDROID_PRODUCT_ID'
+      [
+        'EXPO_PUBLIC_SUBSCRIPTION_PLUS_ANDROID_PRODUCT_ID',
+        'EXPO_PUBLIC_SUBSCRIPTION_PREMIUM_ANDROID_PRODUCT_ID',
+      ],
+      'aquamind_plus_monthly:monthly'
     ),
   },
   pro: {
     ios: readOptionalStoreProductId('EXPO_PUBLIC_SUBSCRIPTION_PRO_IOS_PRODUCT_ID'),
     android: readOptionalStoreProductId(
-      'EXPO_PUBLIC_SUBSCRIPTION_PRO_ANDROID_PRODUCT_ID'
+      [
+        'EXPO_PUBLIC_SUBSCRIPTION_AI_PRO_ANDROID_PRODUCT_ID',
+        'EXPO_PUBLIC_SUBSCRIPTION_PRO_ANDROID_PRODUCT_ID',
+      ],
+      'aquamind_ai_pro_monthly:monthly'
     ),
   },
 };
@@ -1074,9 +1087,14 @@ export function getSubscriptionTierByStoreProductId(
 
     const iosId = String(mapEntry.ios ?? '').trim().toLowerCase();
     const androidId = String(mapEntry.android ?? '').trim().toLowerCase();
+    const iosBaseId = iosId.split(':')[0] ?? '';
+    const androidBaseId = androidId.split(':')[0] ?? '';
+    const normalizedBaseId = normalizedProductId.split(':')[0] ?? '';
     if (
       (iosId && iosId === normalizedProductId) ||
-      (androidId && androidId === normalizedProductId)
+      (androidId && androidId === normalizedProductId) ||
+      (iosBaseId && iosBaseId === normalizedBaseId) ||
+      (androidBaseId && androidBaseId === normalizedBaseId)
     ) {
       return tier;
     }

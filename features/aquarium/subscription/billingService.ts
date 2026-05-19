@@ -109,6 +109,9 @@ type PurchasesModuleLike = {
   purchaseProduct?: (
     productId: string
   ) => Promise<{ customerInfo?: CustomerInfoLike }>;
+  purchasePackage?: (
+    packageToPurchase: OfferingPackageLike
+  ) => Promise<{ customerInfo?: CustomerInfoLike }>;
   restorePurchases?: () => Promise<CustomerInfoLike>;
   addCustomerInfoUpdateListener?: (
     listener: (customerInfo: CustomerInfoLike) => void
@@ -307,6 +310,48 @@ function extractBillingOfferingEntries(offerings: OfferingsLike): BillingOfferin
   });
 
   return entries;
+}
+
+function normalizeProductId(value: unknown): string {
+  return String(value ?? '').trim().toLowerCase();
+}
+
+function getBaseProductId(value: unknown): string {
+  return normalizeProductId(value).split(':')[0] ?? '';
+}
+
+function productIdsMatch(left: unknown, right: unknown): boolean {
+  const normalizedLeft = normalizeProductId(left);
+  const normalizedRight = normalizeProductId(right);
+  if (!normalizedLeft || !normalizedRight) {
+    return false;
+  }
+  return normalizedLeft === normalizedRight || getBaseProductId(left) === getBaseProductId(right);
+}
+
+function findOfferingPackageByProductId(
+  offerings: OfferingsLike,
+  productId: string
+): OfferingPackageLike | null {
+  const allOfferings =
+    offerings?.all && typeof offerings.all === 'object' ? offerings.all : {};
+
+  for (const offering of Object.values(allOfferings)) {
+    const availablePackages = Array.isArray(offering?.availablePackages)
+      ? offering.availablePackages
+      : [];
+    const matchingPackage = availablePackages.find((pkg) =>
+      productIdsMatch(
+        pkg?.product?.identifier ?? pkg?.product?.productIdentifier,
+        productId
+      )
+    );
+    if (matchingPackage) {
+      return matchingPackage;
+    }
+  }
+
+  return null;
 }
 
 function resolveTierFromCustomerInfo(
@@ -573,24 +618,35 @@ export async function purchaseSubscriptionByProductId(
 
   await ensureBillingConfigured(appUserId);
   const purchases = getPurchasesModule();
+  const purchasePackage = purchases?.purchasePackage;
   const purchaseProduct = purchases?.purchaseProduct;
   const getCustomerInfo = purchases?.getCustomerInfo;
-  if (!purchaseProduct || !getCustomerInfo) {
+  const getOfferings = purchases?.getOfferings;
+  if ((!purchasePackage && !purchaseProduct) || !getCustomerInfo) {
     throw new Error('billing_sdk_unavailable');
   }
 
-  const offeringsSnapshot = await getBillingOfferingsSnapshot(appUserId);
-  if (
-    offeringsSnapshot.productIds.length > 0 &&
-    !offeringsSnapshot.productIds.includes(normalizedProductId)
-  ) {
-    throw new Error('product_not_available_for_purchase_error');
+  let matchingPackage: OfferingPackageLike | null = null;
+  if (getOfferings) {
+    const offerings = await withRetry(
+      () => getOfferings() as Promise<OfferingsLike>,
+      1
+    );
+    const entries = extractBillingOfferingEntries(offerings);
+    const offeringHasProducts = entries.length > 0;
+    const productIsOffered = entries.some((entry) =>
+      productIdsMatch(entry?.productId, normalizedProductId)
+    );
+    if (offeringHasProducts && !productIsOffered) {
+      throw new Error('product_not_available_for_purchase_error');
+    }
+    matchingPackage = findOfferingPackageByProductId(offerings, normalizedProductId);
   }
 
-  const purchaseResult = await withRetry(
-    () => purchaseProduct(normalizedProductId),
-    1
-  );
+  const purchaseResult =
+    matchingPackage && purchasePackage
+      ? await withRetry(() => purchasePackage(matchingPackage as OfferingPackageLike), 1)
+      : await withRetry(() => purchaseProduct?.(normalizedProductId), 1);
   const customerInfo =
     (purchaseResult as { customerInfo?: CustomerInfoLike })?.customerInfo ??
     (await getCustomerInfo());
