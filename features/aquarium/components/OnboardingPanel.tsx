@@ -1,6 +1,10 @@
 ﻿import { useState } from 'react';
 import type { ReactNode } from 'react';
-import { Alert, Pressable, Text, View } from 'react-native';
+import { Alert as NativeAlert, Pressable, View } from 'react-native';
+
+import { translateInlineText } from '@/constants/inlineTranslations';
+import { Text } from '@/features/aquarium/components/LocalizedText';
+import { useTank } from '@/features/aquarium/context/TankContext';
 
 type OnboardingRow = {
   id: string;
@@ -75,6 +79,12 @@ export function OnboardingPanel({
 }: OnboardingPanelProps) {
   const [isCompletedOnboardingVisible, setIsCompletedOnboardingVisible] =
     useState(false);
+  const { appSettings } = useTank();
+  const alertTitle = translateInlineText('Wy??czyc onboarding?', appSettings.language);
+  const alertMessage = translateInlineText(
+    'Ta opcja jest nieodwracalna. Po potwierdzeniu sekcja onboardingu zniknie dla tego akwarium.',
+    appSettings.language
+  );
 
   if (!isVisible) {
     return null;
@@ -149,9 +159,9 @@ export function OnboardingPanel({
       ) : null}
       <Pressable
         onPress={() =>
-          Alert.alert(
-            'Wyłączyc onboarding?',
-            'Ta opcja jest nieodwracalna. Po potwierdzeniu sekcja onboardingu zniknie dla tego akwarium.',
+          NativeAlert.alert(
+            alertTitle,
+            alertMessage,
             [
               { text: 'Anuluj', style: 'cancel' },
               {

@@ -75,6 +75,14 @@
             <h2>Zalogowano</h2>
             <p id="sessionMeta" class="muted">-</p>
             <p id="adminStateBadge" class="badge badge-ok">Admin aktywny</p>
+            <div class="panel-kpis">
+              <p class="kpi-chip"><span>Ryby</span><strong id="kpiFishCount">0</strong></p>
+              <p class="kpi-chip"><span>Rosliny</span><strong id="kpiPlantCount">0</strong></p>
+              <p class="kpi-chip"><span>Glony</span><strong id="kpiAlgaeCount">0</strong></p>
+              <p class="kpi-chip"><span>Sprzet</span><strong id="kpiEquipmentCount">0</strong></p>
+              <p class="kpi-chip"><span>Choroby</span><strong id="kpiDiseaseCount">0</strong></p>
+              <p class="kpi-chip"><span>Sugestie</span><strong id="kpiRequestsCount">0</strong></p>
+            </div>
           </div>
           <div class="row actions compact">
             <button id="refreshBtn" class="btn btn-ghost" type="button">Odswiez wszystko</button>
@@ -86,29 +94,42 @@
           <aside class="admin-sidebar">
             <p class="sidebar-title">Sekcje</p>
             <div class="tabs sidebar-tabs" role="tablist" aria-label="Sekcje panelu">
-              <button class="tab is-active" data-section="fish" type="button">Katalog ryb</button>
-              <button class="tab" data-section="plant" type="button">Katalog roslin</button>
-              <button class="tab" data-section="algae" type="button">Katalog glonow</button>
-              <button class="tab" data-section="fishDisease" type="button">Choroby ryb</button>
-              <button class="tab" data-section="plantDisease" type="button">Choroby roslin</button>
-              <button class="tab" data-section="requests" type="button">Sugestie brakow</button>
-              <button class="tab" data-section="users" type="button">Uzytkownicy i plany</button>
+              <button class="tab is-active" data-section="fish" type="button"><span class="tab-text">Katalog ryb</span><span class="tab-count" id="tabCountFish">0</span></button>
+              <button class="tab" data-section="plant" type="button"><span class="tab-text">Katalog roslin</span><span class="tab-count" id="tabCountPlant">0</span></button>
+              <button class="tab" data-section="equipment" type="button"><span class="tab-text">Sprzet</span><span class="tab-count" id="tabCountEquipment">0</span></button>
+              <button class="tab" data-section="algae" type="button"><span class="tab-text">Katalog glonow</span><span class="tab-count" id="tabCountAlgae">0</span></button>
+              <button class="tab" data-section="fishDisease" type="button"><span class="tab-text">Choroby ryb</span><span class="tab-count" id="tabCountFishDisease">0</span></button>
+              <button class="tab" data-section="plantDisease" type="button"><span class="tab-text">Choroby roslin</span><span class="tab-count" id="tabCountPlantDisease">0</span></button>
+              <button class="tab" data-section="requests" type="button"><span class="tab-text">Sugestie brakow</span><span class="tab-count" id="tabCountRequests">0</span></button>
             </div>
           </aside>
 
           <div class="admin-main">
             <section class="section-panel" data-panel="fish">
+              <div class="section-headline">
+                <div>
+                  <h3>Katalog ryb</h3>
+                  <p>Zarzadzaj gatunkami ryb i parametrami wymaganymi w aplikacji.</p>
+                </div>
+                <span id="fishResultMeta" class="result-pill">0 / 0</span>
+              </div>
               <div class="toolbar">
                 <input id="fishSearch" type="search" placeholder="Szukaj ryby" autocomplete="off" />
+                <select id="fishImageFilter" aria-label="Filtr zdjec ryb">
+                  <option value="all">Wszystkie</option>
+                  <option value="missing">Bez zdjec</option>
+                  <option value="with">Ze zdjeciem</option>
+                </select>
                 <button id="addFishBtn" class="btn btn-primary" type="button">Dodaj rybe</button>
               </div>
+              <div class="editor-slot" data-editor-slot="fish"></div>
               <div class="table-wrap">
                 <table>
                   <thead>
                     <tr>
-                      <th>Nazwa</th><th>Lacinska</th><th>pH</th><th>GH</th><th>Temp</th><th>Min L</th>
-                      <th>Lawicowa</th><th>Min grupa</th><th>Agresja</th><th>Source</th><th>Notatki</th>
-                      <th>Img preview</th><th>Img</th><th>Image link</th><th>Norm common</th><th>Norm latin</th><th>Akcje</th>
+                      <th>Akcje</th><th>Nazwa</th><th>Lacinska</th><th>pH</th><th>GH</th><th>Temp</th><th>Min L</th>
+                      <th>Lawicowa</th><th>Min grupa</th><th>Agresja</th><th>Brud</th><th>Source</th><th>Notatki</th>
+                      <th>Img preview</th><th>Img</th><th>Image link</th><th>Norm common</th><th>Norm latin</th>
                     </tr>
                   </thead>
                   <tbody id="fishTableBody"></tbody>
@@ -122,16 +143,29 @@
             </section>
 
             <section class="section-panel hidden" data-panel="plant">
+              <div class="section-headline">
+                <div>
+                  <h3>Katalog roslin</h3>
+                  <p>Utrzymuj baze roslin z pelnymi parametrami i zrodlami grafiki.</p>
+                </div>
+                <span id="plantResultMeta" class="result-pill">0 / 0</span>
+              </div>
               <div class="toolbar">
                 <input id="plantSearch" type="search" placeholder="Szukaj rosliny" autocomplete="off" />
+                <select id="plantImageFilter" aria-label="Filtr zdjec roslin">
+                  <option value="all">Wszystkie</option>
+                  <option value="missing">Bez zdjec</option>
+                  <option value="with">Ze zdjeciem</option>
+                </select>
                 <button id="addPlantBtn" class="btn btn-primary" type="button">Dodaj rosline</button>
               </div>
+              <div class="editor-slot" data-editor-slot="plant"></div>
               <div class="table-wrap">
                 <table>
                   <thead>
                     <tr>
-                      <th>Nazwa</th><th>Lacinska</th><th>pH</th><th>GH</th><th>Temp</th><th>Min L</th>
-                      <th>Source</th><th>Notatki</th><th>Img preview</th><th>Img</th><th>Image link</th><th>Norm common</th><th>Norm latin</th><th>Akcje</th>
+                      <th>Akcje</th><th>Nazwa</th><th>Lacinska</th><th>pH</th><th>GH</th><th>Temp</th><th>Min L</th>
+                      <th>Source</th><th>Notatki</th><th>Img preview</th><th>Img</th><th>Image link</th><th>Norm common</th><th>Norm latin</th>
                     </tr>
                   </thead>
                   <tbody id="plantTableBody"></tbody>
@@ -144,16 +178,66 @@
               </div>
             </section>
 
-            <section class="section-panel hidden" data-panel="algae">
-              <div class="toolbar">
-                <input id="algaeSearch" type="search" placeholder="Szukaj glonu" autocomplete="off" />
-                <button id="addAlgaeBtn" class="btn btn-primary" type="button">Dodaj glon</button>
+            <section class="section-panel hidden" data-panel="equipment">
+              <div class="section-headline">
+                <div>
+                  <h3>Sprzet</h3>
+                  <p>Lista modeli sprzetu z katalogu: filtry, grzalki i lampy.</p>
+                </div>
+                <span id="equipmentResultMeta" class="result-pill">0 / 0</span>
               </div>
+              <div class="toolbar">
+                <input id="equipmentSearch" type="search" placeholder="Szukaj marki lub modelu" autocomplete="off" />
+                <select id="equipmentTypeFilter" aria-label="Filtr typu sprzetu">
+                  <option value="all">Wszystkie typy</option>
+                  <option value="filter">Filtry</option>
+                  <option value="heater">Grzalki</option>
+                  <option value="light">Lampy</option>
+                </select>
+                <button id="addEquipmentBtn" class="btn btn-primary" type="button">Dodaj sprzet</button>
+                <button id="refreshEquipmentBtn" class="btn btn-ghost" type="button">Odswiez sprzet</button>
+              </div>
+              <div class="editor-slot" data-editor-slot="equipment"></div>
               <div class="table-wrap">
                 <table>
                   <thead>
                     <tr>
-                      <th>Id</th><th>Nazwa</th><th>Severity</th><th>Objawy</th><th>Srodek</th><th>Zrodlo zdjecia</th><th>Img preview</th><th>Img</th><th>Image link</th><th>Akcje</th>
+                      <th>Akcje</th><th>Typ</th><th>Marka</th><th>Model</th><th>Moc (W)</th><th>Przeplyw (L/h)</th><th>Filtr</th><th>Lumeny</th><th>Min L</th><th>Max L</th><th>Source</th><th>Id</th>
+                    </tr>
+                  </thead>
+                  <tbody id="equipmentTableBody"></tbody>
+                </table>
+              </div>
+              <div class="pagination">
+                <button id="equipmentPrevBtn" class="btn btn-ghost btn-sm" type="button">Poprzednia</button>
+                <span id="equipmentPageInfo" class="hint">Strona 1/1</span>
+                <button id="equipmentNextBtn" class="btn btn-ghost btn-sm" type="button">Nastepna</button>
+              </div>
+            </section>
+
+            <section class="section-panel hidden" data-panel="algae">
+              <div class="section-headline">
+                <div>
+                  <h3>Katalog glonow</h3>
+                  <p>Porzadkuj opisy glonow i ich rekomendowane metody usuwania.</p>
+                </div>
+                <span id="algaeResultMeta" class="result-pill">0 / 0</span>
+              </div>
+              <div class="toolbar">
+                <input id="algaeSearch" type="search" placeholder="Szukaj glonu" autocomplete="off" />
+                <select id="algaeImageFilter" aria-label="Filtr zdjec glonow">
+                  <option value="all">Wszystkie</option>
+                  <option value="missing">Bez zdjec</option>
+                  <option value="with">Ze zdjeciem</option>
+                </select>
+                <button id="addAlgaeBtn" class="btn btn-primary" type="button">Dodaj glon</button>
+              </div>
+              <div class="editor-slot" data-editor-slot="algae"></div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Akcje</th><th>Id</th><th>Nazwa</th><th>Severity</th><th>Objawy</th><th>Srodek</th><th>Zrodlo zdjecia</th><th>Img preview</th><th>Img</th><th>Image link</th>
                     </tr>
                   </thead>
                   <tbody id="algaeTableBody"></tbody>
@@ -167,15 +251,28 @@
             </section>
 
             <section class="section-panel hidden" data-panel="fishDisease">
+              <div class="section-headline">
+                <div>
+                  <h3>Choroby ryb</h3>
+                  <p>Edytuj symptomy i leczenie, aby wskazowki byly spolejne w aplikacji.</p>
+                </div>
+                <span id="fishDiseaseResultMeta" class="result-pill">0 / 0</span>
+              </div>
               <div class="toolbar">
                 <input id="fishDiseaseSearch" type="search" placeholder="Szukaj choroby ryb" autocomplete="off" />
+                <select id="fishDiseaseImageFilter" aria-label="Filtr zdjec chorob ryb">
+                  <option value="all">Wszystkie</option>
+                  <option value="missing">Bez zdjec</option>
+                  <option value="with">Ze zdjeciem</option>
+                </select>
                 <button id="addFishDiseaseBtn" class="btn btn-primary" type="button">Dodaj chorobe ryb</button>
               </div>
+              <div class="editor-slot" data-editor-slot="fishDisease"></div>
               <div class="table-wrap">
                 <table>
                   <thead>
                     <tr>
-                      <th>Id</th><th>Nazwa</th><th>Severity</th><th>Objawy</th><th>Srodek</th><th>Zrodlo zdjecia</th><th>Akcje</th>
+                      <th>Akcje</th><th>Id</th><th>Nazwa</th><th>Severity</th><th>Objawy</th><th>Srodek</th><th>Zrodlo zdjecia</th>
                     </tr>
                   </thead>
                   <tbody id="fishDiseaseTableBody"></tbody>
@@ -189,15 +286,28 @@
             </section>
 
             <section class="section-panel hidden" data-panel="plantDisease">
+              <div class="section-headline">
+                <div>
+                  <h3>Choroby roslin</h3>
+                  <p>Aktualizuj opisy chorob roslin i gotowe zalecenia do leczenia.</p>
+                </div>
+                <span id="plantDiseaseResultMeta" class="result-pill">0 / 0</span>
+              </div>
               <div class="toolbar">
                 <input id="plantDiseaseSearch" type="search" placeholder="Szukaj choroby roslin" autocomplete="off" />
+                <select id="plantDiseaseImageFilter" aria-label="Filtr zdjec chorob roslin">
+                  <option value="all">Wszystkie</option>
+                  <option value="missing">Bez zdjec</option>
+                  <option value="with">Ze zdjeciem</option>
+                </select>
                 <button id="addPlantDiseaseBtn" class="btn btn-primary" type="button">Dodaj chorobe roslin</button>
               </div>
+              <div class="editor-slot" data-editor-slot="plantDisease"></div>
               <div class="table-wrap">
                 <table>
                   <thead>
                     <tr>
-                      <th>Id</th><th>Nazwa</th><th>Severity</th><th>Objawy</th><th>Srodek</th><th>Zrodlo zdjecia</th><th>Akcje</th>
+                      <th>Akcje</th><th>Id</th><th>Nazwa</th><th>Severity</th><th>Objawy</th><th>Srodek</th><th>Zrodlo zdjecia</th>
                     </tr>
                   </thead>
                   <tbody id="plantDiseaseTableBody"></tbody>
@@ -211,6 +321,13 @@
             </section>
 
             <section class="section-panel hidden" data-panel="requests">
+              <div class="section-headline">
+                <div>
+                  <h3>Sugestie brakow</h3>
+                  <p>Przegladaj propozycje od uzytkownikow i szybko podejmuj decyzje.</p>
+                </div>
+                <span id="requestsResultMeta" class="result-pill">0 / 0</span>
+              </div>
               <div class="toolbar">
                 <input id="requestSearch" type="search" placeholder="Szukaj zgloszenia" autocomplete="off" />
                 <button id="refreshRequestsBtn" class="btn btn-ghost" type="button">Odswiez sugestie</button>
@@ -219,8 +336,8 @@
                 <table>
                   <thead>
                     <tr>
-                      <th>Typ</th><th>Nazwa</th><th>Lacinska</th><th>Status</th><th>UID</th>
-                      <th>Email</th><th>Zbiornik</th><th>Data</th><th>Akcje</th>
+                      <th>Akcje</th><th>Typ</th><th>Nazwa</th><th>Lacinska</th><th>Status</th><th>UID</th>
+                      <th>Email</th><th>Zbiornik</th><th>Data</th>
                     </tr>
                   </thead>
                   <tbody id="requestsTableBody"></tbody>
@@ -233,33 +350,6 @@
               </div>
             </section>
 
-            <section class="section-panel hidden" data-panel="users">
-              <div class="toolbar">
-                <input id="userSearch" type="search" placeholder="Szukaj po UID lub email" autocomplete="off" />
-                <button id="addUserPlanBtn" class="btn btn-primary" type="button">Dodaj plan po UID</button>
-                <button id="refreshUsersBtn" class="btn btn-ghost" type="button">Odswiez uzytkownikow</button>
-              </div>
-              <p class="hint">
-                Dane subskrypcji sa czytane z kolekcji <code>userSubscriptions</code>.
-                Lista UID budowana jest na podstawie dokumentow w bazie i tej kolekcji.
-              </p>
-              <div class="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>UID</th><th>Email</th><th>Plan</th><th>Status</th><th>Source</th>
-                      <th>Od kiedy</th><th>Do kiedy</th><th>Odnowienie</th><th>Walidacja</th><th>Plan v</th><th>Akcje</th>
-                    </tr>
-                  </thead>
-                  <tbody id="usersTableBody"></tbody>
-                </table>
-              </div>
-              <div class="pagination">
-                <button id="usersPrevBtn" class="btn btn-ghost btn-sm" type="button">Poprzednia</button>
-                <span id="usersPageInfo" class="hint">Strona 1/1</span>
-                <button id="usersNextBtn" class="btn btn-ghost btn-sm" type="button">Nastepna</button>
-              </div>
-            </section>
           </div>
         </div>
       </section>
@@ -305,6 +395,16 @@
                   <option value="semi-aggressive">semi-aggressive</option>
                   <option value="aggressive">aggressive</option>
                 </select>
+              </label>
+              <label>
+                <span>Produkcja brudu (0-10)</span>
+                <input
+                  id="fWasteProductionLevel"
+                  name="wasteProductionLevel"
+                  type="text"
+                  inputmode="decimal"
+                  placeholder="np. 0,8"
+                />
               </label>
               <label><span>Minimalna grupa</span><input id="fMinGroupSize" name="minGroupSize" type="number" min="0" max="1000" step="1" /></label>
               <label class="checkbox"><input id="fIsSchooling" name="isSchooling" type="checkbox" /><span>Ryba lawicowa</span></label>
@@ -366,45 +466,43 @@
             <label><span>Uwaga</span><textarea id="dCaution" name="dCaution" rows="2"></textarea></label>
           </div>
 
-          <div id="userSubscriptionFields" class="hidden">
-            <label><span>UID</span><input id="uUid" name="uUid" type="text" /></label>
+          <div id="equipmentFields" class="hidden">
             <div class="grid two">
-              <label><span>Email</span><input id="uEmail" name="uEmail" type="email" /></label>
+              <label><span>Id (slug)</span><input id="eId" name="eId" type="text" placeholder="filter-aquael-asap500" /></label>
               <label>
-                <span>Tier</span>
-                <select id="uTier" name="uTier">
-                  <option value="free">free</option>
-                  <option value="premium">premium</option>
-                  <option value="pro">pro</option>
+                <span>Typ</span>
+                <select id="eType" name="eType">
+                  <option value="filter">filter</option>
+                  <option value="heater">heater</option>
+                  <option value="light">light</option>
                 </select>
               </label>
+              <label><span>Marka</span><input id="eBrand" name="eBrand" type="text" /></label>
+              <label><span>Model</span><input id="eModel" name="eModel" type="text" /></label>
+              <label><span>Moc (W)</span><input id="ePowerW" name="ePowerW" type="number" min="0" step="1" /></label>
+              <label><span>Przeplyw (L/h)</span><input id="eFlowLh" name="eFlowLh" type="number" min="0" step="1" /></label>
+              <label><span>Lumeny</span><input id="eLumens" name="eLumens" type="number" min="0" step="1" /></label>
               <label>
-                <span>Status</span>
-                <select id="uStatus" name="uStatus">
-                  <option value="active">active</option>
-                  <option value="inactive">inactive</option>
-                  <option value="grace_period">grace_period</option>
-                  <option value="paused">paused</option>
-                  <option value="cancelled">cancelled</option>
+                <span>Typ filtra</span>
+                <select id="eFilterType" name="eFilterType">
+                  <option value="">(brak)</option>
+                  <option value="internal">internal</option>
+                  <option value="cascade">cascade</option>
+                  <option value="canister">canister</option>
+                  <option value="sponge">sponge</option>
+                  <option value="sump_panel">sump_panel</option>
                 </select>
               </label>
+              <label><span>Min litraz</span><input id="eTankMinLiters" name="eTankMinLiters" type="number" min="0" step="1" /></label>
+              <label><span>Max litraz</span><input id="eTankMaxLiters" name="eTankMaxLiters" type="number" min="0" step="1" /></label>
               <label>
                 <span>Source</span>
-                <select id="uSource" name="uSource">
-                  <option value="admin">admin</option>
-                  <option value="system">system</option>
-                  <option value="app_store">app_store</option>
-                  <option value="play_store">play_store</option>
-                  <option value="stripe">stripe</option>
-                  <option value="promo">promo</option>
-                  <option value="local">local</option>
+                <select id="eSource" name="eSource">
+                  <option value="catalog">catalog</option>
+                  <option value="manual">manual</option>
+                  <option value="imported">imported</option>
                 </select>
               </label>
-              <label><span>Started at (ISO)</span><input id="uStartedAt" name="uStartedAt" type="text" placeholder="2026-05-08T10:00:00.000Z" /></label>
-              <label><span>Expires at (ISO)</span><input id="uExpiresAt" name="uExpiresAt" type="text" placeholder="2026-06-08T10:00:00.000Z" /></label>
-              <label><span>Renews at (ISO)</span><input id="uRenewsAt" name="uRenewsAt" type="text" /></label>
-              <label><span>Last validated at (ISO)</span><input id="uLastValidatedAt" name="uLastValidatedAt" type="text" /></label>
-              <label><span>Plan version</span><input id="uPlanVersion" name="uPlanVersion" type="number" min="1" step="1" /></label>
             </div>
           </div>
 

@@ -1,18 +1,18 @@
 # Release Smoke Gate Summary
 
-- Release: rc-fast-track-2026-05-16
-- QA Owner: QA-PM
+- Release: unknown-release
+- QA Owner: unknown-owner
 - Checklist: docs\release-smoke-checklist.md
 - Result: docs\release-smoke-result.md
-- Manual approval required: yes
-- Manual approval value: yes
-- Required checks: 27
+- Manual approval required: no
+- Manual approval value: not_provided
+- Required checks: 32
 - Passed checks: 0
 - Blocked checks: 0
 - Failed checks: 0
-- Unchecked checks: 27
+- Unchecked checks: 32
 - Core checks: 0/22 (FAIL)
-- AI checks: 0/5 (FAIL)
+- AI checks: 0/10 (FAIL)
 - Status: FAIL
 
 ## Unchecked
@@ -21,6 +21,11 @@
 - SMK-AI-03: Vision happy path: wybierz czytelne zdjecie i potwierdz wynik (hipotezy, pewnosc, kroki weryfikacyjne, plan dzialania).
 - SMK-AI-04: Vision low-confidence: wybierz rozmazane/ciemne zdjecie i potwierdz fallback "obraz nieczytelny" bez bledu technicznego.
 - SMK-AI-05: Gating Free vs Pro: w planie Free AI pokazuje upgrade prompt, w planie Pro dostep jest odblokowany bez restartu app po zmianie planu.
+- SMK-AI-RLS-01: Doladuj minimum 5 USD na koncie API (prepaid billing) i potwierdz saldo.
+- SMK-AI-RLS-02: Zweryfikuj `.env`: `AI_PROVIDER_NAME=openai`, `OPENAI_MODEL=gpt-5-mini`, `EXPO_PUBLIC_AI_BACKEND_URL=http://<LAN_IP>:8790`.
+- SMK-AI-RLS-03: Uruchom backend AI i potwierdz log startu: `provider=openai`.
+- SMK-AI-RLS-04: Wykonaj 1 probe chat i 1 probe vision na realnym koncie testowym.
+- SMK-AI-RLS-05: Brak `AIW_PROVIDER_ERROR` i brak timeoutow krytycznych w probach finalnych.
 - SMK-CAL-01: Otworz kalendarz akcji i potwierdz, ze widac dzisiejsze zadania.
 - SMK-CAL-02: Oznacz akcje jako done i sprawdz, ze status zadania aktualizuje sie od razu.
 - SMK-CAL-03: Uzyj skip dla innej akcji i potwierdz poprawny status.

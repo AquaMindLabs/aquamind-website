@@ -1,9 +1,25 @@
 # Release Smoke Result
 
 - Release: `release-candidate-2026-05-15`
-- Data: `2026-05-15`
-- Tester: `QA/PM (pending execution after auth fix)`
+- Data: `2026-05-20`
+- Tester: `Codex (automatycznie) + QA/PM (manualnie)`
 - Build: `pending-new-release-build`
+
+## Weryfikacja Automatyczna (Codex, 2026-05-20)
+
+- `npm run lint`: PASS
+- `npm run test:firestore`: PASS (24/24)
+- `npm run test:subscription:webhook`: PASS (8/8)
+- `npm run test:subscription:gating`: PASS (3/3)
+- `npm run test:ai:backend`: PASS (16/16)
+- `npx tsc --noEmit`: FAIL (blad kompilacji TypeScript, build blocker)
+- `npm run billing:sandbox:audit`: FAIL (brak wymaganych zmiennych RevenueCat)
+- `npm run release:smoke:gate`: FAIL (nieuzupelnione kroki manualne SMK-*)
+
+### Build Blockers Wykryte Automatycznie
+
+- TypeScript nie przechodzi (m.in. `AiAssistantPanel.tsx`, `OnboardingPanel.tsx`, `TankContext.tsx`, `aiChatService.ts`, `aiVisionService.ts`, `billingService.ts`).
+- Konfiguracja billing/revenuecat niekompletna (`EXPO_PUBLIC_REVENUECAT_*`, `EXPO_PUBLIC_SUBSCRIPTION_*`).
 
 ## Wyniki checklisty
 
@@ -45,14 +61,22 @@ Notacja statusu (po kazdym kroku):
 - [ ] [SMK-AI-04] Vision low-confidence: wybierz rozmazane/ciemne zdjecie i potwierdz fallback "obraz nieczytelny" bez bledu technicznego.
 - [ ] [SMK-AI-05] Gating Free vs Pro: w planie Free AI pokazuje upgrade prompt, w planie Pro dostep jest odblokowany bez restartu app po zmianie planu.
 
+## T-30 min przed publikacja (AI API final check)
+- [ ] [SMK-AI-RLS-01] Doladuj minimum 5 USD na koncie API (prepaid billing) i potwierdz saldo.
+- [ ] [SMK-AI-RLS-02] Zweryfikuj `.env`: `AI_PROVIDER_NAME=openai`, `OPENAI_MODEL=gpt-5-mini`, `EXPO_PUBLIC_AI_BACKEND_URL=http://<LAN_IP>:8790`.
+- [ ] [SMK-AI-RLS-03] Uruchom backend AI i potwierdz log startu: `provider=openai`.
+- [ ] [SMK-AI-RLS-04] Wykonaj 1 probe chat i 1 probe vision na realnym koncie testowym.
+- [ ] [SMK-AI-RLS-05] Brak `AIW_PROVIDER_ERROR` i brak timeoutow krytycznych w probach finalnych.
+
 ## Podsumowanie Gate
-- Core PASS/FAIL: `FAIL (pending manual execution)`
-- AI PASS/FAIL: `FAIL (pending manual execution)`
-- Final GO/NO-GO: `NO-GO (pending manual execution)`
+- Core PASS/FAIL: `FAIL (build blockers + pending manual execution)`
+- AI PASS/FAIL: `FAIL (pending manual execution + env billing/api do domkniecia)`
+- Final GO/NO-GO: `NO-GO`
 
 ## Notatki i znane problemy
 - Auth blocker `AUTH-BLK-001` oznaczony jako naprawiony, ale ten dokument nie zawiera jeszcze wynikow ponownego przejscia SMK-* i SMK-AI-*.
 - Ten plik jest przygotowany do retestu po nowym buildzie release.
+- Wszystkie kroki SMK-* ponizej pozostaja manualne (klikane na realnym buildzie) i sa po stronie QA/PM.
 
 ## Decyzja
 - [ ] PASS

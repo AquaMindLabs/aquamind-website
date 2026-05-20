@@ -18,7 +18,7 @@ export class AiChatRequestError extends Error {
   code: string;
   retryable: boolean;
   status?: number;
-  constructor(message: string, code = AI_DIAGNOSTIC_CODES.INTERNAL, retryable = false, status?: number) {
+  constructor(message: string, code: string = AI_DIAGNOSTIC_CODES.INTERNAL, retryable = false, status?: number) {
     super(message);
     this.name = 'AiChatRequestError';
     this.code = code;

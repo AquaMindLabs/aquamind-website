@@ -1,0 +1,4 @@
+﻿Aby odtworzyc pliki z tej kopii:
+1. Przejdz do katalogu projektu.
+2. Skopiuj pliki z tego snapshotu do katalogu glownego projektu, zachowujac strukture folderow.
+3. Nadpisz pliki docelowe.

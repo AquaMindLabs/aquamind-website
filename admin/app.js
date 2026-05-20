@@ -30,15 +30,13 @@ const REQUIRED_CONFIG_KEYS = [
 const COLLECTIONS = Object.freeze({
   fish: 'fishCatalog',
   plant: 'plantCatalog',
+  equipment: 'equipmentCatalog',
   algae: 'algaeCatalog',
   fishDisease: 'fishDiseaseCatalog',
   plantDisease: 'plantDiseaseCatalog',
   fishRequests: 'fishCatalogRequests',
   plantRequests: 'plantCatalogRequests',
-  userSubscriptions: 'userSubscriptions',
 });
-
-const USER_ID_SOURCE_COLLECTIONS = ['tanks', 'measurements', 'stockItems', 'tankDiseaseCases'];
 const PAGE_SIZE = 20;
 
 const state = {
@@ -50,20 +48,19 @@ const state = {
   activeSection: 'fish',
   fish: [],
   plant: [],
+  equipment: [],
   algae: [],
   fishDisease: [],
   plantDisease: [],
   requests: [],
-  users: [],
-  subscriptionsByUid: new Map(),
   pagination: {
     fish: 1,
     plant: 1,
+    equipment: 1,
     algae: 1,
     fishDisease: 1,
     plantDisease: 1,
     requests: 1,
-    users: 1,
   },
   editor: {
     section: 'fish',
@@ -98,31 +95,59 @@ const ui = {
 
   sessionMeta: byId('sessionMeta'),
   adminStateBadge: byId('adminStateBadge'),
+  kpiFishCount: byId('kpiFishCount'),
+  kpiPlantCount: byId('kpiPlantCount'),
+  kpiEquipmentCount: byId('kpiEquipmentCount'),
+  kpiAlgaeCount: byId('kpiAlgaeCount'),
+  kpiDiseaseCount: byId('kpiDiseaseCount'),
+  kpiRequestsCount: byId('kpiRequestsCount'),
+
+  tabCountFish: byId('tabCountFish'),
+  tabCountPlant: byId('tabCountPlant'),
+  tabCountEquipment: byId('tabCountEquipment'),
+  tabCountAlgae: byId('tabCountAlgae'),
+  tabCountFishDisease: byId('tabCountFishDisease'),
+  tabCountPlantDisease: byId('tabCountPlantDisease'),
+  tabCountRequests: byId('tabCountRequests'),
+
+  fishResultMeta: byId('fishResultMeta'),
+  plantResultMeta: byId('plantResultMeta'),
+  equipmentResultMeta: byId('equipmentResultMeta'),
+  algaeResultMeta: byId('algaeResultMeta'),
+  fishDiseaseResultMeta: byId('fishDiseaseResultMeta'),
+  plantDiseaseResultMeta: byId('plantDiseaseResultMeta'),
+  requestsResultMeta: byId('requestsResultMeta'),
 
   addFishBtn: byId('addFishBtn'),
   addPlantBtn: byId('addPlantBtn'),
+  addEquipmentBtn: byId('addEquipmentBtn'),
   addAlgaeBtn: byId('addAlgaeBtn'),
   addFishDiseaseBtn: byId('addFishDiseaseBtn'),
   addPlantDiseaseBtn: byId('addPlantDiseaseBtn'),
-  addUserPlanBtn: byId('addUserPlanBtn'),
+  refreshEquipmentBtn: byId('refreshEquipmentBtn'),
   refreshRequestsBtn: byId('refreshRequestsBtn'),
-  refreshUsersBtn: byId('refreshUsersBtn'),
 
   fishSearch: byId('fishSearch'),
   plantSearch: byId('plantSearch'),
+  equipmentSearch: byId('equipmentSearch'),
   algaeSearch: byId('algaeSearch'),
   fishDiseaseSearch: byId('fishDiseaseSearch'),
   plantDiseaseSearch: byId('plantDiseaseSearch'),
   requestSearch: byId('requestSearch'),
-  userSearch: byId('userSearch'),
+  equipmentTypeFilter: byId('equipmentTypeFilter'),
+  fishImageFilter: byId('fishImageFilter'),
+  plantImageFilter: byId('plantImageFilter'),
+  algaeImageFilter: byId('algaeImageFilter'),
+  fishDiseaseImageFilter: byId('fishDiseaseImageFilter'),
+  plantDiseaseImageFilter: byId('plantDiseaseImageFilter'),
 
   fishTableBody: byId('fishTableBody'),
   plantTableBody: byId('plantTableBody'),
+  equipmentTableBody: byId('equipmentTableBody'),
   algaeTableBody: byId('algaeTableBody'),
   fishDiseaseTableBody: byId('fishDiseaseTableBody'),
   plantDiseaseTableBody: byId('plantDiseaseTableBody'),
   requestsTableBody: byId('requestsTableBody'),
-  usersTableBody: byId('usersTableBody'),
 
   fishPrevBtn: byId('fishPrevBtn'),
   fishNextBtn: byId('fishNextBtn'),
@@ -130,6 +155,9 @@ const ui = {
   plantPrevBtn: byId('plantPrevBtn'),
   plantNextBtn: byId('plantNextBtn'),
   plantPageInfo: byId('plantPageInfo'),
+  equipmentPrevBtn: byId('equipmentPrevBtn'),
+  equipmentNextBtn: byId('equipmentNextBtn'),
+  equipmentPageInfo: byId('equipmentPageInfo'),
   algaePrevBtn: byId('algaePrevBtn'),
   algaeNextBtn: byId('algaeNextBtn'),
   algaePageInfo: byId('algaePageInfo'),
@@ -142,12 +170,15 @@ const ui = {
   requestsPrevBtn: byId('requestsPrevBtn'),
   requestsNextBtn: byId('requestsNextBtn'),
   requestsPageInfo: byId('requestsPageInfo'),
-  usersPrevBtn: byId('usersPrevBtn'),
-  usersNextBtn: byId('usersNextBtn'),
-  usersPageInfo: byId('usersPageInfo'),
 
   sectionTabs: Array.from(document.querySelectorAll('.tab[data-section]')),
   sectionPanels: Array.from(document.querySelectorAll('.section-panel')),
+  editorSlots: new Map(
+    Array.from(document.querySelectorAll('[data-editor-slot]')).map((slot) => [
+      slot.dataset.editorSlot,
+      slot,
+    ])
+  ),
 
   editorTitle: byId('editorTitle'),
   editorHint: byId('editorHint'),
@@ -158,7 +189,7 @@ const ui = {
   fishExtraFields: byId('fishExtraFields'),
   algaeFields: byId('algaeFields'),
   diseaseFields: byId('diseaseFields'),
-  userSubscriptionFields: byId('userSubscriptionFields'),
+  equipmentFields: byId('equipmentFields'),
 
   fCommonName: byId('fCommonName'),
   fLatinName: byId('fLatinName'),
@@ -175,6 +206,7 @@ const ui = {
   fImageLink: byId('fImageLink'),
   fNotes: byId('fNotes'),
   fAggressionLevel: byId('fAggressionLevel'),
+  fWasteProductionLevel: byId('fWasteProductionLevel'),
   fMinGroupSize: byId('fMinGroupSize'),
   fIsSchooling: byId('fIsSchooling'),
 
@@ -209,16 +241,17 @@ const ui = {
   dTreatment: byId('dTreatment'),
   dCaution: byId('dCaution'),
 
-  uUid: byId('uUid'),
-  uEmail: byId('uEmail'),
-  uTier: byId('uTier'),
-  uStatus: byId('uStatus'),
-  uSource: byId('uSource'),
-  uStartedAt: byId('uStartedAt'),
-  uExpiresAt: byId('uExpiresAt'),
-  uRenewsAt: byId('uRenewsAt'),
-  uLastValidatedAt: byId('uLastValidatedAt'),
-  uPlanVersion: byId('uPlanVersion'),
+  eId: byId('eId'),
+  eType: byId('eType'),
+  eBrand: byId('eBrand'),
+  eModel: byId('eModel'),
+  ePowerW: byId('ePowerW'),
+  eFlowLh: byId('eFlowLh'),
+  eLumens: byId('eLumens'),
+  eFilterType: byId('eFilterType'),
+  eTankMinLiters: byId('eTankMinLiters'),
+  eTankMaxLiters: byId('eTankMaxLiters'),
+  eSource: byId('eSource'),
 };
 
 boot();
@@ -252,15 +285,19 @@ function bindUiEvents() {
   ui.logoutBtn.addEventListener('click', handleLogout);
 
   ui.refreshBtn.addEventListener('click', loadAllAdminData);
+  ui.refreshEquipmentBtn.addEventListener('click', async () => {
+    await loadCatalogs();
+    renderEquipmentTable();
+    setStatus('Lista sprzetu odswiezona.', 'ok');
+  });
   ui.refreshRequestsBtn.addEventListener('click', loadRequests);
-  ui.refreshUsersBtn.addEventListener('click', loadUsersAndSubscriptions);
 
   ui.addFishBtn.addEventListener('click', () => openEditor('fish'));
   ui.addPlantBtn.addEventListener('click', () => openEditor('plant'));
+  ui.addEquipmentBtn.addEventListener('click', () => openEditor('equipment'));
   ui.addAlgaeBtn.addEventListener('click', () => openEditor('algae'));
   ui.addFishDiseaseBtn.addEventListener('click', () => openEditor('fishDisease'));
   ui.addPlantDiseaseBtn.addEventListener('click', () => openEditor('plantDisease'));
-  ui.addUserPlanBtn.addEventListener('click', () => openEditor('users'));
 
   ui.catalogForm.addEventListener('submit', handleEditorSave);
   ui.cancelEditBtn.addEventListener('click', closeEditor);
@@ -276,6 +313,10 @@ function bindUiEvents() {
   ui.plantSearch.addEventListener('input', () => {
     state.pagination.plant = 1;
     renderPlantTable();
+  });
+  ui.equipmentSearch.addEventListener('input', () => {
+    state.pagination.equipment = 1;
+    renderEquipmentTable();
   });
   ui.algaeSearch.addEventListener('input', () => {
     state.pagination.algae = 1;
@@ -293,21 +334,42 @@ function bindUiEvents() {
     state.pagination.requests = 1;
     renderRequestsTable();
   });
-  ui.userSearch.addEventListener('input', () => {
-    state.pagination.users = 1;
-    renderUsersTable();
+  ui.equipmentTypeFilter.addEventListener('change', () => {
+    state.pagination.equipment = 1;
+    renderEquipmentTable();
+  });
+  ui.fishImageFilter.addEventListener('change', () => {
+    state.pagination.fish = 1;
+    renderFishTable();
+  });
+  ui.plantImageFilter.addEventListener('change', () => {
+    state.pagination.plant = 1;
+    renderPlantTable();
+  });
+  ui.algaeImageFilter.addEventListener('change', () => {
+    state.pagination.algae = 1;
+    renderAlgaeTable();
+  });
+  ui.fishDiseaseImageFilter.addEventListener('change', () => {
+    state.pagination.fishDisease = 1;
+    renderFishDiseaseTable();
+  });
+  ui.plantDiseaseImageFilter.addEventListener('change', () => {
+    state.pagination.plantDisease = 1;
+    renderPlantDiseaseTable();
   });
 
   bindPagination('fish');
   bindPagination('plant');
+  bindPagination('equipment');
   bindPagination('algae');
   bindPagination('fishDisease');
   bindPagination('plantDisease');
   bindPagination('requests');
-  bindPagination('users');
 
   ui.fishTableBody.addEventListener('click', (event) => handleTableAction(event, 'fish'));
   ui.plantTableBody.addEventListener('click', (event) => handleTableAction(event, 'plant'));
+  ui.equipmentTableBody.addEventListener('click', (event) => handleTableAction(event, 'equipment'));
   ui.algaeTableBody.addEventListener('click', (event) => handleTableAction(event, 'algae'));
   ui.fishDiseaseTableBody.addEventListener('click', (event) =>
     handleTableAction(event, 'fishDisease')
@@ -316,7 +378,6 @@ function bindUiEvents() {
     handleTableAction(event, 'plantDisease')
   );
   ui.requestsTableBody.addEventListener('click', (event) => handleTableAction(event, 'requests'));
-  ui.usersTableBody.addEventListener('click', (event) => handleTableAction(event, 'users'));
 }
 
 function handleSaveConfig() {
@@ -450,7 +511,7 @@ async function loadAllAdminData() {
   }
 
   setStatus('Pobieram dane panelu...', 'info');
-  await Promise.all([loadCatalogs(), loadRequests(), loadUsersAndSubscriptions()]);
+  await Promise.all([loadCatalogs(), loadRequests()]);
   renderAllTables();
   setStatus('Dane panelu sa aktualne.', 'ok');
 }
@@ -458,6 +519,7 @@ async function loadAllAdminData() {
 async function loadCatalogs() {
   state.fish = await safeLoadCollection(COLLECTIONS.fish, sortByCommonName);
   state.plant = await safeLoadCollection(COLLECTIONS.plant, sortByCommonName);
+  state.equipment = await safeLoadCollection(COLLECTIONS.equipment, sortByEquipment);
   state.algae = await safeLoadCollection(COLLECTIONS.algae, sortByAlgae);
   state.fishDisease = await safeLoadCollection(
     COLLECTIONS.fishDisease,
@@ -467,6 +529,7 @@ async function loadCatalogs() {
     COLLECTIONS.plantDisease,
     sortByDisease
   );
+  updateDashboardCounters();
 }
 
 async function loadRequests() {
@@ -479,6 +542,7 @@ async function loadRequests() {
     ...fishRequests.map((item) => ({ ...item, requestType: 'fish' })),
     ...plantRequests.map((item) => ({ ...item, requestType: 'plant' })),
   ].sort(sortByCreatedAtDesc);
+  updateDashboardCounters();
 }
 
 async function safeLoadCollection(collectionName, sorter) {
@@ -493,135 +557,23 @@ async function safeLoadCollection(collectionName, sorter) {
   }
 }
 
-async function loadUsersAndSubscriptions() {
-  if (!state.db || !state.isAdmin) {
-    return;
-  }
-
-  const userIds = new Set();
-  const sourceCountsByUid = new Map();
-  const emailByUid = new Map();
-  const rememberEmail = (uidValue, emailValue) => {
-    const uid = String(uidValue ?? '').trim();
-    const email = String(emailValue ?? '').trim();
-    if (!uid || !email) {
-      return;
-    }
-    if (!emailByUid.has(uid)) {
-      emailByUid.set(uid, email);
-    }
-  };
-
-  for (const collectionName of USER_ID_SOURCE_COLLECTIONS) {
-    try {
-      const snapshot = await getDocs(collection(state.db, collectionName));
-      snapshot.docs.forEach((item) => {
-        const data = item.data();
-        const uid = String(data?.userId ?? '').trim();
-        if (!uid) {
-          return;
-        }
-
-        userIds.add(uid);
-        const counts = sourceCountsByUid.get(uid) ?? {};
-        counts[collectionName] = (counts[collectionName] ?? 0) + 1;
-        sourceCountsByUid.set(uid, counts);
-      });
-    } catch (error) {
-      setStatus(
-        formatError(`Nie udalo sie odczytac ${collectionName} (sprawdz reguly admin read)`, error),
-        'error'
-      );
-    }
-  }
-
-  for (const collectionName of [COLLECTIONS.fishRequests, COLLECTIONS.plantRequests]) {
-    try {
-      const snapshot = await getDocs(collection(state.db, collectionName));
-      snapshot.docs.forEach((item) => {
-        const data = item.data();
-        const uid = String(data?.userId ?? '').trim();
-        if (!uid) {
-          return;
-        }
-
-        userIds.add(uid);
-        rememberEmail(uid, data?.userEmail);
-      });
-    } catch (error) {
-      setStatus(
-        formatError(`Nie udalo sie odczytac ${collectionName} (dla emaili uzytkownikow)`, error),
-        'error'
-      );
-    }
-  }
-
-  const subscriptionsByUid = new Map();
-  try {
-    const subscriptionSnapshot = await getDocs(
-      collection(state.db, COLLECTIONS.userSubscriptions)
-    );
-
-    subscriptionSnapshot.docs.forEach((entry) => {
-      const data = entry.data() || {};
-      const uid = String(data.userId ?? entry.id).trim();
-      if (!uid) {
-        return;
-      }
-
-      userIds.add(uid);
-      rememberEmail(uid, data.userEmail);
-      subscriptionsByUid.set(uid, { id: entry.id, ...data, userId: uid });
-    });
-  } catch (error) {
-    setStatus(
-      formatError('Nie udalo sie odczytac userSubscriptions (sprawdz reguly)', error),
-      'error'
-    );
-  }
-
-  state.subscriptionsByUid = subscriptionsByUid;
-  state.users = Array.from(userIds)
-    .map((uid) => {
-      const subscription = subscriptionsByUid.get(uid) || {};
-      const sourceCounts = sourceCountsByUid.get(uid) || {};
-      const email =
-        String(subscription.userEmail ?? '').trim() ||
-        String(emailByUid.get(uid) ?? '').trim();
-
-      return {
-        uid,
-        email,
-        tier: String(subscription.tier ?? 'free').trim() || 'free',
-        status: String(subscription.status ?? 'active').trim() || 'active',
-        source: String(subscription.source ?? 'system').trim() || 'system',
-        startedAt: String(subscription.startedAt ?? '').trim(),
-        expiresAt: String(subscription.expiresAt ?? '').trim(),
-        renewsAt: String(subscription.renewsAt ?? '').trim(),
-        lastValidatedAt: String(subscription.lastValidatedAt ?? '').trim(),
-        planVersion: Number.isFinite(Number(subscription.planVersion))
-          ? Number(subscription.planVersion)
-          : 3,
-        sourceCounts,
-      };
-    })
-    .sort((a, b) => a.uid.localeCompare(b.uid));
-}
-
 function renderAllTables() {
   renderFishTable();
   renderPlantTable();
+  renderEquipmentTable();
   renderAlgaeTable();
   renderFishDiseaseTable();
   renderPlantDiseaseTable();
   renderRequestsTable();
-  renderUsersTable();
 }
 
 function renderFishTable() {
   const q = ui.fishSearch.value.trim().toLowerCase();
+  const imageFilter = String(ui.fishImageFilter.value || 'all');
   const filtered = state.fish
     .filter((item) => !q || `${item.commonName || ''} ${item.latinName || ''}`.toLowerCase().includes(q))
+    .filter((item) => matchesImageFilter(item, imageFilter));
+  const missingImages = filtered.filter((item) => !resolveBestImageUrl(item)).length;
   const { pageItems, page, pageCount } = paginate('fish', filtered);
   const rows = pageItems
     .map((item) => {
@@ -631,6 +583,13 @@ function renderFishTable() {
 
       return `
         <tr>
+          <td>
+            <div class="table-actions">
+              <button class="btn-mini" data-action="open-image" data-url="${esc(resolveBestImageUrl(item))}">Podglad</button>
+              <button class="btn-mini" data-action="edit" data-id="${item.id}">Edytuj</button>
+              <button class="btn-mini danger" data-action="delete" data-id="${item.id}">Usun</button>
+            </div>
+          </td>
           <td>${esc(item.commonName)}</td>
           <td class="mono">${esc(item.latinName)}</td>
           <td>${esc(rangePh)}</td>
@@ -640,6 +599,7 @@ function renderFishTable() {
           <td>${item.isSchooling ? 'tak' : 'nie'}</td>
           <td>${esc(fmtNum(item.minGroupSize))}</td>
           <td>${esc(item.aggressionLevel || 'peaceful')}</td>
+          <td>${esc(fmtNum(item.wasteProductionLevel))}</td>
           <td>${esc(item.source || '')}</td>
           <td class="wrap-cell">${esc(item.notes || '')}</td>
           <td class="mono">${esc(item.imagePreviewUrl || '')}</td>
@@ -647,26 +607,23 @@ function renderFishTable() {
           <td class="mono">${esc(item.imageLink || '')}</td>
           <td class="mono">${esc(item.commonNameNormalized || '')}</td>
           <td class="mono">${esc(item.latinNameNormalized || '')}</td>
-          <td>
-            <div class="table-actions">
-              <button class="btn-mini" data-action="open-image" data-url="${esc(resolveBestImageUrl(item))}">Podglad</button>
-              <button class="btn-mini" data-action="edit" data-id="${item.id}">Edytuj</button>
-              <button class="btn-mini danger" data-action="delete" data-id="${item.id}">Usun</button>
-            </div>
-          </td>
         </tr>
       `;
     })
     .join('');
 
-  ui.fishTableBody.innerHTML = rows || '<tr><td colspan="17">Brak wynikow.</td></tr>';
+  ui.fishTableBody.innerHTML = rows || '<tr><td colspan="18">Brak wynikow.</td></tr>';
   updatePaginationUi('fish', page, pageCount);
+  setResultMeta(ui.fishResultMeta, filtered.length, state.fish.length, `bez zdjec: ${missingImages}`);
 }
 
 function renderPlantTable() {
   const q = ui.plantSearch.value.trim().toLowerCase();
+  const imageFilter = String(ui.plantImageFilter.value || 'all');
   const filtered = state.plant
     .filter((item) => !q || `${item.commonName || ''} ${item.latinName || ''}`.toLowerCase().includes(q))
+    .filter((item) => matchesImageFilter(item, imageFilter));
+  const missingImages = filtered.filter((item) => !resolveBestImageUrl(item)).length;
   const { pageItems, page, pageCount } = paginate('plant', filtered);
   const rows = pageItems
     .map((item) => {
@@ -676,6 +633,13 @@ function renderPlantTable() {
 
       return `
         <tr>
+          <td>
+            <div class="table-actions">
+              <button class="btn-mini" data-action="open-image" data-url="${esc(resolveBestImageUrl(item))}">Podglad</button>
+              <button class="btn-mini" data-action="edit" data-id="${item.id}">Edytuj</button>
+              <button class="btn-mini danger" data-action="delete" data-id="${item.id}">Usun</button>
+            </div>
+          </td>
           <td>${esc(item.commonName)}</td>
           <td class="mono">${esc(item.latinName)}</td>
           <td>${esc(rangePh)}</td>
@@ -689,13 +653,6 @@ function renderPlantTable() {
           <td class="mono">${esc(item.imageLink || '')}</td>
           <td class="mono">${esc(item.commonNameNormalized || '')}</td>
           <td class="mono">${esc(item.latinNameNormalized || '')}</td>
-          <td>
-            <div class="table-actions">
-              <button class="btn-mini" data-action="open-image" data-url="${esc(resolveBestImageUrl(item))}">Podglad</button>
-              <button class="btn-mini" data-action="edit" data-id="${item.id}">Edytuj</button>
-              <button class="btn-mini danger" data-action="delete" data-id="${item.id}">Usun</button>
-            </div>
-          </td>
         </tr>
       `;
     })
@@ -703,12 +660,75 @@ function renderPlantTable() {
 
   ui.plantTableBody.innerHTML = rows || '<tr><td colspan="14">Brak wynikow.</td></tr>';
   updatePaginationUi('plant', page, pageCount);
+  setResultMeta(
+    ui.plantResultMeta,
+    filtered.length,
+    state.plant.length,
+    `bez zdjec: ${missingImages}`
+  );
+}
+
+function renderEquipmentTable() {
+  const q = ui.equipmentSearch.value.trim().toLowerCase();
+  const typeFilter = String(ui.equipmentTypeFilter.value || 'all').trim().toLowerCase();
+  const filtered = state.equipment
+    .filter((item) => {
+      if (typeFilter === 'all') {
+        return true;
+      }
+      return String(item.type || '').trim().toLowerCase() === typeFilter;
+    })
+    .filter((item) => {
+      if (!q) {
+        return true;
+      }
+      return `${item.brand || ''} ${item.model || ''} ${item.id || ''} ${item.type || ''}`
+        .toLowerCase()
+        .includes(q);
+    });
+
+  const { pageItems, page, pageCount } = paginate('equipment', filtered);
+  const rows = pageItems
+    .map((item) => `
+      <tr>
+        <td>
+          <div class="table-actions">
+            <button class="btn-mini" data-action="edit" data-id="${esc(item.id || '')}">Edytuj</button>
+            <button class="btn-mini danger" data-action="delete" data-id="${esc(item.id || '')}">Usun</button>
+          </div>
+        </td>
+        <td>${esc(getEquipmentTypeLabel(item.type))}</td>
+        <td>${esc(item.brand || '')}</td>
+        <td>${esc(item.model || '')}</td>
+        <td>${esc(fmtNum(item.powerW))}</td>
+        <td>${esc(fmtNum(item.flowLh))}</td>
+        <td>${esc(item.filterType || '')}</td>
+        <td>${esc(fmtNum(item.lumens))}</td>
+        <td>${esc(fmtNum(item.tankMinLiters))}</td>
+        <td>${esc(fmtNum(item.tankMaxLiters))}</td>
+        <td>${esc(item.source || '')}</td>
+        <td class="mono">${esc(item.id || '')}</td>
+      </tr>
+    `)
+    .join('');
+
+  ui.equipmentTableBody.innerHTML = rows || '<tr><td colspan="12">Brak wynikow.</td></tr>';
+  updatePaginationUi('equipment', page, pageCount);
+  setResultMeta(
+    ui.equipmentResultMeta,
+    filtered.length,
+    state.equipment.length,
+    `typ: ${typeFilter === 'all' ? 'wszystkie' : getEquipmentTypeLabel(typeFilter)}`
+  );
 }
 
 function renderAlgaeTable() {
   const q = ui.algaeSearch.value.trim().toLowerCase();
+  const imageFilter = String(ui.algaeImageFilter.value || 'all');
   const filtered = state.algae
     .filter((item) => !q || `${item.name || ''} ${item.id || ''}`.toLowerCase().includes(q))
+    .filter((item) => matchesImageFilter(item, imageFilter));
+  const missingImages = filtered.filter((item) => !resolveBestImageUrl(item)).length;
   const { pageItems, page, pageCount } = paginate('algae', filtered);
   const rows = pageItems
     .map((item) => {
@@ -716,6 +736,13 @@ function renderAlgaeTable() {
 
       return `
         <tr>
+          <td>
+            <div class="table-actions">
+              <button class="btn-mini" data-action="open-image" data-url="${esc(resolveBestImageUrl(item))}">Podglad</button>
+              <button class="btn-mini" data-action="edit" data-id="${item.id}">Edytuj</button>
+              <button class="btn-mini danger" data-action="delete" data-id="${item.id}">Usun</button>
+            </div>
+          </td>
           <td class="mono">${esc(item.id)}</td>
           <td>${esc(item.name || '')}</td>
           <td>${esc(item.severity || '')}</td>
@@ -725,13 +752,6 @@ function renderAlgaeTable() {
           <td class="mono">${esc(item.imagePreviewUrl || '')}</td>
           <td class="mono">${esc(item.imageUrl || '')}</td>
           <td class="mono">${esc(item.imageLink || '')}</td>
-          <td>
-            <div class="table-actions">
-              <button class="btn-mini" data-action="open-image" data-url="${esc(resolveBestImageUrl(item))}">Podglad</button>
-              <button class="btn-mini" data-action="edit" data-id="${item.id}">Edytuj</button>
-              <button class="btn-mini danger" data-action="delete" data-id="${item.id}">Usun</button>
-            </div>
-          </td>
         </tr>
       `;
     })
@@ -739,14 +759,23 @@ function renderAlgaeTable() {
 
   ui.algaeTableBody.innerHTML = rows || '<tr><td colspan="10">Brak wynikow.</td></tr>';
   updatePaginationUi('algae', page, pageCount);
+  setResultMeta(
+    ui.algaeResultMeta,
+    filtered.length,
+    state.algae.length,
+    `bez zdjec: ${missingImages}`
+  );
 }
 
 function renderFishDiseaseTable() {
   const q = ui.fishDiseaseSearch.value.trim().toLowerCase();
+  const imageFilter = String(ui.fishDiseaseImageFilter.value || 'all');
   const filtered = state.fishDisease.filter(
     (item) =>
-      !q || `${item.name || ''} ${item.id || ''}`.toLowerCase().includes(q)
+      (!q || `${item.name || ''} ${item.id || ''}`.toLowerCase().includes(q)) &&
+      matchesImageFilter(item, imageFilter)
   );
+  const missingImages = filtered.filter((item) => !resolveBestImageUrl(item)).length;
   const { pageItems, page, pageCount } = paginate('fishDisease', filtered);
   const rows = pageItems
     .map((item) => {
@@ -756,18 +785,18 @@ function renderFishDiseaseTable() {
 
       return `
         <tr>
-          <td class="mono">${esc(item.id)}</td>
-          <td>${esc(item.name || '')}</td>
-          <td>${esc(item.severity || '')}</td>
-          <td class="wrap-cell">${esc(symptomSummary)}</td>
-          <td>${esc(item.suggestedRemedy || '')}</td>
-          <td>${esc(item.imageSourceLabel || '')}</td>
           <td>
             <div class="table-actions">
               <button class="btn-mini" data-action="edit" data-id="${item.id}">Edytuj</button>
               <button class="btn-mini danger" data-action="delete" data-id="${item.id}">Usun</button>
             </div>
           </td>
+          <td class="mono">${esc(item.id)}</td>
+          <td>${esc(item.name || '')}</td>
+          <td>${esc(item.severity || '')}</td>
+          <td class="wrap-cell">${esc(symptomSummary)}</td>
+          <td>${esc(item.suggestedRemedy || '')}</td>
+          <td>${esc(item.imageSourceLabel || '')}</td>
         </tr>
       `;
     })
@@ -775,14 +804,23 @@ function renderFishDiseaseTable() {
 
   ui.fishDiseaseTableBody.innerHTML = rows || '<tr><td colspan="7">Brak wynikow.</td></tr>';
   updatePaginationUi('fishDisease', page, pageCount);
+  setResultMeta(
+    ui.fishDiseaseResultMeta,
+    filtered.length,
+    state.fishDisease.length,
+    `bez zdjec: ${missingImages}`
+  );
 }
 
 function renderPlantDiseaseTable() {
   const q = ui.plantDiseaseSearch.value.trim().toLowerCase();
+  const imageFilter = String(ui.plantDiseaseImageFilter.value || 'all');
   const filtered = state.plantDisease.filter(
     (item) =>
-      !q || `${item.name || ''} ${item.id || ''}`.toLowerCase().includes(q)
+      (!q || `${item.name || ''} ${item.id || ''}`.toLowerCase().includes(q)) &&
+      matchesImageFilter(item, imageFilter)
   );
+  const missingImages = filtered.filter((item) => !resolveBestImageUrl(item)).length;
   const { pageItems, page, pageCount } = paginate('plantDisease', filtered);
   const rows = pageItems
     .map((item) => {
@@ -792,18 +830,18 @@ function renderPlantDiseaseTable() {
 
       return `
         <tr>
-          <td class="mono">${esc(item.id)}</td>
-          <td>${esc(item.name || '')}</td>
-          <td>${esc(item.severity || '')}</td>
-          <td class="wrap-cell">${esc(symptomSummary)}</td>
-          <td>${esc(item.suggestedRemedy || '')}</td>
-          <td>${esc(item.imageSourceLabel || '')}</td>
           <td>
             <div class="table-actions">
               <button class="btn-mini" data-action="edit" data-id="${item.id}">Edytuj</button>
               <button class="btn-mini danger" data-action="delete" data-id="${item.id}">Usun</button>
             </div>
           </td>
+          <td class="mono">${esc(item.id)}</td>
+          <td>${esc(item.name || '')}</td>
+          <td>${esc(item.severity || '')}</td>
+          <td class="wrap-cell">${esc(symptomSummary)}</td>
+          <td>${esc(item.suggestedRemedy || '')}</td>
+          <td>${esc(item.imageSourceLabel || '')}</td>
         </tr>
       `;
     })
@@ -811,6 +849,12 @@ function renderPlantDiseaseTable() {
 
   ui.plantDiseaseTableBody.innerHTML = rows || '<tr><td colspan="7">Brak wynikow.</td></tr>';
   updatePaginationUi('plantDisease', page, pageCount);
+  setResultMeta(
+    ui.plantDiseaseResultMeta,
+    filtered.length,
+    state.plantDisease.length,
+    `bez zdjec: ${missingImages}`
+  );
 }
 
 function renderRequestsTable() {
@@ -823,6 +867,7 @@ function renderRequestsTable() {
       .toLowerCase()
       .includes(q);
   });
+  const pendingCount = filtered.filter((item) => String(item.status || 'new') === 'new').length;
   const { pageItems, page, pageCount } = paginate('requests', filtered);
   const rows = pageItems
     .map((item) => {
@@ -830,14 +875,6 @@ function renderRequestsTable() {
       const status = String(item.status || 'new').trim() || 'new';
       return `
         <tr>
-          <td>${esc(typeLabel)}</td>
-          <td>${esc(item.commonName || '')}</td>
-          <td class="mono">${esc(item.latinName || '')}</td>
-          <td>${esc(status)}</td>
-          <td class="mono">${esc(item.userId || '')}</td>
-          <td>${esc(item.userEmail || '')}</td>
-          <td>${esc(item.tankName || '')}</td>
-          <td>${esc(formatDateTime(item.createdAt))}</td>
           <td>
             <div class="table-actions">
               <button class="btn-mini accept" data-action="request-accept" data-id="${item.id}" data-kind="${item.requestType}">Akceptuj</button>
@@ -846,6 +883,14 @@ function renderRequestsTable() {
               <button class="btn-mini danger" data-action="request-delete" data-id="${item.id}" data-kind="${item.requestType}">Usun</button>
             </div>
           </td>
+          <td>${esc(typeLabel)}</td>
+          <td>${esc(item.commonName || '')}</td>
+          <td class="mono">${esc(item.latinName || '')}</td>
+          <td>${esc(status)}</td>
+          <td class="mono">${esc(item.userId || '')}</td>
+          <td>${esc(item.userEmail || '')}</td>
+          <td>${esc(item.tankName || '')}</td>
+          <td>${esc(formatDateTime(item.createdAt))}</td>
         </tr>
       `;
     })
@@ -853,42 +898,50 @@ function renderRequestsTable() {
 
   ui.requestsTableBody.innerHTML = rows || '<tr><td colspan="9">Brak sugestii.</td></tr>';
   updatePaginationUi('requests', page, pageCount);
+  setResultMeta(
+    ui.requestsResultMeta,
+    filtered.length,
+    state.requests.length,
+    `nowe: ${pendingCount}`
+  );
 }
 
-function renderUsersTable() {
-  const q = ui.userSearch.value.trim().toLowerCase();
-  const filtered = state.users
-    .filter((item) =>
-      !q || `${item.uid || ''} ${item.email || ''} ${item.tier || ''} ${item.status || ''}`.toLowerCase().includes(q)
-    )
-  const { pageItems, page, pageCount } = paginate('users', filtered);
-  const rows = pageItems
-    .map((item) => {
-      return `
-        <tr>
-          <td class="mono">${esc(item.uid)}</td>
-          <td>${esc(item.email || '')}</td>
-          <td>${esc(item.tier || 'free')}</td>
-          <td>${esc(item.status || 'active')}</td>
-          <td>${esc(item.source || 'system')}</td>
-          <td>${esc(item.startedAt || '-')}</td>
-          <td>${esc(item.expiresAt || '-')}</td>
-          <td>${esc(item.renewsAt || '-')}</td>
-          <td>${esc(item.lastValidatedAt || '-')}</td>
-          <td>${esc(String(item.planVersion ?? 3))}</td>
-          <td>
-            <div class="table-actions">
-              <button class="btn-mini" data-action="edit-sub" data-id="${item.uid}">Edytuj plan</button>
-              <button class="btn-mini danger" data-action="clear-sub" data-id="${item.uid}">Usun plan</button>
-            </div>
-          </td>
-        </tr>
-      `;
-    })
-    .join('');
+function updateDashboardCounters() {
+  setCountText(ui.kpiFishCount, state.fish.length);
+  setCountText(ui.kpiPlantCount, state.plant.length);
+  setCountText(ui.kpiEquipmentCount, state.equipment.length);
+  setCountText(ui.kpiAlgaeCount, state.algae.length);
+  setCountText(ui.kpiDiseaseCount, state.fishDisease.length + state.plantDisease.length);
+  setCountText(ui.kpiRequestsCount, state.requests.length);
 
-  ui.usersTableBody.innerHTML = rows || '<tr><td colspan="11">Brak danych o uzytkownikach.</td></tr>';
-  updatePaginationUi('users', page, pageCount);
+  setCountText(ui.tabCountFish, state.fish.length);
+  setCountText(ui.tabCountPlant, state.plant.length);
+  setCountText(ui.tabCountEquipment, state.equipment.length);
+  setCountText(ui.tabCountAlgae, state.algae.length);
+  setCountText(ui.tabCountFishDisease, state.fishDisease.length);
+  setCountText(ui.tabCountPlantDisease, state.plantDisease.length);
+  setCountText(ui.tabCountRequests, state.requests.length);
+}
+
+function setCountText(target, value) {
+  if (!target) {
+    return;
+  }
+  const safeValue = Number.isFinite(Number(value)) ? Number(value) : 0;
+  target.textContent = String(safeValue);
+}
+
+function setResultMeta(target, visibleCount, totalCount, details = '') {
+  if (!target) {
+    return;
+  }
+
+  const visible = Number.isFinite(Number(visibleCount)) ? Number(visibleCount) : 0;
+  const total = Number.isFinite(Number(totalCount)) ? Number(totalCount) : 0;
+  const suffix = String(details || '').trim();
+  target.textContent = suffix
+    ? `${visible} / ${total} | ${suffix}`
+    : `${visible} / ${total}`;
 }
 
 function bindPagination(key) {
@@ -932,17 +985,21 @@ function updatePaginationUi(key, page, pageCount) {
 function renderTableByKey(key) {
   if (key === 'fish') return renderFishTable();
   if (key === 'plant') return renderPlantTable();
+  if (key === 'equipment') return renderEquipmentTable();
   if (key === 'algae') return renderAlgaeTable();
   if (key === 'fishDisease') return renderFishDiseaseTable();
   if (key === 'plantDisease') return renderPlantDiseaseTable();
   if (key === 'requests') return renderRequestsTable();
-  if (key === 'users') return renderUsersTable();
 }
 
 function switchSection(section) {
-  state.activeSection = ['fish', 'plant', 'algae', 'fishDisease', 'plantDisease', 'requests', 'users'].includes(section)
+  const nextSection = ['fish', 'plant', 'equipment', 'algae', 'fishDisease', 'plantDisease', 'requests'].includes(section)
     ? section
     : 'fish';
+  if (!ui.editorCard.classList.contains('hidden') && state.editor.section !== nextSection) {
+    closeEditor();
+  }
+  state.activeSection = nextSection;
 
   ui.sectionTabs.forEach((tab) => {
     tab.classList.toggle('is-active', tab.dataset.section === state.activeSection);
@@ -971,6 +1028,7 @@ function handleTableAction(event, section) {
   if (
     section === 'fish' ||
     section === 'plant' ||
+    section === 'equipment' ||
     section === 'algae' ||
     section === 'fishDisease' ||
     section === 'plantDisease'
@@ -993,22 +1051,6 @@ function handleTableAction(event, section) {
     return;
   }
 
-  if (section === 'users') {
-    const user = state.users.find((entry) => String(entry.uid) === String(id));
-    if (!user) {
-      return;
-    }
-
-    if (action === 'edit-sub') {
-      openEditor('users', user);
-      return;
-    }
-
-    if (action === 'clear-sub') {
-      deleteSubscription(user.uid);
-    }
-  }
-
   if (section === 'requests') {
     const kind = button.dataset.kind === 'plant' ? 'plant' : 'fish';
     if (action === 'request-accept') {
@@ -1029,18 +1071,33 @@ function handleTableAction(event, section) {
   }
 }
 
+function mountEditorInSection(section) {
+  const slot = ui.editorSlots.get(section);
+  if (!slot) {
+    return;
+  }
+
+  if (ui.editorCard.parentElement !== slot) {
+    slot.appendChild(ui.editorCard);
+  }
+}
+
 function openEditor(section, item = null) {
+  mountEditorInSection(section);
   state.editor.section = section;
   state.editor.mode = item ? 'edit' : 'create';
-  state.editor.id = item?.id || item?.uid || null;
+  state.editor.id = item?.id || null;
 
   ui.catalogForm.reset();
+  if (ui.eId) {
+    ui.eId.disabled = false;
+  }
 
   show(ui.stockFields, section === 'fish' || section === 'plant');
   show(ui.fishExtraFields, section === 'fish');
   show(ui.algaeFields, section === 'algae');
   show(ui.diseaseFields, section === 'fishDisease' || section === 'plantDisease');
-  show(ui.userSubscriptionFields, section === 'users');
+  show(ui.equipmentFields, section === 'equipment');
 
   if (section === 'fish' || section === 'plant') {
     ui.editorTitle.textContent =
@@ -1065,6 +1122,7 @@ function openEditor(section, item = null) {
     ui.fNotes.value = item?.notes || '';
 
     ui.fAggressionLevel.value = item?.aggressionLevel || 'peaceful';
+    ui.fWasteProductionLevel.value = toInputNumber(item?.wasteProductionLevel);
     ui.fMinGroupSize.value = toInputNumber(item?.minGroupSize);
     ui.fIsSchooling.checked = Boolean(item?.isSchooling);
   }
@@ -1116,24 +1174,26 @@ function openEditor(section, item = null) {
     ui.dCaution.value = item?.caution || '';
   }
 
-  if (section === 'users') {
-    ui.editorTitle.textContent = 'Edytuj plan subskrypcji';
-    ui.editorHint.textContent = `Kolekcja: ${COLLECTIONS.userSubscriptions}`;
+  if (section === 'equipment') {
+    ui.editorTitle.textContent =
+      state.editor.mode === 'create' ? 'Dodaj sprzet' : 'Edytuj sprzet';
+    ui.editorHint.textContent = `Kolekcja: ${COLLECTIONS.equipment}`;
 
-    ui.uUid.value = item?.uid || '';
-    ui.uEmail.value = item?.email || '';
-    ui.uTier.value = normalizeTier(item?.tier || 'free');
-    ui.uStatus.value = normalizeSubscriptionStatus(item?.status || 'active');
-    ui.uSource.value = normalizeSubscriptionSource(item?.source || 'admin');
-    ui.uStartedAt.value = item?.startedAt || '';
-    ui.uExpiresAt.value = item?.expiresAt || '';
-    ui.uRenewsAt.value = item?.renewsAt || '';
-    ui.uLastValidatedAt.value = item?.lastValidatedAt || '';
-    ui.uPlanVersion.value = toInputNumber(item?.planVersion || 3);
+    ui.eId.value = item?.id || '';
+    ui.eId.disabled = state.editor.mode === 'edit';
+    ui.eType.value = normalizeEquipmentType(item?.type);
+    ui.eBrand.value = item?.brand || '';
+    ui.eModel.value = item?.model || '';
+    ui.ePowerW.value = toInputNumber(item?.powerW);
+    ui.eFlowLh.value = toInputNumber(item?.flowLh);
+    ui.eLumens.value = toInputNumber(item?.lumens);
+    ui.eFilterType.value = normalizeEquipmentFilterType(item?.filterType);
+    ui.eTankMinLiters.value = toInputNumber(item?.tankMinLiters);
+    ui.eTankMaxLiters.value = toInputNumber(item?.tankMaxLiters);
+    ui.eSource.value = normalizeEquipmentSource(item?.source);
   }
 
   show(ui.editorCard, true);
-  ui.editorCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function closeEditor() {
@@ -1227,19 +1287,34 @@ async function handleEditorSave(event) {
       return;
     }
 
-    if (section === 'users') {
-      const payload = buildUserSubscriptionPayload();
+    if (section === 'equipment') {
+      const payload = buildEquipmentPayload();
+      const equipmentId = payload.id;
 
-      await setDoc(doc(state.db, COLLECTIONS.userSubscriptions, payload.userId), {
-        ...payload,
-        updatedAt: serverTimestamp(),
-      });
+      if (!equipmentId) {
+        throw new Error('Id sprzetu jest wymagane.');
+      }
 
-      await loadUsersAndSubscriptions();
-      renderUsersTable();
+      if (state.editor.mode === 'create') {
+        await setDoc(doc(state.db, COLLECTIONS.equipment, equipmentId), {
+          ...payload,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await updateDoc(doc(state.db, COLLECTIONS.equipment, state.editor.id), {
+          ...payload,
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      await loadCatalogs();
+      renderAllTables();
       closeEditor();
-      setStatus('Zapisano plan subskrypcji uzytkownika.', 'ok');
+      setStatus('Zapisano wpis katalogu sprzetu.', 'ok');
+      return;
     }
+
   } catch (error) {
     setStatus(formatError('Nie udalo sie zapisac', error), 'error');
   }
@@ -1259,22 +1334,6 @@ async function deleteCatalogItem(section, item) {
     setStatus('Wpis usuniety.', 'ok');
   } catch (error) {
     setStatus(formatError('Nie udalo sie usunac wpisu', error), 'error');
-  }
-}
-
-async function deleteSubscription(uid) {
-  const ok = confirm(`Usunac dokument subskrypcji dla UID ${uid}?`);
-  if (!ok) {
-    return;
-  }
-
-  try {
-    await deleteDoc(doc(state.db, COLLECTIONS.userSubscriptions, uid));
-    await loadUsersAndSubscriptions();
-    renderUsersTable();
-    setStatus('Subskrypcja usunieta.', 'ok');
-  } catch (error) {
-    setStatus(formatError('Nie udalo sie usunac subskrypcji', error), 'error');
   }
 }
 
@@ -1356,15 +1415,28 @@ function buildStockPayload(section) {
   if (section === 'fish') {
     const isSchooling = Boolean(ui.fIsSchooling.checked);
     const rawMinGroup = ui.fMinGroupSize.value.trim();
+    const rawWasteProductionLevel = ui.fWasteProductionLevel.value.trim();
     const minGroupSize = rawMinGroup
       ? asNumber(rawMinGroup, 'Minimalna grupa', { integer: true })
       : isSchooling
         ? 6
         : 0;
+    const wasteProductionLevel = rawWasteProductionLevel
+      ? asNumber(normalizeDecimalInput(rawWasteProductionLevel), 'Produkcja brudu')
+      : null;
+
+    if (Number.isFinite(Number(wasteProductionLevel))) {
+      if (Number(wasteProductionLevel) < 0 || Number(wasteProductionLevel) > 10) {
+        throw new Error('Produkcja brudu musi byc w zakresie 0-10.');
+      }
+    }
 
     payload.isSchooling = isSchooling;
     payload.minGroupSize = isSchooling ? Math.max(1, Number(minGroupSize)) : 0;
     payload.aggressionLevel = normalizeAggressionLevel(ui.fAggressionLevel.value.trim() || 'peaceful');
+    payload.wasteProductionLevel = Number.isFinite(Number(wasteProductionLevel))
+      ? Number(wasteProductionLevel)
+      : null;
   }
 
   return payload;
@@ -1432,26 +1504,73 @@ function buildDiseasePayload() {
   };
 }
 
-function buildUserSubscriptionPayload() {
-  const userId = ui.uUid.value.trim();
-  if (!userId) {
-    throw new Error('UID uzytkownika jest wymagany.');
+function buildEquipmentPayload() {
+  const id = ui.eId.value.trim().toLowerCase();
+  const type = normalizeEquipmentType(ui.eType.value);
+  const brand = ui.eBrand.value.trim();
+  const model = ui.eModel.value.trim();
+
+  if (!id) {
+    throw new Error('Id sprzetu jest wymagane.');
+  }
+  if (!brand || !model) {
+    throw new Error('Marka i model sa wymagane.');
   }
 
-  return {
-    userId,
-    userEmail: ui.uEmail.value.trim(),
-    tier: normalizeTier(ui.uTier.value),
-    status: normalizeSubscriptionStatus(ui.uStatus.value.trim()),
-    source: normalizeSubscriptionSource(ui.uSource.value.trim()),
-    startedAt: normalizeOptionalIso(ui.uStartedAt.value),
-    expiresAt: normalizeOptionalIso(ui.uExpiresAt.value),
-    renewsAt: normalizeOptionalIso(ui.uRenewsAt.value),
-    lastValidatedAt: normalizeOptionalIso(ui.uLastValidatedAt.value),
-    planVersion: Number.isFinite(Number(ui.uPlanVersion.value))
-      ? Math.max(1, Math.round(Number(ui.uPlanVersion.value)))
-      : 3,
+  const payload = {
+    id,
+    type,
+    brand,
+    model,
+    source: normalizeEquipmentSource(ui.eSource.value),
   };
+
+  const tankMinLiters = toOptionalNumber(ui.eTankMinLiters.value);
+  const tankMaxLiters = toOptionalNumber(ui.eTankMaxLiters.value);
+  if (tankMinLiters !== null) payload.tankMinLiters = tankMinLiters;
+  if (tankMaxLiters !== null) payload.tankMaxLiters = tankMaxLiters;
+  if (tankMinLiters !== null && tankMaxLiters !== null && tankMinLiters > tankMaxLiters) {
+    throw new Error('Zakres litrazu: min musi byc <= max.');
+  }
+
+  if (type === 'heater') {
+    const powerW = asNumber(ui.ePowerW.value, 'Moc (W)', { integer: true });
+    if (powerW <= 0) {
+      throw new Error('Moc grzalki musi byc > 0.');
+    }
+    payload.powerW = powerW;
+    payload.flowLh = null;
+    payload.lumens = null;
+    payload.filterType = '';
+    payload.filterEfficiencyFactor = null;
+  }
+
+  if (type === 'filter') {
+    const flowLh = asNumber(ui.eFlowLh.value, 'Przeplyw (L/h)', { integer: true });
+    if (flowLh <= 0) {
+      throw new Error('Przeplyw filtra musi byc > 0.');
+    }
+    const filterType = normalizeEquipmentFilterType(ui.eFilterType.value);
+    payload.flowLh = flowLh;
+    payload.filterType = filterType;
+    payload.filterEfficiencyFactor = getFilterEfficiencyFactorByType(filterType);
+    payload.powerW = null;
+    payload.lumens = null;
+  }
+
+  if (type === 'light') {
+    const lumens = asNumber(ui.eLumens.value, 'Lumeny', { integer: true });
+    if (lumens <= 0) {
+      throw new Error('Lumeny lampy musza byc > 0.');
+    }
+    payload.lumens = lumens;
+    payload.powerW = null;
+    payload.flowLh = null;
+    payload.filterType = '';
+    payload.filterEfficiencyFactor = null;
+  }
+
+  return payload;
 }
 
 function readConfigFromInputs() {
@@ -1588,6 +1707,24 @@ function resolveBestImageUrl(item) {
   ).trim();
 }
 
+function matchesImageFilter(item, mode) {
+  const normalizedMode = String(mode ?? 'all').trim().toLowerCase();
+  if (normalizedMode === 'all') {
+    return true;
+  }
+
+  const hasImage = resolveBestImageUrl(item).length > 0;
+  if (normalizedMode === 'missing') {
+    return !hasImage;
+  }
+
+  if (normalizedMode === 'with') {
+    return hasImage;
+  }
+
+  return true;
+}
+
 function openImageLink(url) {
   const normalized = String(url ?? '').trim();
   if (!normalized) {
@@ -1618,6 +1755,10 @@ function splitByComma(value) {
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function normalizeDecimalInput(value) {
+  return String(value ?? '').trim().replace(',', '.');
 }
 
 function asNumber(value, label, options = {}) {
@@ -1676,42 +1817,65 @@ function normalizeSeverity(value) {
   return allowed.has(normalized) ? normalized : 'medium';
 }
 
-function normalizeTier(value) {
+function normalizeEquipmentType(value) {
   const normalized = String(value ?? '').trim().toLowerCase();
-  if (normalized === 'premium' || normalized === 'pro') {
-    return normalized;
-  }
-  return 'free';
+  const allowed = new Set(['filter', 'heater', 'light']);
+  return allowed.has(normalized) ? normalized : 'filter';
 }
 
-function normalizeSubscriptionStatus(value) {
+function normalizeEquipmentFilterType(value) {
   const normalized = String(value ?? '').trim().toLowerCase();
-  const allowed = new Set(['active', 'inactive', 'grace_period', 'paused', 'cancelled']);
-  return allowed.has(normalized) ? normalized : 'active';
+  const allowed = new Set(['internal', 'cascade', 'canister', 'sponge', 'sump_panel']);
+  return allowed.has(normalized) ? normalized : '';
 }
 
-function normalizeSubscriptionSource(value) {
+function normalizeEquipmentSource(value) {
   const normalized = String(value ?? '').trim().toLowerCase();
-  const allowed = new Set(['system', 'local', 'app_store', 'play_store', 'stripe', 'promo', 'admin']);
-  return allowed.has(normalized) ? normalized : 'admin';
+  const allowed = new Set(['catalog', 'manual', 'imported']);
+  return allowed.has(normalized) ? normalized : 'catalog';
 }
 
-function normalizeOptionalIso(value) {
-  const raw = String(value ?? '').trim();
-  if (!raw) {
+function getFilterEfficiencyFactorByType(filterType) {
+  const map = {
+    internal: 0.7,
+    cascade: 0.65,
+    canister: 0.55,
+    sponge: 0.5,
+    sump_panel: 0.7,
+  };
+  return Number.isFinite(Number(map[filterType])) ? Number(map[filterType]) : null;
+}
+
+function toOptionalNumber(raw) {
+  const text = String(raw ?? '').trim();
+  if (!text) {
     return null;
   }
-
-  const time = Date.parse(raw);
-  if (!Number.isFinite(time)) {
-    throw new Error(`Niepoprawna data ISO: ${raw}`);
+  const numeric = Number(text);
+  if (!Number.isFinite(numeric)) {
+    throw new Error(`Pole liczbowe ma niepoprawna wartosc: ${text}`);
   }
+  return numeric;
+}
 
-  return new Date(time).toISOString();
+function getEquipmentTypeLabel(type) {
+  const normalized = String(type ?? '').trim().toLowerCase();
+  if (normalized === 'filter') return 'Filtr';
+  if (normalized === 'heater') return 'Grzalka';
+  if (normalized === 'light') return 'Lampa';
+  return normalized || '-';
 }
 
 function sortByCommonName(a, b) {
   return String(a.commonName || '').localeCompare(String(b.commonName || ''), 'pl');
+}
+
+function sortByEquipment(a, b) {
+  const typeCmp = String(a.type || '').localeCompare(String(b.type || ''), 'pl');
+  if (typeCmp !== 0) return typeCmp;
+  const brandCmp = String(a.brand || '').localeCompare(String(b.brand || ''), 'pl');
+  if (brandCmp !== 0) return brandCmp;
+  return String(a.model || '').localeCompare(String(b.model || ''), 'pl');
 }
 
 function sortByAlgae(a, b) {

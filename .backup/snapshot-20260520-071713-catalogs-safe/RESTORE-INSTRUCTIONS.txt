@@ -1,0 +1,4 @@
+﻿Aby odtworzyc:
+1. Otworz ten katalog backupu.
+2. Skopiuj pliki/foldery do katalogu glownego projektu i nadpisz.
+3. (Opcjonalnie) uruchom sync do Firebase dla katalogu sprzetu.

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /* eslint-disable no-console */
 const path = require('node:path');
+const fs = require('node:fs');
 const { pathToFileURL } = require('node:url');
 const admin = require('firebase-admin');
 
@@ -16,11 +17,14 @@ function parseFlags(argv) {
   return flags;
 }
 
-function assertEnv() {
-  if (!process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-    throw new Error(
-      'Ustaw GOOGLE_APPLICATION_CREDENTIALS na sciezke do service account JSON.'
-    );
+function resolveProjectIdFromFirebaserc() {
+  try {
+    const firebasercPath = path.join(__dirname, '..', '.firebaserc');
+    const raw = fs.readFileSync(firebasercPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    return String(parsed?.projects?.default ?? '').trim();
+  } catch {
+    return '';
   }
 }
 
@@ -134,13 +138,13 @@ async function syncFishDiseaseCatalog({ db, records, dryRun, prune }) {
 
 async function main() {
   const flags = parseFlags(process.argv.slice(2));
-  assertEnv();
 
   const repoRoot = path.resolve(__dirname, '..');
   const projectId =
     process.env.FIREBASE_PROJECT_ID ||
     process.env.GCLOUD_PROJECT ||
-    process.env.GOOGLE_CLOUD_PROJECT;
+    process.env.GOOGLE_CLOUD_PROJECT ||
+    resolveProjectIdFromFirebaserc();
 
   admin.initializeApp({
     credential: admin.credential.applicationDefault(),
@@ -173,4 +177,3 @@ main().catch((error) => {
   console.error('sync-fish-disease-catalog failed:', error.message);
   process.exitCode = 1;
 });
-

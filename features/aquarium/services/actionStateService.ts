@@ -80,16 +80,11 @@ export function buildNextMaintenanceActionState(params?: {
   latestMeasurementDayBucketMs?: number;
   now?: Date;
 }): { nextState: MaintenanceActionState; actionStateKey: string } | null {
-  const safeParams =
-    params && typeof params === 'object'
-      ? params
-      : ({ currentState: {}, action: null, mode: 'done' } as const);
-  const {
-    action,
-    mode,
-    latestMeasurementDayBucketMs = 0,
-    now = new Date(),
-  } = safeParams;
+  const safeParams = params && typeof params === 'object' ? params : null;
+  const action = safeParams?.action ?? null;
+  const mode: MaintenanceActionMode = safeParams?.mode ?? 'done';
+  const latestMeasurementDayBucketMs = Number(safeParams?.latestMeasurementDayBucketMs ?? 0);
+  const now = safeParams?.now ?? new Date();
   const actionStateKey = String(action?.stateKey ?? '').trim().toLowerCase();
   const actionStateKeys = Array.isArray(action?.stateKeys)
     ? action.stateKeys
@@ -109,7 +104,7 @@ export function buildNextMaintenanceActionState(params?: {
       ? Number(action?.sourceDueDayBucketMs)
       : nowDayBucketMs;
 
-  const normalized = normalizeMaintenanceActionState(safeParams.currentState);
+  const normalized = normalizeMaintenanceActionState(safeParams?.currentState);
   const nextState: MaintenanceActionState = {
     ...normalized,
   };

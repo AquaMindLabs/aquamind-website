@@ -1,0 +1,8 @@
+﻿data/equipmentCatalog.js
+data/diseaseCatalog.js
+data/plantDiseaseCatalog.js
+data/algaeCatalog.js
+scripts/sync-equipment-catalog.cjs
+scripts/sync-equipment-filter-types.cjs
+package.json
+.firebaserc

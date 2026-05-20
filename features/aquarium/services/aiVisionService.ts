@@ -83,7 +83,7 @@ function isAbortError(error: unknown): boolean {
 
 function createRetryableVisionError(
   message: string,
-  code = AI_DIAGNOSTIC_CODES.INTERNAL,
+  code: string = AI_DIAGNOSTIC_CODES.INTERNAL,
   status?: number
 ) {
   return new AiChatRequestError(message, code, true, status);

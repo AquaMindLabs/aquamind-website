@@ -9,8 +9,9 @@ Panel admina jako osobny web, niezalezny od aplikacji mobilnej.
 - przeglad i edycja `fishCatalog`
 - przeglad i edycja `plantCatalog`
 - przeglad i edycja `algaeCatalog`
+- przeglad i edycja `fishDiseaseCatalog`
+- przeglad i edycja `plantDiseaseCatalog`
 - sekcja sugestii brakow z `fishCatalogRequests` i `plantCatalogRequests`
-- sekcja `Uzytkownicy i plany` oparta o `userSubscriptions`
 - lista wszystkich pol katalogowych wykorzystywanych przez aplikacje (ryby/rosliny)
 - wyszukiwanie, dodawanie, edycja, usuwanie wpisow
 - stronicowanie list (20 wpisow na strone)
@@ -36,4 +37,3 @@ Nastepnie wejdz na `http://localhost:3000/admin/`.
 - Priorytet configu: `admin/firebase-config.local.js` -> `localStorage` -> reczne wpisanie w formularzu.
 - Uprawnienia zapisu do katalogow wynikaja z `firestore.rules` (`isAdmin()`).
 - Dane Firebase do panelu sa pobrane z `.env` (`EXPO_PUBLIC_FIREBASE_*`).
-- Sekcja subskrypcji czyta i zapisuje kolekcje `userSubscriptions` (admin-only).

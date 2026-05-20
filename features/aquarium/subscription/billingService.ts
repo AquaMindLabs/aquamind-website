@@ -681,27 +681,27 @@ export async function purchaseSubscriptionByProductId(
     matchingPackage = findOfferingPackageByProductId(offerings, normalizedProductId);
   }
 
-  const purchaseResult =
-    matchingPackage && purchasePackage
-      ? await withRetry(
-          () =>
-            purchasePackage(
-              matchingPackage as OfferingPackageLike,
-              null,
-              googleProductChangeInfo
-            ),
-          1
-        )
-      : await withRetry(
-          () =>
-            purchaseProduct?.(
-              normalizedProductId,
-              googleProductChangeInfo
-                ? { oldSKU: googleProductChangeInfo.oldProductIdentifier }
-                : null
-            ),
-          1
+  const purchaseResult = matchingPackage && purchasePackage
+    ? await withRetry(
+        () =>
+          purchasePackage(
+            matchingPackage as OfferingPackageLike,
+            null,
+            googleProductChangeInfo
+          ),
+        1
+      )
+    : await withRetry(() => {
+        if (!purchaseProduct) {
+          throw new Error('billing_sdk_unavailable');
+        }
+        return purchaseProduct(
+          normalizedProductId,
+          googleProductChangeInfo
+            ? { oldSKU: googleProductChangeInfo.oldProductIdentifier }
+            : null
         );
+      }, 1);
   const customerInfo =
     (purchaseResult as { customerInfo?: CustomerInfoLike })?.customerInfo ??
     (await getCustomerInfo());

@@ -1,0 +1,17 @@
+﻿app/index.js
+constants/translations.js
+data/algaeCatalog.js
+data/diseaseCatalog.js
+data/fishCatalogStarter.js
+data/plantCatalogExpanded.js
+data/plantCatalogStarter.js
+data/plantDiseaseCatalog.js
+features/aquarium/components/AiAssistantPanel.tsx
+features/aquarium/hooks/useReviewSectionInsights.ts
+features/aquarium/sections/FishSectionHelpers.ts
+features/aquarium/sections/ReviewSectionHelpers.ts
+features/aquarium/services/emergencyService.js
+features/aquarium/services/stockingCompatibilityService.js
+features/aquarium/services/tasksService.js
+features/aquarium/subscription/subscriptionModel.ts
+scripts/fix-polish-user-texts.cjs

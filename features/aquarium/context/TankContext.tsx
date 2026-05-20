@@ -52,7 +52,7 @@ import {
 } from '@/shared/services/observability';
 
 type ThemeMode = 'dark' | 'light';
-type AppLanguage = 'pl' | 'en' | 'de';
+type AppLanguage = 'pl';
 type SectionEntrySource = 'menu' | 'internal';
 
 export type EnabledTests = {
@@ -338,6 +338,7 @@ export function TankProvider({ children }: TankProviderProps) {
           return {
             ...prev,
             ...parsed,
+            language: 'pl',
             enabledTests: {
               ...DEFAULT_ENABLED_TESTS,
               ...prev.enabledTests,
@@ -404,7 +405,7 @@ export function TankProvider({ children }: TankProviderProps) {
             return prev;
           }
 
-          const nextState = {
+          const nextState: AppSettings = {
             ...prev,
             subscription: guestSubscription,
           };
@@ -460,7 +461,7 @@ export function TankProvider({ children }: TankProviderProps) {
               return prev;
             }
 
-            const nextState = {
+            const nextState: AppSettings = {
               ...prev,
               subscription: subscriptionFromFirestore,
             };
@@ -514,9 +515,10 @@ export function TankProvider({ children }: TankProviderProps) {
         normalizeSubscriptionState(nextPatch?.subscription ?? prev.subscription)
       );
 
-      const nextState = {
+      const nextState: AppSettings = {
         ...prev,
         ...nextPatch,
+        language: 'pl',
         enabledTests: {
           ...DEFAULT_ENABLED_TESTS,
           ...prev.enabledTests,
@@ -623,6 +625,24 @@ export function TankProvider({ children }: TankProviderProps) {
     [updateSubscription]
   );
 
+  const getStoreProductIdForTier = useCallback((tier: SubscriptionTier) => {
+    const platform =
+      Platform.OS === 'ios'
+        ? 'ios'
+        : Platform.OS === 'android'
+          ? 'android'
+          : null;
+
+    if (!platform) {
+      return null;
+    }
+
+    return getSubscriptionStoreProductId(
+      tier,
+      platform as SubscriptionStorePlatform
+    );
+  }, []);
+
   useEffect(() => {
     if (!billingEnabled) {
       return;
@@ -709,27 +729,6 @@ export function TankProvider({ children }: TankProviderProps) {
 
   const canManageSubscriptionManually =
     LOCAL_PLAN_SIMULATION_ENABLED || ADMIN_PLAN_OVERRIDE_ENABLED;
-
-  const getStoreProductIdForTier = useCallback(
-    (tier: SubscriptionTier) => {
-      const platform =
-        Platform.OS === 'ios'
-          ? 'ios'
-          : Platform.OS === 'android'
-            ? 'android'
-            : null;
-
-      if (!platform) {
-        return null;
-      }
-
-      return getSubscriptionStoreProductId(
-        tier,
-        platform as SubscriptionStorePlatform
-      );
-    },
-    []
-  );
 
   const refreshSubscriptionFromBilling = useCallback(async () => {
     if (!billingEnabled) {

@@ -1,0 +1,4 @@
+﻿Snapshot time: 2026-05-20 07:17:13 +02:00
+Workspace: C:\Users\mikee\aquarium-mobile
+Git HEAD: d72c20e3ad66cd9c2d025ed724947e353d910f27
+Files copied: 8
