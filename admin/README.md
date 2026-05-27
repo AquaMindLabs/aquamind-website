@@ -37,3 +37,8 @@ Nastepnie wejdz na `http://localhost:3000/admin/`.
 - Priorytet configu: `admin/firebase-config.local.js` -> `localStorage` -> reczne wpisanie w formularzu.
 - Uprawnienia zapisu do katalogow wynikaja z `firestore.rules` (`isAdmin()`).
 - Dane Firebase do panelu sa pobrane z `.env` (`EXPO_PUBLIC_FIREBASE_*`).
+- Synchronizacja katalogow:
+  - `npm run sync:catalog` = bez kasowania wpisow.
+  - `npm run sync:catalog:prune` = kasuje wpisy nieobecne w seedzie (uzywaj tylko swiadomie; komenda wymaga tokenu potwierdzajacego).
+- Kasowanie wpisow ryb/roslin w panelu:
+  - po kliknieciu `Usun` wymagane jest dodatkowe wpisanie `USUN`.

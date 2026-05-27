@@ -1,0 +1,9 @@
+Typ|Opis
+Założenie|Kolumna Plus odpowiada planowi premium w kodzie aplikacji.
+Założenie|Kolumna AI Pro odpowiada planowi pro w kodzie aplikacji.
+Założenie|Nazwy funkcji są opisane językiem użytkownika, nie nazwami metod ani komponentów.
+Źródło|features/aquarium/subscription/subscriptionModel.ts
+Źródło|features/aquarium/subscription/aiGating.js
+Źródło|docs/product-completeness-and-gap-report.md
+Uwaga|Wiersze typu „Tak” oznaczają funkcję obecną bez dodatkowej bramki planu.
+Uwaga|Wiersze diagnostyczne i telemetria są elementami stabilności aplikacji, a nie funkcjami sprzedażowymi.

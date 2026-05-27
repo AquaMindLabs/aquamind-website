@@ -208,8 +208,8 @@ const EXTRA_INLINE_TRANSLATIONS = {
     'Uzupelnij minimalne i maksymalne zakresy dla parametrów.':
       'Fill in minimum and maximum ranges for parameters.',
     'W planie': 'In plan',
-    'W planie Free możesz aktywnie prowadzić 1 akwarium. Pozostałe akwaria są bezpiecznie zapisane i odblokują się po powrocie do Premium.':
-      'In the Free plan you can actively manage 1 aquarium. Other aquariums are safely saved and unlock when you return to Premium.',
+    'W planie Free możesz aktywnie prowadzić 1 akwarium. Pozostałe akwaria są bezpiecznie zapisane i odblokują się po przejściu na Plus.':
+      'In the Free plan you can actively manage 1 aquarium. Other aquariums are safely saved and unlock when you switch to Plus.',
     'W ustawieniach wybierz pola, które chcesz widziec w formularzu pomiarów.':
       'In settings, choose the fields you want to see in the measurement form.',
     'Widoczne pola z ustawień (zalecane):': 'Visible fields from settings (recommended):',
@@ -497,8 +497,8 @@ const EXTRA_INLINE_TRANSLATIONS = {
     'Uzupelnij minimalne i maksymalne zakresy dla parametrów.':
       'Ergänze Mindest- und Maximalbereiche für Parameter.',
     'W planie': 'Im Plan',
-    'W planie Free możesz aktywnie prowadzić 1 akwarium. Pozostałe akwaria są bezpiecznie zapisane i odblokują się po powrocie do Premium.':
-      'Im Free-Plan kannst du 1 Aquarium aktiv führen. Weitere Aquarien bleiben sicher gespeichert und werden bei Rückkehr zu Premium freigeschaltet.',
+    'W planie Free możesz aktywnie prowadzić 1 akwarium. Pozostałe akwaria są bezpiecznie zapisane i odblokują się po przejściu na Plus.':
+      'Im Free-Plan kannst du 1 Aquarium aktiv führen. Weitere Aquarien bleiben sicher gespeichert und werden beim Wechsel zu Plus freigeschaltet.',
     'W ustawieniach wybierz pola, które chcesz widziec w formularzu pomiarów.':
       'Wähle in den Einstellungen die Felder, die du im Messformular sehen möchtest.',
     'Widoczne pola z ustawień (zalecane):': 'Sichtbare Felder aus den Einstellungen (empfohlen):',

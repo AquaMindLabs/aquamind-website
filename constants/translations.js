@@ -70,7 +70,7 @@ export const TRANSLATIONS = {
       'Test jest przeterminowany - wykonaj pomiar jak najszybciej.',
     actionCalendarWaterTestScheduledDetails:
       'Termin testu wyliczony na podstawie historii pomiarów.',
-    aiAssistantLockedPro: 'Asystent AI jest dostępny w planie Pro.',
+    aiAssistantLockedPro: 'Asystent AI jest dostępny w planie AI Pro.',
     aiAssistantUpgradePrompt:
       'Asystent AI Pro odblokowuje interpretację parametrów, analizę problemów, analizę zdjęć i plan działań krok po kroku.',
     settingsTheme: 'Motyw',
@@ -127,19 +127,19 @@ export const TRANSLATIONS = {
     settingsSubscriptionTierFreeDescription:
       'Podstawowe prowadzenie jednego akwarium.',
     settingsSubscriptionTierPremiumDescription:
-      "Pelna analiza akwarium, obsady, sprzętu i problemów.",
+      'Plus: dokładne prowadzenie akwarium bez AI - pełne pomiary, historia, wykresy i automatyczne zadania.',
     settingsSubscriptionTierProDescription:
-      'Zaawansowany asystent z planem dzialania krok po kroku.',
+      'AI Pro: interpretacja parametrów, analiza zdjęć, smart plan i rekomendacje krok po kroku.',
     settingsSubscriptionCurrentBadge: 'Aktualny',
     trendDirectionUp: 'Trend rosnacy',
     trendDirectionDown: 'Trend spadkowy',
     trendDirectionStable: 'Trend stabilny',
     trendDirectionNeutral: 'Trend neutralny',
     subscriptionChartsLocked:
-      "Wykresy parametrów są dostępne od planu Premium.",
+      "Wykresy parametrów są dostępne od planu Plus.",
     chartAccessLevelFree: 'Plan Free: wykresy niedostępne.',
-    chartAccessLevelPremium: 'Plan Premium: wykresy podstawowe.',
-    chartAccessLevelPro: 'Plan Pro: wykresy zaawansowane.',
+    chartAccessLevelPremium: 'Plus: wykres liniowy parametrów.',
+    chartAccessLevelPro: 'AI Pro: wykres + średnia, liczba pomiarów, zmiana i trendy.',
     historyAiExplainButton: 'Wyjasnij pomiary z AI',
     historyAiLoading: 'AI analizuje...',
     historyAiRetry: 'Spróbuj ponownie',
@@ -161,29 +161,29 @@ export const TRANSLATIONS = {
     historyAiErrorUnexpected:
       'Nie udało się przeanalizowac historii pomiarow. Spróbuj ponownie.',
     subscriptionAlertsSimple: 'Plan Free: alerty proste.',
-    subscriptionAlertsExtended: 'Plan Premium: alerty rozszerzone.',
-    subscriptionAlertsSmart: 'Plan Pro: alerty inteligentne.',
+    subscriptionAlertsExtended: 'Plus: alerty rozszerzone.',
+    subscriptionAlertsSmart: 'AI Pro: alerty smart.',
     subscriptionAlertsExtendedLocked:
-      "Rozszerzone alerty są dostępne od planu Premium.",
+      "Rozszerzone alerty są dostępne od planu Plus.",
     subscriptionTasksLocked:
-      "Przypomnienia i taski są dostępne od planu Premium.",
-    subscriptionTasksReminders: 'Plan Premium: przypomnienia.',
-    subscriptionTasksChecklists: 'Plan Pro: checklisty i plan dzialan.',
+      "Automatyczne przypomnienia są dostępne od planu Plus.",
+    subscriptionTasksReminders: 'Plus: automatyczne przypomnienia.',
+    subscriptionTasksChecklists: 'AI Pro: smart plan i checklisty.',
     subscriptionTasksPlanLocked:
-      "Checklisty i plan dzialan są dostępne w planie Pro.",
+      "Smart plan i checklisty są dostępne w planie AI Pro.",
     nextReminder: 'Najbliższe przypomnienie',
-    subscriptionEquipmentLocked: 'Sprzęt jest dostępny od planu Premium.',
+    subscriptionEquipmentLocked: 'Zarządzanie sprzętem jest dostępne w aktywnym planie.',
     subscriptionEquipmentAnalysisLocked:
-      "Analiza i rekomendacje sprzętu są dostępne w planie Pro.",
+      "Pełna ocena sprzętu jest dostępna w Plus, a rekomendacje zmian w AI Pro.",
     equipmentSavedStatus: 'Zapisany model',
     equipmentNoSavedStatus: 'Brak zapisanego sprzętu',
     equipmentNoSavedDetails: 'Nie wybrano jeszcze modelu dla tego akwarium.',
     subscriptionRecommendationsLocked:
-      "Rekomendacje są dostępne od planu Premium.",
+      "Rekomendacje krok po kroku są dostępne w AI Pro.",
     subscriptionRecommendationsGuided:
-      'Plan Pro: rekomendacje krok po kroku.',
+      'AI Pro: rekomendacje krok po kroku.',
     subscriptionRecommendationsGuidedLocked:
-      "Rekomendacje krok po kroku są dostępne w planie Pro.",
+      "Rekomendacje krok po kroku są dostępne w AI Pro.",
     guidedRecommendationPlanTitle: 'Plan krok po kroku',
     chartMetricPoints: 'Punkty',
     chartMetricAverage: 'Srednia',
@@ -194,7 +194,7 @@ export const TRANSLATIONS = {
       'Parametr {parameter} jest dostępny od planu {plan}.',
     subscriptionParameterLockedShort: 'Dostepne od planu {plan}.',
     subscriptionParameterAnalysisLocked:
-      'Szczegolowa analiza parametrów jest dostepna od planu Premium.',
+      'Szczegółowa analiza parametrów jest dostępna od planu Plus.',
     subscriptionHistoryLimitUsage:
       'Historia w planie {plan}: pokazujemy ostatnie {limit} wpisow z {current}.',
     subscriptionHistoryLimitUsageUnlimited:
@@ -208,7 +208,7 @@ export const TRANSLATIONS = {
     subscriptionHistoryUpgradeHint:
       'Aby zobaczyc pelna historie, zmień plan na wyzszy.',
     subscriptionHistoryTrendsLocked:
-      "Trendy historii i sugestie na podstawie historii są dostępne w planie Pro.",
+      "Zaawansowane trendy i sugestie na podstawie historii są dostępne w AI Pro.",
     subscriptionTankLimitUsage: 'Plan {plan}: {current}/{limit} akwariow.',
     subscriptionTankLimitUsageUnlimited:
       'Plan {plan}: {current} akwariow. Brak limitu.',
@@ -604,7 +604,7 @@ export const TRANSLATIONS = {
       'This test is overdue - measure it as soon as possible.',
     actionCalendarWaterTestScheduledDetails:
       'The test date was calculated from measurement history.',
-    aiAssistantLockedPro: 'AI Assistant is available in the Pro plan.',
+    aiAssistantLockedPro: 'AI Assistant is available in AI Pro.',
     aiAssistantUpgradePrompt:
       'AI Assistant Pro unlocks parameter interpretation, issue analysis, photo analysis, and a step-by-step action plan.',
     settingsTheme: 'Theme',
@@ -661,19 +661,19 @@ export const TRANSLATIONS = {
     settingsSubscriptionTierFreeDescription:
       'Basic care for one aquarium.',
     settingsSubscriptionTierPremiumDescription:
-      'Full aquarium, stocking, equipment, and issue analysis.',
+      'Plus: precise aquarium management without AI - full measurements, history, charts, and automatic tasks.',
     settingsSubscriptionTierProDescription:
-      'Advanced assistant with a step-by-step action plan.',
+      'AI Pro: parameter interpretation, photo analysis, smart plan, and step-by-step recommendations.',
     settingsSubscriptionCurrentBadge: 'Current',
     trendDirectionUp: 'Rising trend',
     trendDirectionDown: 'Falling trend',
     trendDirectionStable: 'Stable trend',
     trendDirectionNeutral: 'Neutral trend',
     subscriptionChartsLocked:
-      'Parameter charts are available from the Premium plan.',
+      'Parameter charts are available from the Plus plan.',
     chartAccessLevelFree: 'Free plan: charts unavailable.',
-    chartAccessLevelPremium: 'Premium plan: basic charts.',
-    chartAccessLevelPro: 'Pro plan: advanced charts.',
+    chartAccessLevelPremium: 'Plus: parameter line chart.',
+    chartAccessLevelPro: 'AI Pro: chart with average, point count, change, and trends.',
     historyAiExplainButton: 'Explain measurements with AI',
     historyAiLoading: 'AI is analyzing...',
     historyAiRetry: 'Try again',
@@ -695,29 +695,29 @@ export const TRANSLATIONS = {
     historyAiErrorUnexpected:
       'Could not analyze measurement history. Please try again.',
     subscriptionAlertsSimple: 'Free plan: simple alerts.',
-    subscriptionAlertsExtended: 'Premium plan: extended alerts.',
-    subscriptionAlertsSmart: 'Pro plan: smart alerts.',
+    subscriptionAlertsExtended: 'Plus: extended alerts.',
+    subscriptionAlertsSmart: 'AI Pro: smart alerts.',
     subscriptionAlertsExtendedLocked:
-      'Extended alerts are available from the Premium plan.',
+      'Extended alerts are available from the Plus plan.',
     subscriptionTasksLocked:
-      'Reminders and tasks are available from the Premium plan.',
-    subscriptionTasksReminders: 'Premium plan: reminders.',
-    subscriptionTasksChecklists: 'Pro plan: checklists and action plan.',
+      'Automatic reminders are available from the Plus plan.',
+    subscriptionTasksReminders: 'Plus: automatic reminders.',
+    subscriptionTasksChecklists: 'AI Pro: smart plan and checklists.',
     subscriptionTasksPlanLocked:
-      'Checklists and the action plan are available in the Pro plan.',
+      'Smart plan and checklists are available in AI Pro.',
     nextReminder: 'Next reminder',
-    subscriptionEquipmentLocked: 'Equipment is available from the Premium plan.',
+    subscriptionEquipmentLocked: 'Equipment management is available in an active plan.',
     subscriptionEquipmentAnalysisLocked:
-      'Equipment analysis and recommendations are available in the Pro plan.',
+      'Full equipment assessment is available in Plus, and change recommendations in AI Pro.',
     equipmentSavedStatus: 'Saved model',
     equipmentNoSavedStatus: 'No saved equipment',
     equipmentNoSavedDetails: 'No model has been selected for this tank yet.',
     subscriptionRecommendationsLocked:
-      'Recommendations are available from the Premium plan.',
+      'Step-by-step recommendations are available in AI Pro.',
     subscriptionRecommendationsGuided:
-      'Pro plan: step-by-step recommendations.',
+      'AI Pro: step-by-step recommendations.',
     subscriptionRecommendationsGuidedLocked:
-      'Step-by-step recommendations are available in the Pro plan.',
+      'Step-by-step recommendations are available in AI Pro.',
     guidedRecommendationPlanTitle: 'Step-by-step plan',
     chartMetricPoints: 'Points',
     chartMetricAverage: 'Average',
@@ -728,7 +728,7 @@ export const TRANSLATIONS = {
       'The {parameter} parameter is available from the {plan} plan.',
     subscriptionParameterLockedShort: 'Available from the {plan} plan.',
     subscriptionParameterAnalysisLocked:
-      'Detailed parameter analysis is available from the Premium plan.',
+      'Detailed parameter analysis is available from the Plus plan.',
     subscriptionHistoryLimitUsage:
       'History in the {plan} plan: showing the latest {limit} of {current} entries.',
     subscriptionHistoryLimitUsageUnlimited:
@@ -742,7 +742,7 @@ export const TRANSLATIONS = {
     subscriptionHistoryUpgradeHint:
       'To see full history, switch to a higher plan.',
     subscriptionHistoryTrendsLocked:
-      'History trends and history-based suggestions are available in the Pro plan.',
+      'Advanced history trends and history-based suggestions are available in AI Pro.',
     subscriptionTankLimitUsage: 'Plan {plan}: {current}/{limit} tanks.',
     subscriptionTankLimitUsageUnlimited:
       'Plan {plan}: {current} tanks. No limit.',
@@ -1136,7 +1136,7 @@ export const TRANSLATIONS = {
       'Dieser Test ist überfällig - bitte so bald wie möglich messen.',
     actionCalendarWaterTestScheduledDetails:
       'Der Testtermin wurde aus dem Messverlauf berechnet.',
-    aiAssistantLockedPro: 'Der KI-Assistent ist im Pro-Plan verfügbar.',
+    aiAssistantLockedPro: 'Der KI-Assistent ist in AI Pro verfügbar.',
     aiAssistantUpgradePrompt:
       'Der KI-Assistent Pro schaltet Parameterinterpretation, Problemanalyse, Fotoanalyse und einen Schritt-für-Schritt-Aktionsplan frei.',
     settingsTheme: 'Design',
@@ -1193,19 +1193,19 @@ export const TRANSLATIONS = {
     settingsSubscriptionTierFreeDescription:
       'Grundlegende Pflege fur ein Aquarium.',
     settingsSubscriptionTierPremiumDescription:
-      'Vollstandige Analyse von Aquarium, Besatz, Technik und Problemen.',
+      'Plus: genaue Aquarienpflege ohne KI - volle Messwerte, Verlauf, Diagramme und automatische Aufgaben.',
     settingsSubscriptionTierProDescription:
-      'Fortgeschrittener Assistent mit Schritt-fur-Schritt-Plan.',
+      'AI Pro: Parameterinterpretation, Fotoanalyse, Smart-Plan und Schritt-fuer-Schritt-Empfehlungen.',
     settingsSubscriptionCurrentBadge: 'Aktiv',
     trendDirectionUp: 'Steigender Trend',
     trendDirectionDown: 'Fallender Trend',
     trendDirectionStable: 'Stabiler Trend',
     trendDirectionNeutral: 'Neutraler Trend',
     subscriptionChartsLocked:
-      'Parameterdiagramme sind ab dem Premium-Plan verfugbar.',
+      'Parameterdiagramme sind ab dem Plus-Plan verfugbar.',
     chartAccessLevelFree: 'Free-Plan: keine Diagramme.',
-    chartAccessLevelPremium: 'Premium-Plan: Basisdiagramme.',
-    chartAccessLevelPro: 'Pro-Plan: erweiterte Diagramme.',
+    chartAccessLevelPremium: 'Plus: Liniendiagramm der Parameter.',
+    chartAccessLevelPro: 'AI Pro: Diagramm mit Durchschnitt, Anzahl der Messungen, Aenderung und Trends.',
     historyAiExplainButton: 'Messwerte mit KI erklaren',
     historyAiLoading: 'KI analysiert...',
     historyAiRetry: 'Erneut versuchen',
@@ -1228,32 +1228,32 @@ export const TRANSLATIONS = {
     historyAiErrorUnexpected:
       'Die Messhistorie konnte nicht analysiert werden. Bitte erneut versuchen.',
     subscriptionAlertsSimple: 'Free-Plan: einfache Warnungen.',
-    subscriptionAlertsExtended: 'Premium-Plan: erweiterte Warnungen.',
-    subscriptionAlertsSmart: 'Pro-Plan: intelligente Warnungen.',
+    subscriptionAlertsExtended: 'Plus: erweiterte Warnungen.',
+    subscriptionAlertsSmart: 'AI Pro: Smart-Warnungen.',
     subscriptionAlertsExtendedLocked:
-      'Erweiterte Warnungen sind ab dem Premium-Plan verfugbar.',
+      'Erweiterte Warnungen sind ab dem Plus-Plan verfugbar.',
     subscriptionTasksLocked:
-      'Erinnerungen und Aufgaben sind ab dem Premium-Plan verfugbar.',
-    subscriptionTasksReminders: 'Premium-Plan: Erinnerungen.',
+      'Automatische Erinnerungen sind ab dem Plus-Plan verfugbar.',
+    subscriptionTasksReminders: 'Plus: automatische Erinnerungen.',
     subscriptionTasksChecklists:
-      'Pro-Plan: Checklisten und Aktionsplan.',
+      'AI Pro: Smart-Plan und Checklisten.',
     subscriptionTasksPlanLocked:
-      'Checklisten und der Aktionsplan sind im Pro-Plan verfugbar.',
+      'Smart-Plan und Checklisten sind in AI Pro verfugbar.',
     nextReminder: 'Nachste Erinnerung',
     subscriptionEquipmentLocked:
-      'Ausrustung ist ab dem Premium-Plan verfugbar.',
+      'Geraeteverwaltung ist in einem aktiven Plan verfuegbar.',
     subscriptionEquipmentAnalysisLocked:
-      'Ausrustungsanalyse und Empfehlungen sind im Pro-Plan verfugbar.',
+      'Die vollstaendige Geraetebewertung ist in Plus verfuegbar, Aenderungsempfehlungen in AI Pro.',
     equipmentSavedStatus: 'Gespeichertes Modell',
     equipmentNoSavedStatus: 'Keine gespeicherte Ausrustung',
     equipmentNoSavedDetails:
       'Fur dieses Aquarium wurde noch kein Modell ausgewahlt.',
     subscriptionRecommendationsLocked:
-      'Empfehlungen sind ab dem Premium-Plan verfugbar.',
+      'Schritt-fuer-Schritt-Empfehlungen sind in AI Pro verfuegbar.',
     subscriptionRecommendationsGuided:
-      'Pro-Plan: Schritt-fur-Schritt-Empfehlungen.',
+      'AI Pro: Schritt-fuer-Schritt-Empfehlungen.',
     subscriptionRecommendationsGuidedLocked:
-      'Schritt-fur-Schritt-Empfehlungen sind im Pro-Plan verfugbar.',
+      'Schritt-fuer-Schritt-Empfehlungen sind in AI Pro verfuegbar.',
     guidedRecommendationPlanTitle: 'Schritt-fur-Schritt-Plan',
     chartMetricPoints: 'Punkte',
     chartMetricAverage: 'Durchschnitt',
@@ -1264,7 +1264,7 @@ export const TRANSLATIONS = {
       'Der Parameter {parameter} ist ab dem Plan {plan} verfugbar.',
     subscriptionParameterLockedShort: 'Verfugbar ab Plan {plan}.',
     subscriptionParameterAnalysisLocked:
-      'Die detaillierte Parameteranalyse ist ab dem Premium-Plan verfugbar.',
+      'Die detaillierte Parameteranalyse ist ab dem Plus-Plan verfuegbar.',
     subscriptionHistoryLimitUsage:
       'Verlauf im Plan {plan}: Die letzten {limit} von {current} Eintragen werden angezeigt.',
     subscriptionHistoryLimitUsageUnlimited:
@@ -1278,7 +1278,7 @@ export const TRANSLATIONS = {
     subscriptionHistoryUpgradeHint:
       'Um den vollen Verlauf zu sehen, wechsle auf einen hoheren Plan.',
     subscriptionHistoryTrendsLocked:
-      'Verlaufstrends und verlaufsbasierte Vorschlage sind im Pro-Plan verfugbar.',
+      'Erweiterte Verlaufstrends und verlaufsbasierte Vorschlaege sind in AI Pro verfuegbar.',
     subscriptionTankLimitUsage: 'Plan {plan}: {current}/{limit} Aquarien.',
     subscriptionTankLimitUsageUnlimited:
       'Plan {plan}: {current} Aquarien. Kein Limit.',

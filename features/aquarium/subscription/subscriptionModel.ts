@@ -69,8 +69,7 @@ export type SubscriptionCapabilityKey =
   | 'plantDiseaseDiagnosis'
   | 'automaticTasks'
   | 'smartActionPlan'
-  | 'aiAssistant'
-  | 'exportData';
+  | 'aiAssistant';
 
 export type SubscriptionCapabilities = {
   maxTanks: number | null;
@@ -86,7 +85,6 @@ export type SubscriptionCapabilities = {
   automaticTasks: boolean;
   smartActionPlan: SmartActionPlanAccess;
   aiAssistant: boolean;
-  exportData: boolean;
 };
 
 export type SubscriptionFeatureKey =
@@ -104,7 +102,6 @@ export type SubscriptionFeatureKey =
   | 'automatic_tasks'
   | 'smart_action_plan'
   | 'ai_assistant'
-  | 'export_data'
   | 'critical_alerts';
 
 export type SubscriptionLimitKey =
@@ -127,6 +124,7 @@ export type SubscriptionTaskAccess = 'none' | 'reminders' | 'checklists_and_plan
 export type SubscriptionEquipmentAccess =
   | 'none'
   | 'save'
+  | 'analysis'
   | 'analysis_and_recommendations';
 
 export type SubscriptionRecommendationAccess =
@@ -266,7 +264,7 @@ export const SUBSCRIPTION_FEATURE_CATALOG: SubscriptionFeatureDefinition[] = [
   {
     key: 'equipment_analysis',
     label: 'Equipment analysis',
-    description: 'Zaawansowana ocena sprzetu i rekomendacje.',
+    description: 'Pełna ocena sprzetu; rekomendacje zmian w AI Pro.',
   },
   {
     key: 'algae_diagnosis',
@@ -291,17 +289,12 @@ export const SUBSCRIPTION_FEATURE_CATALOG: SubscriptionFeatureDefinition[] = [
   {
     key: 'smart_action_plan',
     label: 'Smart action plan',
-    description: 'Plan co robic dzisiaj i plan naprawczy.',
+    description: 'Smart plan działania i rekomendacje krok po kroku.',
   },
   {
     key: 'ai_assistant',
     label: 'AI assistant',
     description: 'Asystent AI.',
-  },
-  {
-    key: 'export_data',
-    label: 'Export data',
-    description: 'Eksport danych.',
   },
   {
     key: 'critical_alerts',
@@ -351,9 +344,9 @@ export const SUBSCRIPTION_CAPABILITY_ROWS: SubscriptionCapabilityRow[] = [
     key: 'catalogs',
     label: 'Katalogi',
     values: {
-      free: 'podstawowe',
-      premium: 'pełne',
-      pro: 'pełne',
+      free: 'dostęp',
+      premium: 'dostęp',
+      pro: 'dostęp',
     },
   },
   {
@@ -398,7 +391,7 @@ export const SUBSCRIPTION_CAPABILITY_ROWS: SubscriptionCapabilityRow[] = [
     values: {
       free: 'reczne',
       premium: 'automatyczne',
-      pro: 'automatyczne',
+      pro: 'automatyczne + smart plan',
     },
   },
   {
@@ -406,8 +399,8 @@ export const SUBSCRIPTION_CAPABILITY_ROWS: SubscriptionCapabilityRow[] = [
     label: 'Trendy',
     values: {
       free: 'brak',
-      premium: 'podstawowe',
-      pro: 'zaawansowane',
+      premium: 'wykres liniowy',
+      pro: 'metryki + trendy',
     },
   },
   {
@@ -415,8 +408,8 @@ export const SUBSCRIPTION_CAPABILITY_ROWS: SubscriptionCapabilityRow[] = [
     label: 'Plan działania',
     values: {
       free: 'brak',
-      premium: 'zaawansowany',
-      pro: 'smart',
+      premium: 'brak smart planu',
+      pro: 'smart krok po kroku',
     },
   },
   {
@@ -445,7 +438,6 @@ const SUBSCRIPTION_PLAN_CAPABILITIES: Record<PlanId, SubscriptionCapabilities> =
     automaticTasks: false,
     smartActionPlan: false,
     aiAssistant: false,
-    exportData: false,
   },
   premium: {
     maxTanks: 3,
@@ -459,9 +451,8 @@ const SUBSCRIPTION_PLAN_CAPABILITIES: Record<PlanId, SubscriptionCapabilities> =
     fishDiseaseDiagnosis: 'diagnosis',
     plantDiseaseDiagnosis: 'diagnosis',
     automaticTasks: true,
-    smartActionPlan: 'advanced',
+    smartActionPlan: false,
     aiAssistant: false,
-    exportData: true,
   },
   pro: {
     maxTanks: null,
@@ -477,7 +468,6 @@ const SUBSCRIPTION_PLAN_CAPABILITIES: Record<PlanId, SubscriptionCapabilities> =
     automaticTasks: true,
     smartActionPlan: 'smart',
     aiAssistant: true,
-    exportData: true,
   },
 };
 
@@ -525,7 +515,7 @@ function buildEntitlementsForPlan(planId: PlanId): SubscriptionEntitlements {
       capabilities.equipmentAnalysis === 'advanced_with_recommendations'
         ? 'analysis_and_recommendations'
         : capabilities.equipmentAnalysis === 'advanced'
-          ? 'save'
+          ? 'analysis'
           : 'none',
     recommendationAccess:
       capabilities.smartActionPlan === 'smart'
@@ -582,9 +572,6 @@ function buildFeatureKeysForPlan(planId: PlanId): SubscriptionFeatureKey[] {
   if (capabilities.aiAssistant) {
     keys.push('ai_assistant');
   }
-  if (capabilities.exportData) {
-    keys.push('export_data');
-  }
 
   return keys;
 }
@@ -608,8 +595,8 @@ export const SUBSCRIPTION_PLANS: Record<PlanId, SubscriptionPlanDefinition> = {
   premium: {
     tier: 'premium',
     rank: 1,
-    label: 'Premium',
-    description: 'Pełna analiza akwarium, obsady, sprzetu i problemów.',
+    label: 'Plus',
+    description: 'Dokładne prowadzenie akwarium bez AI: pełne pomiary, historia, wykresy i automatyczne zadania.',
     featureKeys: buildFeatureKeysForPlan('premium'),
     limits: {
       maxTanks: PLAN_LIMITS.premium.maxTanks,
@@ -624,8 +611,8 @@ export const SUBSCRIPTION_PLANS: Record<PlanId, SubscriptionPlanDefinition> = {
   pro: {
     tier: 'pro',
     rank: 2,
-    label: 'Pro',
-    description: 'Zaawansowany asystent z planem działania krok po kroku.',
+    label: 'AI Pro',
+    description: 'AI Pro: interpretacja, analiza zdjęć, smart plan i rekomendacje krok po kroku.',
     featureKeys: buildFeatureKeysForPlan('pro'),
     limits: {
       maxTanks: PLAN_LIMITS.pro.maxTanks,
@@ -787,7 +774,6 @@ const FEATURE_TO_CAPABILITY_MAP: Record<
   automatic_tasks: (c) => c.automaticTasks,
   smart_action_plan: (c) => c.smartActionPlan !== false,
   ai_assistant: (c) => c.aiAssistant,
-  export_data: (c) => c.exportData,
 };
 
 export function canUseFeature(planId: PlanId, featureKey: SubscriptionFeatureKey): boolean {
@@ -891,23 +877,22 @@ export function getFeatureLockMessage(
   const messages: Record<SubscriptionFeatureKey, string> = {
     core_access: '',
     critical_alerts: '',
-    full_measurements: 'Pełny zestaw parametrów jest dostępny w Premium.',
+    full_measurements: 'Pełny zestaw parametrów jest dostępny w Plus.',
     stocking_compatibility:
-      'Zaawansowana analiza obsady jest dostepna w Premium.',
-    smart_action_plan: 'Plan działania krok po kroku jest dostępny w Pro.',
+      'Zaawansowana analiza obsady jest dostepna w Plus.',
+    smart_action_plan: 'Plan działania krok po kroku jest dostępny w AI Pro.',
     full_history:
-      'W planie Free widoczna jest historia z ostatnich 30 dni. Pełna historia jest dostepna w Premium.',
+      'W planie Free widoczna jest historia z ostatnich 30 dni. Pełna historia jest dostepna w Plus.',
     multiple_tanks: 'Osiagnieto limit akwariów w obecnym planie.',
-    advanced_water_analysis: 'Pełna analiza parametrów jest dostepna w Premium.',
-    trend_analysis: 'Analiza trendow jest dostepna od planu Premium.',
-    equipment_analysis: 'Pełna analiza sprzetu jest dostepna od planu Premium.',
-    algae_diagnosis: "Diagnoza glonów jest dostepna od planu Premium.",
-    fish_disease_diagnosis: 'Diagnoza chorób ryb jest dostepna od planu Premium.',
+    advanced_water_analysis: 'Pełna analiza parametrów jest dostepna w Plus.',
+    trend_analysis: 'Wykresy i podstawowe trendy są dostepne od planu Plus.',
+    equipment_analysis: 'Pełna analiza sprzetu jest dostepna od planu Plus.',
+    algae_diagnosis: "Diagnoza glonów jest dostepna od planu Plus.",
+    fish_disease_diagnosis: 'Diagnoza chorób ryb jest dostepna od planu Plus.',
     plant_disease_diagnosis:
-      "Diagnoza chorób roślin jest dostepna od planu Premium.",
-    automatic_tasks: "Automatyczne zadania są dostępne od planu Premium.",
-    ai_assistant: 'Asystent AI jest dostępny w planie Pro.',
-    export_data: 'Eksport danych jest dostępny od planu Premium.',
+      "Diagnoza chorób roślin jest dostepna od planu Plus.",
+    automatic_tasks: "Automatyczne zadania są dostępne od planu Plus.",
+    ai_assistant: 'Asystent AI jest dostępny w planie AI Pro.',
   };
 
   return messages[featureKey] || `Ta funkcja jest dostepna od planu ${getPlanLabel(requiredPlan)}.`;

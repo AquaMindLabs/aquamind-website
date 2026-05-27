@@ -4,15 +4,20 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { pathToFileURL } = require('node:url');
 const admin = require('firebase-admin');
+const PRUNE_CONFIRM_TOKEN = 'I_UNDERSTAND_THIS_DELETES_DATA';
 
 function parseFlags(argv) {
   const flags = {
     dryRun: false,
     prune: false,
+    pruneConfirmToken: '',
   };
   argv.forEach((arg) => {
     if (arg === '--dry-run') flags.dryRun = true;
     if (arg === '--prune') flags.prune = true;
+    if (arg.startsWith('--confirm-prune=')) {
+      flags.pruneConfirmToken = String(arg.split('=')[1] ?? '').trim();
+    }
   });
   return flags;
 }
@@ -138,6 +143,11 @@ async function syncAlgaeCatalog({ db, records, dryRun, prune }) {
 
 async function main() {
   const flags = parseFlags(process.argv.slice(2));
+  if (flags.prune && flags.pruneConfirmToken !== PRUNE_CONFIRM_TOKEN) {
+    throw new Error(
+      `Refusing to prune without explicit confirmation token. Re-run with --confirm-prune=${PRUNE_CONFIRM_TOKEN}`
+    );
+  }
 
   const repoRoot = path.resolve(__dirname, '..');
   const projectId =

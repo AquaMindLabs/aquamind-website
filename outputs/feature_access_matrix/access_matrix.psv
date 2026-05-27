@@ -1,0 +1,80 @@
+﻿Kategoria|Funkcja|Free|Plus|AI Pro|Uwagi
+Konto i dostęp|Logowanie e-mail i hasłem|Logowanie standardowe|Logowanie standardowe|Logowanie standardowe|Brak różnic między planami.
+Konto i dostęp|Rejestracja konta|Utworzenie konta użytkownika|Utworzenie konta użytkownika|Utworzenie konta użytkownika|Brak różnic między planami.
+Konto i dostęp|Logowanie Google|Logowanie przez Google|Logowanie przez Google|Logowanie przez Google|Brak różnic między planami.
+Konto i dostęp|Wylogowanie i utrzymanie sesji|Sesja użytkownika i wylogowanie|Sesja użytkownika i wylogowanie|Sesja użytkownika i wylogowanie|Brak różnic między planami.
+Konto i dostęp|Zarządzanie planem|Możliwość przejścia na plan płatny|Status planu, zmiana i przywrócenie zakupu|Status planu, zmiana i przywrócenie zakupu|Plus w kodzie to Premium, AI Pro w kodzie to Pro.
+Konto i dostęp|Zgody na funkcje AI|Nie dotyczy - AI niedostępne|Nie dotyczy - AI niedostępne|Zgoda wymagana przy korzystaniu z AI|Zgody AI warto pokazywać dopiero tam, gdzie użytkownik może realnie użyć AI.
+Akwaria|Liczba aktywnych akwariów|1 aktywne akwarium|3 aktywne akwaria|Bez limitu aktywnych akwariów|Najważniejszy limit planu Free i Plus.
+Akwaria|Kreator dodawania akwarium|Kreator konfiguracji jednego akwarium|Kreator konfiguracji do 3 akwariów|Kreator konfiguracji bez limitu akwariów|Zakres zależy od limitu liczby akwariów.
+Akwaria|Profil akwarium|Podstawowe dane: litraż, wymiary, temperatura, pokrywa|Pełny profil dla każdego akwarium|Pełny profil dla każdego akwarium bez limitu|Brak różnic w samych polach profilu.
+Akwaria|Typ akwarium / profil docelowy|Wybór typu dla jednego akwarium|Wybór typu dla wielu akwariów|Wybór typu dla dowolnej liczby akwariów|Np. ogólne, roślinne, Malawi, Tanganika, krewetkarium.
+Akwaria|Zakresy docelowe parametrów wody|Zakresy docelowe dla jednego akwarium|Zakresy docelowe dla wielu akwariów|Zakresy docelowe bez limitu akwariów|Cele pomagają interpretować pomiary.
+Akwaria|Wybór aktywnego akwarium|Przełączanie niepotrzebne przy 1 akwarium|Przełączanie między maks. 3 akwariami|Przełączanie między dowolną liczbą akwariów|Aplikacja zapamiętuje aktywne akwarium.
+Pomiary i historia|Dodawanie pomiarów wody|Dodawanie pomiarów podstawowych|Dodawanie pomiarów podstawowych i rozszerzonych|Dodawanie pomiarów podstawowych i rozszerzonych|Plus/AI Pro odblokowują większy zestaw parametrów.
+Pomiary i historia|Edycja i usuwanie pomiarów|Edycja historii z ostatnich 30 dni|Edycja pełnej historii|Edycja pełnej historii|Limit historii dotyczy planu Free.
+Pomiary i historia|Podstawowe parametry wody|pH, GH, KH, NO2, NO3, temperatura|pH, GH, KH, NO2, NO3, temperatura|pH, GH, KH, NO2, NO3, temperatura|Pakiet podstawowy jest w każdym planie.
+Pomiary i historia|Rozszerzone parametry wody|Niedostępne|NH3/NH4, PO4, K, Ca, Mg, Fe, TDS, CO2|NH3/NH4, PO4, K, Ca, Mg, Fe, TDS, CO2|Rozszerzone testy są od Plusa.
+Pomiary i historia|Historia pomiarów|Ostatnie 30 dni|Pełna historia|Pełna historia + trendy Pro|W Pro historia jest łączona z zaawansowanymi trendami.
+Pomiary i historia|Obliczanie CO2 z KH i pH|Obliczenie, gdy wpisano KH i pH|Obliczenie, gdy wpisano KH i pH|Obliczenie, gdy wpisano KH i pH|Funkcja zależy od danych, nie od planu.
+Pomiary i historia|Podstawowa ocena parametrów|Ocena podstawowych parametrów względem zakresów|Ocena pełnego zestawu parametrów|Ocena pełnego zestawu parametrów z kontekstem trendów|Plan wpływa na liczbę dostępnych parametrów.
+Pomiary i historia|Zaawansowana analiza parametrów|Brak zaawansowanej analizy|Zaawansowana analiza wyników|Zaawansowana analiza wyników + kontekst AI|AI Pro dodaje możliwość wyjaśniania wyników przez AI.
+Pomiary i historia|Wykresy parametrów|Brak wykresów|Wykres liniowy parametrów|Wykres + średnia, liczba pomiarów, zmiana i trendy|Plus pokazuje wizualizację, AI Pro dodaje metryki interpretacyjne.
+Pomiary i historia|Analiza trendów|Brak analizy trendów|Podstawowy kierunek zmian|Zaawansowane trendy i sugestie na podstawie historii|Zgodne z poziomem trendAnalysis.
+Pomiary i historia|Eksport danych|Brak eksportu|Eksport danych pomiarowych|Eksport danych pomiarowych i pełnej historii|Eksport jest dostępny od Plusa.
+Alerty i przegląd|Ekran przeglądu stanu akwarium|Podstawowy przegląd jednego akwarium|Przegląd do 3 akwariów|Przegląd dowolnej liczby akwariów|Zakres wynika z limitu akwariów.
+Alerty i przegląd|Alerty podstawowe i krytyczne|Alerty podstawowe oraz krytyczne|Alerty podstawowe, krytyczne i rozszerzone|Alerty podstawowe, krytyczne, rozszerzone i smart|AI Pro ma najwyższy poziom alertów.
+Alerty i przegląd|Alerty rozszerzone|Niedostępne|Rozszerzona ocena ryzyk|Rozszerzona ocena ryzyk + smart priorytety|Od Plusa alerty są bardziej szczegółowe.
+Alerty i przegląd|Alerty smart|Niedostępne|Niedostępne|Smart alerty z mocniejszym kontekstem historii|Smart alerty są poziomem Pro.
+Alerty i przegląd|Akceptowanie znanych problemów|Ukrywanie potwierdzonych ostrzeżeń|Ukrywanie potwierdzonych ostrzeżeń|Ukrywanie potwierdzonych ostrzeżeń|Brak różnic między planami.
+Alerty i przegląd|Priorytety problemów|Priorytety podstawowe|Priorytety rozszerzone|Priorytety smart|Plan wpływa na szczegółowość klasyfikacji.
+Obsada|Katalog ryb|Podstawowy katalog ryb|Pełny katalog ryb|Pełny katalog ryb|Katalogi są pełne od Plusa.
+Obsada|Dodawanie ryb do akwarium|Dodawanie obsady do jednego akwarium|Dodawanie obsady do 3 akwariów|Dodawanie obsady bez limitu akwariów|Zakres zależy od limitu akwariów.
+Obsada|Edycja ilości i danych obsady|Zmiana liczby ryb i wpisów|Zmiana liczby ryb i wpisów|Zmiana liczby ryb i wpisów|Brak różnic w samej edycji.
+Obsada|Podstawowa kompatybilność obsady|Podstawowa zgodność gatunków i akwarium|Podstawowa + zaawansowana zgodność|Podstawowa + zaawansowana zgodność + rekomendacje|Free ma prostszą ocenę.
+Obsada|Zaawansowana kompatybilność obsady|Niedostępna|Parametry, bioload, strefy i zachowanie|Parametry, bioload, strefy, zachowanie + rekomendacje|Zaawansowana analiza jest od Plusa.
+Obsada|Rekomendacje obsady|Brak rekomendacji|Ogólna ocena bez rekomendacji Pro|Rekomendacje obsady|Rekomendacje są poziomem Pro.
+Obsada|Ostrzeżenia o minimalnej grupie|Podstawowe ostrzeżenia o liczebności|Zaawansowane ostrzeżenia o liczebności i zachowaniu|Zaawansowane ostrzeżenia + rekomendowana korekta|Np. ryby ławicowe.
+Obsada|Ocena konfliktów i agresji|Podstawowa ocena konfliktów|Zaawansowana ocena zachowania|Zaawansowana ocena + rekomendacje zmian|Plan wpływa na głębokość interpretacji.
+Obsada|Ocena obciążenia biologicznego|Podstawowe obciążenie akwarium|Zaawansowany bioload względem obsady i filtracji|Zaawansowany bioload + rekomendacje działań|Dotyczy obsady względem akwarium.
+Rośliny|Katalog roślin|Podstawowy katalog roślin|Pełny katalog roślin|Pełny katalog roślin|Katalogi są pełne od Plusa.
+Rośliny|Dodawanie roślin do akwarium|Dodawanie roślin do jednego akwarium|Dodawanie roślin do 3 akwariów|Dodawanie roślin bez limitu akwariów|Zakres zależy od limitu akwariów.
+Rośliny|Edycja ilości i danych roślin|Zmiana wpisów roślin|Zmiana wpisów roślin|Zmiana wpisów roślin|Brak różnic w samej edycji.
+Rośliny|Wymagania świetlne roślin|Podstawowe wymagania świetlne|Pełne wymagania świetlne|Pełne wymagania świetlne + rekomendacje kontekstu|AI Pro może łączyć wymagania z planem działań.
+Rośliny|Wymagania CO2 i nawożenia roślin|Podstawowe informacje|Pełne informacje katalogowe|Pełne informacje + sugestie w kontekście akwarium|Plus daje pełniejszy katalog, Pro mocniejszą interpretację.
+Rośliny|Kompatybilność roślin z parametrami akwarium|Podstawowa zgodność|Zaawansowana zgodność|Zaawansowana zgodność + rekomendacje|Dotyczy warunków w akwarium.
+Sprzęt|Katalog sprzętu|Podstawowy katalog sprzętu|Pełny katalog sprzętu|Pełny katalog sprzętu|Katalogi są pełne od Plusa.
+Sprzęt|Dodawanie sprzętu z katalogu|Dodawanie sprzętu do jednego akwarium|Dodawanie sprzętu do 3 akwariów|Dodawanie sprzętu bez limitu akwariów|Zakres zależy od limitu akwariów.
+Sprzęt|Dodawanie własnego sprzętu|Własne wpisy sprzętu|Własne wpisy sprzętu|Własne wpisy sprzętu|Brak różnic w samej edycji.
+Sprzęt|Podstawowa ocena sprzętu|Podstawowa ocena dopasowania|Podstawowa + pełna ocena|Podstawowa + pełna ocena + rekomendacje|Plan wpływa na głębokość oceny.
+Sprzęt|Pełna analiza sprzętu|Niedostępna|Pełna ocena sprzętu|Pełna ocena sprzętu + rekomendacje|Pełna analiza jest od Plusa.
+Sprzęt|Rekomendacje sprzętowe|Brak rekomendacji|Ograniczone / ogólne rekomendacje|Rekomendacje sprzętowe|Najpełniejsze rekomendacje są w AI Pro.
+Sprzęt|Ocena filtracji|Podstawowa ocena filtra|Pełna ocena filtra względem akwarium i obsady|Pełna ocena filtra + rekomendacje zmian|Dotyczy wydajności filtracji.
+Sprzęt|Ocena ogrzewania|Podstawowa ocena grzałki|Pełna ocena grzałki względem litrażu i temperatury|Pełna ocena grzałki + rekomendacje zmian|Dotyczy dopasowania ogrzewania.
+Sprzęt|Ocena oświetlenia|Podstawowa ocena światła|Pełna ocena światła względem roślin|Pełna ocena światła + rekomendacje zmian|Dotyczy czasu i mocy światła.
+Start akwarium i zadania|Kreator startu akwarium|Kreator startu dla jednego akwarium|Kreator startu dla 3 akwariów|Kreator startu bez limitu akwariów|Zakres zależy od limitu akwariów.
+Start akwarium i zadania|Tryby startu akwarium|Fresh start, restart, dojrzałe media|Fresh start, restart, dojrzałe media|Fresh start, restart, dojrzałe media|Brak różnic w dostępnych trybach.
+Start akwarium i zadania|Checklisty startowe|Ręczna checklista|Automatyczne checklisty|Automatyczne checklisty + plan krok po kroku|AI Pro daje najbardziej konkretny plan.
+Start akwarium i zadania|Dynamiczne przesuwanie kroków wg parametrów|Brak dynamicznego przesuwania|Przesuwanie kroków według parametrów|Przesuwanie kroków + smart plan działania|Np. reakcja na NO2.
+Start akwarium i zadania|Kalendarz akcji|Ręczne zadania|Automatyczny kalendarz zadań|Automatyczny kalendarz + smart sugestie|Plan wpływa na automatyzację.
+Start akwarium i zadania|Oznaczanie zadań jako wykonane|Wykonaj / pomiń / przełóż|Wykonaj / pomiń / przełóż|Wykonaj / pomiń / przełóż|Brak różnic między planami.
+Start akwarium i zadania|Automatyczne przypomnienia|Brak automatycznych przypomnień|Automatyczne przypomnienia|Automatyczne przypomnienia + plan smart|Dostępne od Plusa.
+Start akwarium i zadania|Dzisiejszy plan działań|Brak planu działań|Zaawansowany plan działań|Smart plan działań|Zgodne z poziomem smartActionPlan.
+Start akwarium i zadania|Plan naprawczy krok po kroku|Brak planu krok po kroku|Ogólny plan naprawczy|Plan naprawczy krok po kroku|Najpełniejszy plan jest w AI Pro.
+Glony i choroby|Katalog glonów|Katalog glonów|Katalog glonów + diagnoza|Katalog glonów + diagnoza + plan|Free ma dostęp katalogowy.
+Glony i choroby|Diagnoza glonów po objawach|Tylko przegląd katalogu|Diagnoza po objawach|Diagnoza po objawach + plan usuwania|Poziom zgodny z algaeDiagnosis.
+Glony i choroby|Katalog chorób ryb|Katalog chorób ryb|Katalog chorób ryb + diagnoza|Katalog chorób ryb + diagnoza + plan|Free ma dostęp katalogowy.
+Glony i choroby|Diagnoza chorób ryb po objawach|Tylko przegląd katalogu|Diagnoza po objawach|Diagnoza po objawach + plan leczenia|Poziom zgodny z fishDiseaseDiagnosis.
+Glony i choroby|Katalog chorób roślin|Katalog chorób roślin|Katalog chorób roślin + diagnoza|Katalog chorób roślin + diagnoza + plan|Free ma dostęp katalogowy.
+Glony i choroby|Diagnoza chorób roślin po objawach|Tylko przegląd katalogu|Diagnoza po objawach|Diagnoza po objawach + plan poprawy|Poziom zgodny z plantDiseaseDiagnosis.
+Glony i choroby|Plan leczenia lub usuwania problemu|Wskazówki katalogowe|Plan ogólny|Konkretny plan działania|AI Pro ma najbardziej wykonawczy plan.
+AI|Asystent AI - czat|Niedostępny|Niedostępny|Czat z asystentem AI|AI dostępne tylko w AI Pro.
+AI|Interpretacja parametrów przez AI|Niedostępna|Niedostępna|AI wyjaśnia pomiary i trend|Wykorzystuje kontekst akwarium.
+AI|Analiza problemów przez AI|Niedostępna|Niedostępna|AI analizuje problem i sugeruje kroki|Wsparcie diagnostyczne.
+AI|Analiza zdjęć przez AI|Niedostępna|Niedostępna|AI analizuje zdjęcie|Dotyczy funkcji vision.
+AI|Kontekst AI z danych akwarium|Niedostępny|Niedostępny|AI korzysta z profilu akwarium, pomiarów, obsady i problemów|Kontekst zwiększa jakość odpowiedzi.
+AI|Historia rozmów / interakcji AI|Niedostępna|Niedostępna|Historia użycia asystenta AI|Dostępna, jeśli użytkownik korzysta z AI.
+AI|Wgrywanie zdjęć do analizy|Niedostępne|Niedostępne|Upload zdjęcia do analizy AI|Część funkcji vision.
+Ustawienia i stabilność|Motyw aplikacji|Motyw aplikacji|Motyw aplikacji|Motyw aplikacji|Brak różnic między planami.
+Ustawienia i stabilność|Diagnostyka i obsługa błędów|Wbudowana obsługa błędów|Wbudowana obsługa błędów|Wbudowana obsługa błędów|Element stabilności aplikacji, nie funkcja płatna.
+Ustawienia i stabilność|Telemetria zdarzeń i błędów|Podstawowa obserwowalność aplikacji|Podstawowa obserwowalność aplikacji|Podstawowa obserwowalność aplikacji|Element techniczny, nie funkcja sprzedażowa.

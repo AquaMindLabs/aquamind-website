@@ -1,4 +1,4 @@
-import {
+﻿import {
   createUserWithEmailAndPassword,
   deleteUser,
   EmailAuthProvider,
@@ -31,6 +31,7 @@ import {
   Alert as NativeAlert,
   BackHandler,
   Image,
+  InteractionManager,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
@@ -201,10 +202,24 @@ const IS_IOS_EXPO_GO = Platform.OS === 'ios' && IS_EXPO_GO;
 const ENABLE_FISH_IMAGES = true;
 const ENABLE_PLANT_IMAGES = true;
 const CATALOG_EAGER_RENDER_LIMIT = 150;
+const CATALOG_REFRESH_INTERVAL_MS = 60 * 1000;
+const ENABLE_IMAGE_DEBUG_LOGS = Boolean(
+  globalThis.__DEV__ && globalThis.__AQUARIUM_IMAGE_DEBUG__
+);
+const ENABLE_ANDROID_WIKIMEDIA_JS_FETCH = Platform.OS === 'android';
+const WIKIMEDIA_THUMBNAIL_WIDTH = 180;
+const WIKIMEDIA_MODAL_IMAGE_WIDTH = 900;
+const WIKIMEDIA_EAGER_FETCH_LIMIT = 6;
+const WIKIMEDIA_JS_FETCH_CONCURRENCY = 2;
 const DISEASE_IMAGE_PLACEHOLDER_SOURCE = require('../assets/images/icon.png');
 const DEFAULT_TERMS_URL = 'https://aquamindlabs.github.io/aquamind-website/terms.html';
 const DEFAULT_PRIVACY_POLICY_URL =
   'https://aquamindlabs.github.io/aquamind-website/privacy.html';
+const WIKIMEDIA_USER_AGENT =
+  'AquaMindLabs/1.0 (https://aquamindlabs.github.io/aquamind-website/)';
+const WIKIMEDIA_IMAGE_DATA_URI_CACHE = new Map();
+const WIKIMEDIA_IMAGE_FETCH_QUEUE = [];
+let wikimediaImageFetchActiveCount = 0;
 const TERMS_URL = String(
   process.env.EXPO_PUBLIC_TERMS_URL ?? DEFAULT_TERMS_URL
 ).trim();
@@ -247,8 +262,8 @@ const REMOTE_JSON_REQUEST_HEADERS = Object.freeze({
 const DISEASE_AI_DURATION_OPTIONS = [
   { id: 'today', label: 'Dzisiaj' },
   { id: '2_3_days', label: '2-3 dni' },
-  { id: 'about_week', label: 'Około tygodnia' },
-  { id: 'longer', label: 'Dłużej' },
+  { id: 'about_week', label: 'OkoĹ‚o tygodnia' },
+  { id: 'longer', label: 'DĹ‚uĹĽej' },
   { id: 'unknown', label: 'Nie wiem' },
 ];
 const DISEASE_AI_OTHER_FISH_OPTIONS = [
@@ -263,13 +278,13 @@ const PLANT_AI_MULTIPLE_OPTIONS = [
   { id: 'unknown', label: 'Nie wiem' },
 ];
 const PLANT_AI_WARNING =
-  'AI wskazuje możliwe przyczyny, ale nie zastępuje obserwacji roślin i regularnych testów wody.';
+  'AI wskazuje moĹĽliwe przyczyny, ale nie zastÄ™puje obserwacji roĹ›lin i regularnych testĂłw wody.';
 const ALGAE_AI_WARNING =
-  'AI wskazuje możliwe przyczyny, ale typ glonów warto potwierdzić obserwacją, parametrami wody i zdjęciem w dobrym świetle.';
+  'AI wskazuje moĹĽliwe przyczyny, ale typ glonĂłw warto potwierdziÄ‡ obserwacjÄ…, parametrami wody i zdjÄ™ciem w dobrym Ĺ›wietle.';
 const ALGAE_AI_LOCATION_OPTIONS = [
   { id: 'glass', label: 'Szyby' },
-  { id: 'plants', label: 'Rośliny' },
-  { id: 'substrate', label: 'Podłoże' },
+  { id: 'plants', label: 'RoĹ›liny' },
+  { id: 'substrate', label: 'PodĹ‚oĹĽe' },
   { id: 'decorations', label: 'Dekoracje/korzenie/kamienie' },
   { id: 'filter_outlet', label: 'Filtr/wylot' },
   { id: 'surface', label: 'Tafla wody' },
@@ -277,10 +292,10 @@ const ALGAE_AI_LOCATION_OPTIONS = [
 ];
 const ALGAE_AI_APPEARANCE_OPTIONS = [
   { id: 'green_film', label: 'Zielony nalot' },
-  { id: 'brown_film', label: 'Brązowy nalot' },
-  { id: 'black_tufts', label: 'Czarne kępki/pędzelki' },
+  { id: 'brown_film', label: 'BrÄ…zowy nalot' },
+  { id: 'black_tufts', label: 'Czarne kÄ™pki/pÄ™dzelki' },
   { id: 'threads', label: 'Nitki' },
-  { id: 'slimy_layer', label: 'Śliska warstwa' },
+  { id: 'slimy_layer', label: 'Ĺšliska warstwa' },
   { id: 'green_water', label: 'Zielona woda' },
   { id: 'blue_green_layer', label: 'Siny/niebiesko-zielony nalot' },
   { id: 'other_unknown', label: 'Inne / nie wiem' },
@@ -314,7 +329,7 @@ function mapDiseaseAiConfidenceBadge(confidenceLabel) {
   if (confidenceLabel === 'low') {
     return 'niska';
   }
-  return 'średnia';
+  return 'Ĺ›rednia';
 }
 
 function buildDiseaseAiSuspectedDiseases({
@@ -362,7 +377,7 @@ function buildDiseaseAiSuspectedDiseases({
       label: diseaseName,
       confidence,
       confidenceLabel,
-      reason: `Opis objawów jest zbliżony do pozycji "${diseaseName}".`,
+      reason: `Opis objawĂłw jest zbliĹĽony do pozycji "${diseaseName}".`,
     });
   });
 
@@ -377,7 +392,7 @@ function buildDiseaseAiSuspectedDiseases({
       label: 'Niepewne objawy',
       confidence: 0.32,
       confidenceLabel: 'low',
-      reason: 'Brak jednoznacznego dopasowania do katalogu chorób.',
+      reason: 'Brak jednoznacznego dopasowania do katalogu chorĂłb.',
     },
   ];
 }
@@ -442,7 +457,7 @@ function buildPlantAiSuspectedIssues({
       label: 'Niepewny problem',
       confidence: 0.32,
       confidenceLabel: 'low',
-      reason: "Brak jednoznacznego dopasowania do katalogu problemów roślin.",
+      reason: "Brak jednoznacznego dopasowania do katalogu problemĂłw roĹ›lin.",
     },
   ];
 }
@@ -507,7 +522,7 @@ function buildAlgaeAiSuspectedIssues({
       label: 'Niepewny typ glonu',
       confidence: 0.32,
       confidenceLabel: 'low',
-      reason: "Brak jednoznacznego dopasowania do katalogu glonów.",
+      reason: "Brak jednoznacznego dopasowania do katalogu glonĂłw.",
     },
   ];
 }
@@ -521,28 +536,7 @@ function getFirstRunStatusLabel(statusSeverity = 'no_data') {
   if (statusSeverity === 'ok') {
     return 'Stabilny start';
   }
-  return 'Brak pełnego zestawu danych';
-}
-
-function buildFishCommonsFallbackImageUrl(latinName, width = 420) {
-  const words = String(latinName ?? '')
-    .trim()
-    .replace(/\s+/g, ' ')
-    .split(/\s+/)
-    .filter(Boolean);
-  if (words.length < 2) {
-    return '';
-  }
-
-  const latinSpecies = `${words[0]} ${words[1]}`;
-  const encodedTitle = encodeURIComponent(latinSpecies.replace(/\s+/g, '_'));
-  const normalizedWidth = Number(width);
-  const widthQuery =
-    Number.isFinite(normalizedWidth) && normalizedWidth > 0
-      ? `?width=${Math.round(normalizedWidth)}`
-      : '';
-
-  return `https://commons.wikimedia.org/wiki/Special:FilePath/${encodedTitle}.jpg${widthQuery}`;
+  return 'Brak peĹ‚nego zestawu danych';
 }
 
 function buildPlantCommonsFallbackImageUrl(latinName, width = 420) {
@@ -582,6 +576,112 @@ function buildCommonsFileThumbnailUrl(fileName, width = 420) {
   return `https://commons.wikimedia.org/wiki/Special:FilePath/${encodedFileName}${widthQuery}`;
 }
 
+function decodeURIComponentSafe(value) {
+  const normalized = String(value ?? '').trim();
+  if (!normalized) {
+    return '';
+  }
+
+  try {
+    return decodeURIComponent(normalized);
+  } catch {
+    return normalized;
+  }
+}
+
+function extractWikimediaFileNameFromUrl(url) {
+  const normalizedUrl = String(url ?? '').trim();
+  if (!normalizedUrl) {
+    return '';
+  }
+
+  const hashMediaMatch = normalizedUrl.match(/#\/media\/(File:[^?#]+)/i);
+  if (hashMediaMatch?.[1]) {
+    return decodeURIComponentSafe(hashMediaMatch[1]).replace(/^File:/i, '').trim();
+  }
+
+  const wikiFileMatch = normalizedUrl.match(/\/wiki\/(File:[^?#]+)/i);
+  if (wikiFileMatch?.[1]) {
+    return decodeURIComponentSafe(wikiFileMatch[1]).replace(/^File:/i, '').trim();
+  }
+
+  const titleMatch = normalizedUrl.match(/[?&]title=(File:[^&#]+)/i);
+  if (titleMatch?.[1]) {
+    return decodeURIComponentSafe(titleMatch[1]).replace(/^File:/i, '').trim();
+  }
+
+  const specialFilePathMatch = normalizedUrl.match(
+    /\/wiki\/Special:FilePath\/([^?#]+)/i
+  );
+  if (specialFilePathMatch?.[1]) {
+    return decodeURIComponentSafe(specialFilePathMatch[1]).trim();
+  }
+
+  return '';
+}
+
+function buildWikimediaUploadThumbnailUrl(url, width) {
+  const normalizedWidth = Math.round(Number(width));
+  if (!Number.isFinite(normalizedWidth) || normalizedWidth <= 0) {
+    return '';
+  }
+
+  try {
+    const parsed = new URL(String(url ?? '').trim());
+    if (!/upload\.wikimedia\.org$/i.test(parsed.hostname)) {
+      return '';
+    }
+
+    const thumbMatch = parsed.pathname.match(
+      /^(\/wikipedia\/commons\/thumb\/[^/]+\/[^/]+\/([^/]+)\/)[^/]+$/i
+    );
+    if (thumbMatch?.[1] && thumbMatch?.[2]) {
+      return `${parsed.origin}${thumbMatch[1]}${normalizedWidth}px-${thumbMatch[2]}`;
+    }
+
+    const originalMatch = parsed.pathname.match(
+      /^\/wikipedia\/commons\/([^/]+)\/([^/]+)\/([^/]+)$/i
+    );
+    if (originalMatch?.[1] && originalMatch?.[2] && originalMatch?.[3]) {
+      return `${parsed.origin}/wikipedia/commons/thumb/${originalMatch[1]}/${originalMatch[2]}/${originalMatch[3]}/${normalizedWidth}px-${originalMatch[3]}`;
+    }
+  } catch {
+    return '';
+  }
+
+  return '';
+}
+
+function normalizeCatalogImageUrl(url, width = null) {
+  const normalizedUrl = String(url ?? '').trim();
+  if (!normalizedUrl) {
+    return '';
+  }
+
+  if (!/wikimedia\.org/i.test(normalizedUrl)) {
+    return normalizedUrl;
+  }
+
+  if (/upload\.wikimedia\.org\//i.test(normalizedUrl)) {
+    const thumbnailUri = buildWikimediaUploadThumbnailUrl(normalizedUrl, width);
+    if (thumbnailUri) {
+      return thumbnailUri;
+    }
+    return normalizedUrl;
+  }
+
+  const fileName = extractWikimediaFileNameFromUrl(normalizedUrl);
+  if (!fileName) {
+    return normalizedUrl;
+  }
+
+  if (Number.isFinite(Number(width)) && Number(width) > 0) {
+    return buildCommonsFileThumbnailUrl(fileName, Number(width));
+  }
+
+  return buildCommonsFileThumbnailUrl(fileName);
+}
+
 function normalizeFishSearchPhrase(value) {
   return String(value ?? '')
     .trim()
@@ -612,23 +712,209 @@ function buildFishSearchPhrases(latinName) {
 function getAndroidDiseaseImageUri(uri) {
   const normalizedUri = String(uri ?? '').trim();
 
-  if (
-    Platform.OS !== 'android' ||
-    (!normalizedUri.includes('upload.wikimedia.org/') &&
-      !normalizedUri.includes('commons.wikimedia.org/'))
-  ) {
+  if (Platform.OS !== 'android') {
     return normalizedUri;
   }
 
-  const proxyTarget = normalizedUri.replace(/^https?:\/\//, '');
-  return `https://wsrv.nl/?url=${encodeURIComponent(proxyTarget)}`;
+  if (!normalizedUri) {
+    return normalizedUri;
+  }
+
+  // Normalize Wikimedia page links to image links before proxying.
+  const normalizedWikimediaUri = normalizeCatalogImageUrl(normalizedUri, 900);
+
+  // Proxy Wikimedia hosts on Android for more consistent loading.
+  if (/wikimedia\.org/i.test(normalizedWikimediaUri)) {
+    if (/wsrv\.nl\/\?url=/i.test(normalizedWikimediaUri)) {
+      return normalizedWikimediaUri;
+    }
+    const proxyTarget = normalizedWikimediaUri.replace(/^https?:\/\//i, '');
+    return `https://wsrv.nl/?url=${encodeURIComponent(proxyTarget)}`;
+  }
+
+  return normalizedWikimediaUri;
+}
+
+function isWikimediaImageUri(uri) {
+  return /(^https?:\/\/)?([^/]+\.)?wikimedia\.org\//i.test(
+    String(uri ?? '').trim()
+  );
+}
+
+function getAndroidWikimediaProxyUri(uri, width = null) {
+  const normalizedUri = normalizeCatalogImageUrl(uri, width);
+  if (!normalizedUri) {
+    return '';
+  }
+
+  if (Platform.OS !== 'android' || !isWikimediaImageUri(normalizedUri)) {
+    return normalizedUri;
+  }
+
+  if (/wsrv\.nl\/\?url=/i.test(normalizedUri)) {
+    return normalizedUri;
+  }
+
+  const proxyTarget = normalizedUri
+    .replace(/^https:\/\//i, 'ssl:')
+    .replace(/^http:\/\//i, '')
+    .replace(/\?/g, '%3F')
+    .replace(/&/g, '%26');
+  const widthParam =
+    Number.isFinite(Number(width)) && Number(width) > 0
+      ? `&w=${Math.round(Number(width))}`
+      : '';
+
+  return `https://wsrv.nl/?url=${proxyTarget}${widthParam}&output=jpg`;
+}
+
+function getRemoteImageSource(uri) {
+  const normalizedUri = String(uri ?? '').trim();
+  if (!normalizedUri) {
+    return DISEASE_IMAGE_PLACEHOLDER_SOURCE;
+  }
+
+  if (!isWikimediaImageUri(normalizedUri)) {
+    return { uri: normalizedUri };
+  }
+
+  return {
+    uri: normalizedUri,
+    headers: {
+      'User-Agent': WIKIMEDIA_USER_AGENT,
+      'Api-User-Agent': WIKIMEDIA_USER_AGENT,
+    },
+  };
 }
 
 function getDiseaseRemoteImageSource(uri) {
   const normalizedUri = String(uri ?? '').trim();
-  const imageUri = getAndroidDiseaseImageUri(normalizedUri);
+  const imageUri = getAndroidWikimediaProxyUri(
+    getAndroidDiseaseImageUri(normalizedUri),
+    900
+  );
 
-  return imageUri ? { uri: imageUri } : DISEASE_IMAGE_PLACEHOLDER_SOURCE;
+  return getRemoteImageSource(imageUri);
+}
+
+function getCatalogRemoteImageUri(uri, width = 420) {
+  const normalizedUri = getAndroidWikimediaProxyUri(uri, width);
+  if (!normalizedUri) {
+    return '';
+  }
+
+  return normalizedUri;
+}
+
+function getCatalogRemoteImageSource(uri, width = 420) {
+  const imageUri = getCatalogRemoteImageUri(uri, width);
+  return getRemoteImageSource(imageUri);
+}
+
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  let output = '';
+  let index = 0;
+
+  while (index < bytes.length) {
+    const byte1 = bytes[index++] ?? 0;
+    const byte2 = index < bytes.length ? bytes[index++] : NaN;
+    const byte3 = index < bytes.length ? bytes[index++] : NaN;
+    const triplet =
+      (byte1 << 16) |
+      ((Number.isNaN(byte2) ? 0 : byte2) << 8) |
+      (Number.isNaN(byte3) ? 0 : byte3);
+
+    output += chars[(triplet >> 18) & 63];
+    output += chars[(triplet >> 12) & 63];
+    output += Number.isNaN(byte2) ? '=' : chars[(triplet >> 6) & 63];
+    output += Number.isNaN(byte3) ? '=' : chars[triplet & 63];
+  }
+
+  return output;
+}
+
+function processNextWikimediaImageFetch() {
+  if (wikimediaImageFetchActiveCount >= WIKIMEDIA_JS_FETCH_CONCURRENCY) {
+    return;
+  }
+
+  const next = WIKIMEDIA_IMAGE_FETCH_QUEUE.shift();
+  if (!next) {
+    return;
+  }
+
+  wikimediaImageFetchActiveCount += 1;
+  InteractionManager.runAfterInteractions(() => {
+    next
+      .task()
+      .then(next.resolve)
+      .catch(next.reject)
+      .finally(() => {
+        wikimediaImageFetchActiveCount = Math.max(
+          0,
+          wikimediaImageFetchActiveCount - 1
+        );
+        processNextWikimediaImageFetch();
+      });
+  });
+}
+
+function enqueueWikimediaImageFetch(task) {
+  return new Promise((resolve, reject) => {
+    WIKIMEDIA_IMAGE_FETCH_QUEUE.push({ task, resolve, reject });
+    processNextWikimediaImageFetch();
+  });
+}
+
+function waitForNextFrame() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
+}
+
+async function fetchWikimediaImageDataUri(uri, width = WIKIMEDIA_THUMBNAIL_WIDTH) {
+  const normalizedUri = normalizeCatalogImageUrl(uri, width);
+  if (!normalizedUri || !isWikimediaImageUri(normalizedUri)) {
+    return '';
+  }
+
+  const cacheKey = `${width}:${normalizedUri}`;
+  const cached = WIKIMEDIA_IMAGE_DATA_URI_CACHE.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const pending = enqueueWikimediaImageFetch(async () => {
+    const response = await fetch(normalizedUri, {
+      headers: {
+        Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+        'User-Agent': WIKIMEDIA_USER_AGENT,
+        'Api-User-Agent': WIKIMEDIA_USER_AGENT,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Wikimedia image fetch failed with HTTP ${response.status}`);
+    }
+
+    const contentType = String(response.headers?.get?.('content-type') || 'image/jpeg')
+      .split(';')[0]
+      .trim();
+    const buffer = await response.arrayBuffer();
+    await waitForNextFrame();
+    return `data:${contentType || 'image/jpeg'};base64,${arrayBufferToBase64(buffer)}`;
+  });
+
+  WIKIMEDIA_IMAGE_DATA_URI_CACHE.set(cacheKey, pending);
+
+  try {
+    return await pending;
+  } catch (error) {
+    WIKIMEDIA_IMAGE_DATA_URI_CACHE.delete(cacheKey);
+    throw error;
+  }
 }
 
 async function ensureNotificationsModule() {
@@ -705,7 +991,7 @@ function parsePositiveNumberOrThrow(label, rawValue) {
   const value = parseNumberOrThrow(label, rawValue);
 
   if (value <= 0) {
-    throw new Error(`Pole ${label} musi być większe od 0`);
+    throw new Error(`Pole ${label} musi byÄ‡ wiÄ™ksze od 0`);
   }
 
   return value;
@@ -719,7 +1005,7 @@ function parseOptionalNonNegativeNumberOrThrow(label, rawValue) {
   }
 
   if (value < 0) {
-    throw new Error(`Pole ${label} nie może byc mniejsze od 0`);
+    throw new Error(`Pole ${label} nie moĹĽe byc mniejsze od 0`);
   }
 
   return value;
@@ -729,7 +1015,7 @@ function parseNonNegativeNumberOrThrow(label, rawValue) {
   const value = parseNumberOrThrow(label, rawValue);
 
   if (value < 0) {
-    throw new Error(`Pole ${label} nie może byc mniejsze od 0`);
+    throw new Error(`Pole ${label} nie moĹĽe byc mniejsze od 0`);
   }
 
   return value;
@@ -809,6 +1095,81 @@ function getCreatedAtMs(createdAt) {
 
   const parsed = new Date(createdAt).getTime();
   return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function getCatalogEntryRecencyMs(item) {
+  if (!item || typeof item !== 'object') {
+    return 0;
+  }
+
+  return Math.max(
+    getCreatedAtMs(item.updatedAt),
+    getCreatedAtMs(item.createdAt)
+  );
+}
+
+function hasCatalogImageData(item) {
+  if (!item || typeof item !== 'object') {
+    return false;
+  }
+
+  return Boolean(
+    String(item.imagePreviewUrl ?? '').trim() ||
+      String(item.imageUrl ?? '').trim() ||
+      String(item.imageLink ?? '').trim()
+  );
+}
+
+function mergeCatalogImageFields(baseItem, variants = []) {
+  const base = baseItem && typeof baseItem === 'object' ? baseItem : {};
+  const candidates = [base, ...variants]
+    .filter((item) => item && typeof item === 'object')
+    .sort((a, b) => {
+      const aImageFields =
+        (String(a.imagePreviewUrl ?? '').trim() ? 1 : 0) +
+        (String(a.imageUrl ?? '').trim() ? 1 : 0) +
+        (String(a.imageLink ?? '').trim() ? 1 : 0);
+      const bImageFields =
+        (String(b.imagePreviewUrl ?? '').trim() ? 1 : 0) +
+        (String(b.imageUrl ?? '').trim() ? 1 : 0) +
+        (String(b.imageLink ?? '').trim() ? 1 : 0);
+
+      if (aImageFields !== bImageFields) {
+        return bImageFields - aImageFields;
+      }
+
+      return getCatalogEntryRecencyMs(b) - getCatalogEntryRecencyMs(a);
+    });
+
+  const best = candidates.find((item) => hasCatalogImageData(item));
+  if (!best) {
+    return base;
+  }
+
+  const nextImagePreviewUrl =
+    String(base.imagePreviewUrl ?? '').trim() ||
+    String(best.imagePreviewUrl ?? '').trim();
+  const nextImageUrl =
+    String(base.imageUrl ?? '').trim() ||
+    String(best.imageUrl ?? '').trim();
+  const nextImageLink =
+    String(base.imageLink ?? '').trim() ||
+    String(best.imageLink ?? '').trim();
+
+  if (
+    nextImagePreviewUrl === String(base.imagePreviewUrl ?? '').trim() &&
+    nextImageUrl === String(base.imageUrl ?? '').trim() &&
+    nextImageLink === String(base.imageLink ?? '').trim()
+  ) {
+    return base;
+  }
+
+  return {
+    ...base,
+    imagePreviewUrl: nextImagePreviewUrl,
+    imageUrl: nextImageUrl,
+    imageLink: nextImageLink,
+  };
 }
 
 function getMeasurementRecordedAtMs(measurement) {
@@ -907,21 +1268,21 @@ function getEquipmentCatalogDescription(item) {
 
   if (normalizedEquipmentType === 'heater') {
     if (maxLiters <= 60) {
-      return "Kompaktowa grzałka do stabilnego dogrzewania mniejszych zbiornikow.";
+      return "Kompaktowa grzaĹ‚ka do stabilnego dogrzewania mniejszych zbiornikow.";
     }
     if (maxLiters <= 180) {
-      return "Uniwersalna grzałka do codzieńnego utrzymania temperatury w akwarium towarzyskim.";
+      return "Uniwersalna grzaĹ‚ka do codzieĹ„nego utrzymania temperatury w akwarium towarzyskim.";
     }
-    return "Mocniejsza grzałka do większych zbiornikow lub pomieszczen z chlodniejszym otoczeniem.";
+    return "Mocniejsza grzaĹ‚ka do wiÄ™kszych zbiornikow lub pomieszczen z chlodniejszym otoczeniem.";
   }
 
   if (flowLh <= 500) {
-    return 'Lagodniejsza filtracja do mniejszych akwariów i spokojniejszej obsady.';
+    return 'Lagodniejsza filtracja do mniejszych akwariĂłw i spokojniejszej obsady.';
   }
   if (flowLh <= 1200) {
-    return 'Uniwersalny filtr do codzieńnej filtracji biologiczno-mechanicznej.';
+    return 'Uniwersalny filtr do codzieĹ„nej filtracji biologiczno-mechanicznej.';
   }
-  return 'Wydajniejszy filtr do większych zbiornikow albo mocniej obciążonej obsady.';
+  return 'Wydajniejszy filtr do wiÄ™kszych zbiornikow albo mocniej obciÄ…ĹĽonej obsady.';
 }
 
 function normalizeEquipmentCatalogType(value) {
@@ -1545,15 +1906,15 @@ function getMeasurementDefaultAction(key, severity) {
   }
 
   if (key === 'no2') {
-    return "Podmien wodę od razu, mocno napowietrz i sprawdź filtr biologiczny.";
+    return "Podmien wodÄ™ od razu, mocno napowietrz i sprawdĹş filtr biologiczny.";
   }
 
   if (key === 'no3') {
-    return "Wykonaj podmianę wody i ogranicz karmienie, a dodatkowo zwiększ mase roślin szybko rosnacych.";
+    return "Wykonaj podmianÄ™ wody i ogranicz karmienie, a dodatkowo zwiÄ™ksz mase roĹ›lin szybko rosnacych.";
   }
 
   if (key === 'temperature') {
-    return "Skoryguj ustawieńia grzałki/chlodzenia stopniowo i obserwuj reakcje ryb.";
+    return "Skoryguj ustawieĹ„ia grzaĹ‚ki/chlodzenia stopniowo i obserwuj reakcje ryb.";
   }
 
   if (key === 'co2') {
@@ -1561,46 +1922,46 @@ function getMeasurementDefaultAction(key, severity) {
   }
 
   if (key === 'k') {
-    return "Skoryguj nawożenie potasem i monitoruj proporcje K:Ca:Mg przy kolejnych pomiarach.";
+    return "Skoryguj nawoĹĽenie potasem i monitoruj proporcje K:Ca:Mg przy kolejnych pomiarach.";
   }
 
   if (key === 'tds') {
-    return 'Dostosuj mineralizacje i podmiany, aby wróic do stabilnego zakresu TDS.';
+    return 'Dostosuj mineralizacje i podmiany, aby wrĂłic do stabilnego zakresu TDS.';
   }
 
   return severity === 'critical'
-    ? 'Wprowadź korekte jeszcze dzisiaj i powtorz pomiar po zmianach.'
-    : 'Zaplanow korekte przy najbliższej pielegnacji i kontrolny pomiar.';
+    ? 'WprowadĹş korekte jeszcze dzisiaj i powtorz pomiar po zmianach.'
+    : 'Zaplanow korekte przy najbliĹĽszej pielegnacji i kontrolny pomiar.';
 }
 
 function getMeasurementDefaultImpact(key, severity) {
   if (severity === 'ok') {
-    return 'Przy utrzymaniu tego poziomu parametr nie powinien teraz zwiększac ryzyka dla obsady.';
+    return 'Przy utrzymaniu tego poziomu parametr nie powinien teraz zwiÄ™kszac ryzyka dla obsady.';
   }
 
   if (key === 'no2') {
-    return 'Podwyzszone NO2 szybko podnosi stres i może prowadzic do zatruc.';
+    return 'Podwyzszone NO2 szybko podnosi stres i moĹĽe prowadzic do zatruc.';
   }
 
   if (key === 'no3') {
-    return "Wysokie NO3 zwiększa ryzyko glonów, oslabienia ryb i gorszego samopoczucia obsady.";
+    return "Wysokie NO3 zwiÄ™ksza ryzyko glonĂłw, oslabienia ryb i gorszego samopoczucia obsady.";
   }
 
   if (key === 'nh3nh4') {
-    return 'Podwyzszone NH3/NH4 zwiększa ryzyko podtrucia i problemów z oddychaniem u ryb.';
+    return 'Podwyzszone NH3/NH4 zwiÄ™ksza ryzyko podtrucia i problemĂłw z oddychaniem u ryb.';
   }
 
   if (key === 'temperature') {
-    return "Niestabilna temperatura nasila stres i może oslabic odporność ryb.";
+    return "Niestabilna temperatura nasila stres i moĹĽe oslabic odpornoĹ›Ä‡ ryb.";
   }
 
   if (key === 'ph') {
-    return 'Odchylenie pH może zwiększac stres i podatnosc na infekcje.';
+    return 'Odchylenie pH moĹĽe zwiÄ™kszac stres i podatnosc na infekcje.';
   }
 
   return severity === 'critical'
-    ? 'Bez korekty może dojsc do pogorszenia kondycji zbiornika i obsady.'
-    : "Bez korekty może stopniowo obniżac komfort zycia ryb i roślin.";
+    ? 'Bez korekty moĹĽe dojsc do pogorszenia kondycji zbiornika i obsady.'
+    : "Bez korekty moĹĽe stopniowo obniĹĽac komfort zycia ryb i roĹ›lin.";
 }
 
 const SEVERITY_LABEL = {
@@ -1662,7 +2023,7 @@ const SUBSTRATE_OPTIONS = [
   { value: 'sand', label: 'Piasek', labelKey: 'substrateSand' },
   { value: 'fine_gravel', label: 'Drobny zwir', labelKey: 'substrateFineGravel' },
   { value: 'gravel', label: 'Zwir', labelKey: 'substrateGravel' },
-  { value: 'active_soil', label: 'Podłoże aktywne', labelKey: 'substrateActiveSoil' },
+  { value: 'active_soil', label: 'PodĹ‚oĹĽe aktywne', labelKey: 'substrateActiveSoil' },
   { value: 'garden_soil', label: 'Ziemia ogrodowa' },
   { value: 'mixed', label: 'Mieszane', labelKey: 'substrateMixed' },
   { value: 'other', label: 'Inne', labelKey: 'substrateOther' },
@@ -1880,7 +2241,7 @@ const ADD_TANK_WIZARD_STEPS = [
   { id: 'start', title: 'Sposob uruchomienia' },
   { id: 'onboarding', title: 'Onboarding' },
   { id: 'profile', title: 'Profil akwarium' },
-  { id: 'substrate', title: 'Podłoże' },
+  { id: 'substrate', title: 'PodĹ‚oĹĽe' },
   { id: 'water', title: 'Parametry wody' },
   { id: 'temperature', title: 'Temperatura' },
   { id: 'summary', title: 'Podsumowanie' },
@@ -1919,11 +2280,11 @@ const ADD_TANK_PROFILE_OPTIONS = [
   { value: 'custom', label: 'Wlasny profil' },
 ];
 const WIZARD_SUBSTRATE_LAYER_OPTIONS = [
-  { value: 'none', label: 'Brak podłoża', modelValue: 'other' },
+  { value: 'none', label: 'Brak podĹ‚oĹĽa', modelValue: 'other' },
   { value: 'sand', label: 'Piasek', modelValue: 'sand' },
   { value: 'gravel', label: 'Zwir', modelValue: 'gravel' },
-  { value: 'active_soil', label: 'Podłoże aktywne', modelValue: 'active_soil' },
-  { value: 'substrate', label: "Substrat pod rośliny", modelValue: 'mixed' },
+  { value: 'active_soil', label: 'PodĹ‚oĹĽe aktywne', modelValue: 'active_soil' },
+  { value: 'substrate', label: "Substrat pod roĹ›liny", modelValue: 'mixed' },
   { value: 'soil_layer', label: 'Ziemia / warstwa odzywcza', modelValue: 'garden_soil' },
   { value: 'other', label: 'Inne', modelValue: 'other' },
 ];
@@ -2857,7 +3218,7 @@ function getLightIntensityLabel(value) {
 
 function getTankLightingLabelForIssues(tankProfile) {
   if (Boolean(tankProfile?.isDaylightOnly)) {
-    return 'światło dzieńne (bez lampy)';
+    return 'Ĺ›wiatĹ‚o dzieĹ„ne (bez lampy)';
   }
 
   const lightModelName = String(tankProfile?.lightModelName ?? '').trim();
@@ -3216,7 +3577,7 @@ function inferPlantParameterStabilitySensitivity(item) {
   if (
     text.includes('stabilne warunki') ||
     text.includes('delikatn') ||
-    text.includes('gubic liście')
+    text.includes('gubic liĹ›cie')
   ) {
     return 'high';
   }
@@ -3454,7 +3815,7 @@ function evaluatePlantLightingForTank(item, tankProfile = null) {
     return {
       status: 'unknown',
       label: 'Brak danych',
-      message: 'Brak kompletnych danych o wymaganiach świetlnych rośliny.',
+      message: 'Brak kompletnych danych o wymaganiach Ĺ›wietlnych roĹ›liny.',
       requirements,
     };
   }
@@ -3463,8 +3824,8 @@ function evaluatePlantLightingForTank(item, tankProfile = null) {
     if (Boolean(tankProfile?.isDaylightOnly)) {
       return {
         status: 'too_low',
-        label: 'Za malo światła',
-        message: `Roślina potrzebuje ${Math.round(minLumens)}-${Math.round(maxLumens)} lm/l, a akwarium ma tylko światło dzieńne.`,
+        label: 'Za malo Ĺ›wiatĹ‚a',
+        message: `RoĹ›lina potrzebuje ${Math.round(minLumens)}-${Math.round(maxLumens)} lm/l, a akwarium ma tylko Ĺ›wiatĹ‚o dzieĹ„ne.`,
         requirements,
       };
     }
@@ -3472,7 +3833,7 @@ function evaluatePlantLightingForTank(item, tankProfile = null) {
     return {
       status: 'unknown',
       label: 'Brak danych',
-      message: `Roślina potrzebuje ${Math.round(minLumens)}-${Math.round(maxLumens)} lm/l. Dodaj lampe, aby ocenic dopasowanie.`,
+      message: `RoĹ›lina potrzebuje ${Math.round(minLumens)}-${Math.round(maxLumens)} lm/l. Dodaj lampe, aby ocenic dopasowanie.`,
       requirements,
     };
   }
@@ -3484,8 +3845,8 @@ function evaluatePlantLightingForTank(item, tankProfile = null) {
   if (tankLumensPerLiter < minLumens) {
     return {
       status: 'too_low',
-      label: 'Za malo światła',
-      message: `Za malo światła: ${roundedTankLumens} lm/l przy wymaganiu ${roundedMin}-${roundedMax} lm/l.`,
+      label: 'Za malo Ĺ›wiatĹ‚a',
+      message: `Za malo Ĺ›wiatĹ‚a: ${roundedTankLumens} lm/l przy wymaganiu ${roundedMin}-${roundedMax} lm/l.`,
       requirements,
     };
   }
@@ -3493,16 +3854,16 @@ function evaluatePlantLightingForTank(item, tankProfile = null) {
   if (tankLumensPerLiter > maxLumens) {
     return {
       status: 'too_high',
-      label: 'Za mocne światło',
-      message: `Za mocne światło: ${roundedTankLumens} lm/l przy wymaganiu ${roundedMin}-${roundedMax} lm/l.`,
+      label: 'Za mocne Ĺ›wiatĹ‚o',
+      message: `Za mocne Ĺ›wiatĹ‚o: ${roundedTankLumens} lm/l przy wymaganiu ${roundedMin}-${roundedMax} lm/l.`,
       requirements,
     };
   }
 
   return {
     status: 'ok',
-    label: 'światło OK',
-    message: `światło OK: ${roundedTankLumens} lm/l miesci się w wymaganiu ${roundedMin}-${roundedMax} lm/l.`,
+    label: 'Ĺ›wiatĹ‚o OK',
+    message: `Ĺ›wiatĹ‚o OK: ${roundedTankLumens} lm/l miesci siÄ™ w wymaganiu ${roundedMin}-${roundedMax} lm/l.`,
     requirements,
   };
 }
@@ -3517,7 +3878,7 @@ function evaluateLampFitForTank({
   if (!Number.isFinite(value) || value <= 0) {
     return {
       status: 'check',
-      label: 'Sprawdź',
+      label: 'SprawdĹş',
       isFit: false,
       message: 'Brak danych lm/l - trudno ocenic dopasowanie lampy.',
     };
@@ -3537,9 +3898,9 @@ function evaluateLampFitForTank({
     if (value < rangeMin) {
       return {
         status: 'too_low',
-        label: "Za słaba",
+        label: "Za sĹ‚aba",
         isFit: false,
-        message: `Za słaba: ${roundedValue} lm/l przy zaleceniu ${roundedMin}-${roundedMax} lm/l.`,
+        message: `Za sĹ‚aba: ${roundedValue} lm/l przy zaleceniu ${roundedMin}-${roundedMax} lm/l.`,
       };
     }
 
@@ -3557,17 +3918,17 @@ function evaluateLampFitForTank({
       label: 'OK',
       isFit: true,
       message: conflict
-        ? `OK dla wspolnego zakresu ${roundedMin}-${roundedMax} lm/l (rośliny maja mieszane wymagania).`
-        : `OK: ${roundedValue} lm/l miesci się w zaleceniu ${roundedMin}-${roundedMax} lm/l.`,
+        ? `OK dla wspolnego zakresu ${roundedMin}-${roundedMax} lm/l (roĹ›liny maja mieszane wymagania).`
+        : `OK: ${roundedValue} lm/l miesci siÄ™ w zaleceniu ${roundedMin}-${roundedMax} lm/l.`,
     };
   }
 
   if (value < fallbackMin) {
     return {
       status: 'too_low',
-      label: "Za słaba",
+      label: "Za sĹ‚aba",
       isFit: false,
-      message: `Za słaba dla litrażu: ${roundedValue} lm/l (minimum ${fallbackMin} lm/l).`,
+      message: `Za sĹ‚aba dla litraĹĽu: ${roundedValue} lm/l (minimum ${fallbackMin} lm/l).`,
     };
   }
 
@@ -3576,7 +3937,7 @@ function evaluateLampFitForTank({
       status: 'too_high',
       label: 'Za mocna',
       isFit: false,
-      message: `Za mocna dla litrażu: ${roundedValue} lm/l (maksimum ${fallbackMax} lm/l).`,
+      message: `Za mocna dla litraĹĽu: ${roundedValue} lm/l (maksimum ${fallbackMax} lm/l).`,
     };
   }
 
@@ -3584,7 +3945,7 @@ function evaluateLampFitForTank({
     status: 'ok',
     label: 'OK',
     isFit: true,
-    message: `OK dla litrażu: ${roundedValue} lm/l.`,
+    message: `OK dla litraĹĽu: ${roundedValue} lm/l.`,
   };
 }
 
@@ -3861,7 +4222,7 @@ const SEMI_AGGRESSIVE_FISH_KEYWORDS = [
   'semi aggressive',
   'semi-aggressive',
   'terytorial',
-  'może podskubywac',
+  'moĹĽe podskubywac',
   'zaczepna',
   'bojownik',
   'betta',
@@ -4072,7 +4433,7 @@ function normalizeEatsShrimp(value, predatorRisk = false) {
   const normalized = normalizeText(value);
   if (normalized === 'yes' || normalized === 'tak') return 'yes';
   if (normalized === 'no' || normalized === 'nie') return 'no';
-  if (normalized === 'maybe' || normalized === 'może' || normalized === 'ryzyko') return 'maybe';
+  if (normalized === 'maybe' || normalized === 'moĹĽe' || normalized === 'ryzyko') return 'maybe';
   return predatorRisk ? 'maybe' : 'no';
 }
 
@@ -4107,7 +4468,7 @@ function normalizeDensityLevel(value) {
 
 function normalizeFlowPreference(value) {
   const normalized = normalizeText(value);
-  if (normalized.includes('low') || normalized.includes('słaby') || normalized.includes('spokoj')) {
+  if (normalized.includes('low') || normalized.includes('sĹ‚aby') || normalized.includes('spokoj')) {
     return 'low';
   }
   if (normalized.includes('high') || normalized.includes('mocny') || normalized.includes('silny')) {
@@ -4179,7 +4540,7 @@ function normalizeShrimpSafe(value) {
   if (normalized === 'no' || normalized === 'nie') {
     return 'no';
   }
-  if (normalized === 'maybe' || normalized === 'może' || normalized === 'ryzyko') {
+  if (normalized === 'maybe' || normalized === 'moĹĽe' || normalized === 'ryzyko') {
     return 'maybe';
   }
   return 'yes';
@@ -4572,7 +4933,7 @@ function evaluateFishPairCompatibility(firstFish, secondFish, tankLiters = null)
   if (Number.isFinite(Number(tankLiters)) && Number(tankLiters) > 0 && requiredLiters > Number(tankLiters)) {
     applyPenalty(
       40,
-      `Za maly zbiornik dla tego zestawu gatunków (zalecane min. ${requiredLiters} l).`
+      `Za maly zbiornik dla tego zestawu gatunkĂłw (zalecane min. ${requiredLiters} l).`
     );
   }
 
@@ -4599,17 +4960,17 @@ function evaluateFishPairCompatibility(firstFish, secondFish, tankLiters = null)
     (firstTempLegacy === 'aggressive' && secondTempLegacy === 'peaceful') ||
     (firstTempLegacy === 'peaceful' && secondTempLegacy === 'aggressive')
   ) {
-    applyPenalty(35, 'Połączenie ryby agresywnej i spokojnej.');
+    applyPenalty(35, 'PoĹ‚Ä…czenie ryby agresywnej i spokojnej.');
   } else if (
     (firstTempLegacy === 'aggressive' && secondTempLegacy === 'semi_aggressive') ||
     (firstTempLegacy === 'semi_aggressive' && secondTempLegacy === 'aggressive')
   ) {
-    applyPenalty(20, 'Połączenie ryb agresywnych i polagresywnych.');
+    applyPenalty(20, 'PoĹ‚Ä…czenie ryb agresywnych i polagresywnych.');
   } else if (
     (firstTempLegacy === 'semi_aggressive' && secondTempLegacy === 'peaceful') ||
     (firstTempLegacy === 'peaceful' && secondTempLegacy === 'semi_aggressive')
   ) {
-    applyPenalty(15, 'Połączenie ryb polagresywnych i spokojnych.');
+    applyPenalty(15, 'PoĹ‚Ä…czenie ryb polagresywnych i spokojnych.');
   }
 
   const bigger =
@@ -4628,7 +4989,7 @@ function evaluateFishPairCompatibility(firstFish, secondFish, tankLiters = null)
   ) {
     applyPenalty(
       35,
-      `Duża roznica rozmiaru (${bigger.label} vs ${smaller.label}) - ryzyko potraktowania mniejszej ryby jako pokarm.`
+      `DuĹĽa roznica rozmiaru (${bigger.label} vs ${smaller.label}) - ryzyko potraktowania mniejszej ryby jako pokarm.`
     );
   }
 
@@ -4638,7 +4999,7 @@ function evaluateFishPairCompatibility(firstFish, secondFish, tankLiters = null)
     (firstProfile.finNipper && secondLongFins) ||
     (secondProfile.finNipper && firstLongFins)
   ) {
-    applyPenalty(30, "Ryzyko podgryzania płetw.");
+    applyPenalty(30, "Ryzyko podgryzania pĹ‚etw.");
   }
 
   if (
@@ -4648,7 +5009,7 @@ function evaluateFishPairCompatibility(firstFish, secondFish, tankLiters = null)
     Number(tankLiters) > 0 &&
     Number(tankLiters) < 100
   ) {
-    applyPenalty(10, "Oba gatunki są denne - możliwa konkurencja o rewiry przy dnie.");
+    applyPenalty(10, "Oba gatunki sÄ… denne - moĹĽliwa konkurencja o rewiry przy dnie.");
   }
 
   if (
@@ -4657,7 +5018,7 @@ function evaluateFishPairCompatibility(firstFish, secondFish, tankLiters = null)
   ) {
     applyPenalty(
       10,
-      `${firstLabel} wymaga większej grupy (min. ${firstProfile.minGroupSize}).`
+      `${firstLabel} wymaga wiÄ™kszej grupy (min. ${firstProfile.minGroupSize}).`
     );
   }
   if (
@@ -4666,7 +5027,7 @@ function evaluateFishPairCompatibility(firstFish, secondFish, tankLiters = null)
   ) {
     applyPenalty(
       10,
-      `${secondLabel} wymaga większej grupy (min. ${secondProfile.minGroupSize}).`
+      `${secondLabel} wymaga wiÄ™kszej grupy (min. ${secondProfile.minGroupSize}).`
     );
   }
 
@@ -4676,12 +5037,12 @@ function evaluateFishPairCompatibility(firstFish, secondFish, tankLiters = null)
     (firstShrimp && secondProfile.shrimpSafe === 'no') ||
     (secondShrimp && firstProfile.shrimpSafe === 'no')
   ) {
-    applyPenalty(35, 'Ryba może traktowac krewetki jako pokarm.');
+    applyPenalty(35, 'Ryba moĹĽe traktowac krewetki jako pokarm.');
   } else if (
     (firstShrimp && secondProfile.shrimpSafe === 'maybe') ||
     (secondShrimp && firstProfile.shrimpSafe === 'maybe')
   ) {
-    applyPenalty(20, "Możliwe ryzyko dla krewetek.");
+    applyPenalty(20, "MoĹĽliwe ryzyko dla krewetek.");
   }
 
   score = clampScore(score, 0, 100);
@@ -5123,14 +5484,14 @@ function calculateFiltrationCompensation(aquarium, filters, stockingList = []) {
       : 0;
   const turnoverProfile = resolveTurnoverProfile(aquarium, stockingList);
   const warnings = [];
-  let status = "za słaba";
+  let status = "za sĹ‚aba";
   let filtrationCompensationScore = 0;
 
   if (!Number.isFinite(turnoverPerHour) || turnoverPerHour <= 0) {
-    status = "za słaba";
+    status = "za sĹ‚aba";
     filtrationCompensationScore = 0;
   } else if (turnoverPerHour < turnoverProfile.idealMin) {
-    status = "za słaba";
+    status = "za sĹ‚aba";
     filtrationCompensationScore = clampScore(((turnoverPerHour / Math.max(1, turnoverProfile.idealMin)) * 10), 0, 10);
   } else if (turnoverPerHour <= turnoverProfile.idealMax) {
     status = 'OK';
@@ -5161,16 +5522,16 @@ function calculateFiltrationCompensation(aquarium, filters, stockingList = []) {
     (turnoverPerHour > turnoverProfile.idealMax && sensitiveToCurrentCount > 0);
 
   if (turnoverPerHour > turnoverProfile.strongMax) {
-    warnings.push('Nurt jest bardzo silny - może meczyc spokojne gatunki i utrudniac odpoczynek.');
+    warnings.push('Nurt jest bardzo silny - moĹĽe meczyc spokojne gatunki i utrudniac odpoczynek.');
     status = 'za silny nurt';
   } else if (turnoverPerHour > turnoverProfile.idealMax && sensitiveToCurrentCount > 0) {
     warnings.push(
-      "Zbyt silny nurt może stresowac gatunki spokojne lub słabo plywajace."
+      "Zbyt silny nurt moĹĽe stresowac gatunki spokojne lub sĹ‚abo plywajace."
     );
   }
 
-  if (status === "za słaba") {
-    warnings.push("Filtracja jest zbyt słaba, aby stabilnie odciazac biologie zbiornika.");
+  if (status === "za sĹ‚aba") {
+    warnings.push("Filtracja jest zbyt sĹ‚aba, aby stabilnie odciazac biologie zbiornika.");
   }
 
   return {
@@ -5346,7 +5707,7 @@ function mapStockingLoadStatusToCompatibilityStatus(loadStatus) {
 
 function mapFiltrationStatusToLoadModelLevel(filtrationStatus) {
   const normalized = normalizeText(filtrationStatus);
-  if (normalized === "za słaba") return 'weak';
+  if (normalized === "za sĹ‚aba") return 'weak';
   if (normalized === 'ok') return 'standard';
   if (normalized === 'mocna') return 'strong';
   if (normalized === 'nadfiltracja') return 'very_strong';
@@ -5741,7 +6102,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
     addPenalty(
       'waterParameters',
       35,
-      "Zakresy temperatur gatunków nie pokrywaja się - może to zwiększac ryzyko stresu i chorób.",
+      "Zakresy temperatur gatunkĂłw nie pokrywaja siÄ™ - moĹĽe to zwiÄ™kszac ryzyko stresu i chorĂłb.",
       'Dobierz gatunki o bardziej zblizonych wymaganiach temperatury.'
     );
   }
@@ -5749,15 +6110,15 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
     addPenalty(
       'waterParameters',
       30,
-      "Zakresy pH gatunków nie pokrywaja się.",
-      "Rozważ bardziej jednorodna obsade pod katem pH."
+      "Zakresy pH gatunkĂłw nie pokrywaja siÄ™.",
+      "RozwaĹĽ bardziej jednorodna obsade pod katem pH."
     );
   }
   if (ghMin > ghMax) {
     addPenalty(
       'waterParameters',
       22,
-      "Zakresy GH gatunków nie pokrywaja się.",
+      "Zakresy GH gatunkĂłw nie pokrywaja siÄ™.",
       'Dobierz ryby o podobnych wymaganiach twardosci wody.'
     );
   }
@@ -5771,14 +6132,14 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
         addPenalty(
           'waterParameters',
           5,
-          `${fishLabel}: aktualne pH może byc poza komfortowym zakresem gatunku.`
+          `${fishLabel}: aktualne pH moĹĽe byc poza komfortowym zakresem gatunku.`
         );
       }
       if (Number.isFinite(ghValue) && (ghValue < Number(profile.ghMin) || ghValue > Number(profile.ghMax))) {
         addPenalty(
           'waterParameters',
           4,
-          `${fishLabel}: aktualne GH może byc poza komfortowym zakresem gatunku.`
+          `${fishLabel}: aktualne GH moĹĽe byc poza komfortowym zakresem gatunku.`
         );
       }
       if (
@@ -5788,7 +6149,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
         addPenalty(
           'waterParameters',
           6,
-          `${fishLabel}: aktualna temperatura może byc poza komfortowym zakresem gatunku.`
+          `${fishLabel}: aktualna temperatura moĹĽe byc poza komfortowym zakresem gatunku.`
         );
       }
     });
@@ -5802,8 +6163,8 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
       addPenalty(
         'tankSize',
         ratio >= 1.8 ? 55 : ratio >= 1.4 ? 42 : 30,
-        `${fishLabel}: zbiornik jest mniejszy niż zwykle zalecane minimum (${Math.round(minTankLiters)} l).`,
-        'Większy zbiornik zwykle obniża ryzyko agresji i stresu.'
+        `${fishLabel}: zbiornik jest mniejszy niĹĽ zwykle zalecane minimum (${Math.round(minTankLiters)} l).`,
+        'WiÄ™kszy zbiornik zwykle obniĹĽa ryzyko agresji i stresu.'
       );
     }
     if (Number.isFinite(Number(tank.lengthCm)) && Number(tank.lengthCm) > 0) {
@@ -5812,7 +6173,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
         addPenalty(
           'tankSize',
           14,
-          `${fishLabel}: długość akwarium może byc za mala (${Math.round(Number(tank.lengthCm))} cm vs min ${Math.round(minLength)} cm).`,
+          `${fishLabel}: dĹ‚ugoĹ›Ä‡ akwarium moĹĽe byc za mala (${Math.round(Number(tank.lengthCm))} cm vs min ${Math.round(minLength)} cm).`,
           'Przy gatunkach terytorialnych dluzszy zbiornik zwykle ulatwia podzial stref.'
         );
       }
@@ -5823,8 +6184,8 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
         addPenalty(
           'territoriality',
           18,
-          `${fishLabel}: powierzchnia dna może byc za mala dla rewiru tego gatunku.`,
-          "Zwiększ powierzchnie dna albo ogranicz liczbe gatunków dennych/terytorialnych."
+          `${fishLabel}: powierzchnia dna moĹĽe byc za mala dla rewiru tego gatunku.`,
+          "ZwiÄ™ksz powierzchnie dna albo ogranicz liczbe gatunkĂłw dennych/terytorialnych."
         );
       }
     }
@@ -5833,16 +6194,16 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
       addPenalty(
         'tankSize',
         12,
-        `${fishLabel}: liczebnosc może byc za wysoka jak na litraż.`,
-        'Zmniejsz liczebnosc lub zwiększ litraż.'
+        `${fishLabel}: liczebnosc moĹĽe byc za wysoka jak na litraĹĽ.`,
+        'Zmniejsz liczebnosc lub zwiÄ™ksz litraĹĽ.'
       );
     }
     if (profile.socialStructure === 'harem' && (sexRatio === 'mostly_males' || sexRatio === 'unknown')) {
       addPenalty(
         'socialNeeds',
         sexRatio === 'unknown' ? 10 : 18,
-        `${fishLabel}: ten gatunek zwykle lepiej funkcjonuje w ukladzie haremowym, a udzial samcow może zwiększac konflikty.`,
-        "Rozważ uklad 1 samiec + kilka samic i więcej kryjówek."
+        `${fishLabel}: ten gatunek zwykle lepiej funkcjonuje w ukladzie haremowym, a udzial samcow moĹĽe zwiÄ™kszac konflikty.`,
+        "RozwaĹĽ uklad 1 samiec + kilka samic i wiÄ™cej kryjĂłwek."
       );
     }
     if (profile.socialStructure === 'pair' && quantity !== 2) {
@@ -5850,21 +6211,21 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
         'socialNeeds',
         10,
         `${fishLabel}: gatunek preferuje trzymanie w parze.`,
-        "Rozważ utrzymanie stabilnej pary lub zmiane gatunku."
+        "RozwaĹĽ utrzymanie stabilnej pary lub zmiane gatunku."
       );
     }
     if (quantity < Number(profile.minGroupSize || 1)) {
       addPenalty(
         'socialNeeds',
         16,
-        `${fishLabel}: grupa jest mniejsza niż zwykle zalecane minimum (${profile.minGroupSize}).`,
-        'Zwiększ liczebnosc grupy albo wybierz gatunek mniej stadny.'
+        `${fishLabel}: grupa jest mniejsza niĹĽ zwykle zalecane minimum (${profile.minGroupSize}).`,
+        'ZwiÄ™ksz liczebnosc grupy albo wybierz gatunek mniej stadny.'
       );
     } else if (quantity < Number(profile.recommendedGroupSize || profile.minGroupSize || 1)) {
       addPenalty(
         'socialNeeds',
         6,
-        `${fishLabel}: liczebnosc jest poniżej często zalecanej grupy (${profile.recommendedGroupSize}).`
+        `${fishLabel}: liczebnosc jest poniĹĽej czÄ™sto zalecanej grupy (${profile.recommendedGroupSize}).`
       );
     }
   });
@@ -5937,8 +6298,8 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
     addPenalty(
       'aggression',
       34,
-      "Udzial ryb agresywnych w obsadzie jest wysoki, co może nasilac nekanie spokojniejszych gatunków.",
-      "Ogranicz udzial agresywnych gatunków albo zwiększ litraż i liczbe kryjówek."
+      "Udzial ryb agresywnych w obsadzie jest wysoki, co moĹĽe nasilac nekanie spokojniejszych gatunkĂłw.",
+      "Ogranicz udzial agresywnych gatunkĂłw albo zwiÄ™ksz litraĹĽ i liczbe kryjĂłwek."
     );
   } else if (aggressiveRatio >= 0.52) {
     addPenalty(
@@ -6008,8 +6369,8 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
         addPenalty(
           'territoriality',
           mitigatedPenalty,
-          `${firstName} i ${secondName} korzystaja z tej samej strefy (${firstZone}) i mogą konkurowac o rewiry.`,
-          "Dodaj kryjowki/przelamania linii widzenia albo ogranicz liczbe gatunków terytorialnych w tej strefie."
+          `${firstName} i ${secondName} korzystaja z tej samej strefy (${firstZone}) i mogÄ… konkurowac o rewiry.`,
+          "Dodaj kryjowki/przelamania linii widzenia albo ogranicz liczbe gatunkĂłw terytorialnych w tej strefie."
         );
         conflicts.push({
           id: `${first.item?.id ?? index}-${second.item?.id ?? compareIndex}-territorial`,
@@ -6018,7 +6379,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
           severity: mitigatedPenalty >= 25 ? 'critical' : 'warning',
           firstFish: first.item,
           secondFish: second.item,
-          message: `${firstName} i ${secondName}: możliwy konflikt terytorialny w strefie ${firstZone}.`,
+          message: `${firstName} i ${secondName}: moĹĽliwy konflikt terytorialny w strefie ${firstZone}.`,
         });
       }
       if (sameZone && firstAgg >= 3 && secondAgg >= 3) {
@@ -6031,7 +6392,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
           'aggression',
           aggressionPenalty,
           `${firstName} i ${secondName} maja wysoki potencjal agresji, a ryzyko rosnie przy wspolnej strefie.`,
-          'W większym akwarium z kryjowkami to połączenie może byc latwiejsze.'
+          'W wiÄ™kszym akwarium z kryjowkami to poĹ‚Ä…czenie moĹĽe byc latwiejsze.'
         );
         conflicts.push({
           id: `${first.item?.id ?? index}-${second.item?.id ?? compareIndex}-aggr`,
@@ -6040,7 +6401,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
           severity: aggressionPenalty >= 25 ? 'critical' : 'warning',
           firstFish: first.item,
           secondFish: second.item,
-          message: `${firstName} i ${secondName}: podwyzszone ryzyko konfliktów agresji.`,
+          message: `${firstName} i ${secondName}: podwyzszone ryzyko konfliktĂłw agresji.`,
         });
       }
       const bigger =
@@ -6059,7 +6420,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
         addPenalty(
           'predation',
           predatorPenalty,
-          `${bigger.item?.commonName ?? bigger.item?.name} może traktowac ${smaller.item?.commonName ?? smaller.item?.name} jako potencjalny pokarm.`,
+          `${bigger.item?.commonName ?? bigger.item?.name} moĹĽe traktowac ${smaller.item?.commonName ?? smaller.item?.name} jako potencjalny pokarm.`,
           'Nie lacz drapieznika z wyraznie mniejszymi rybami.'
         );
         conflicts.push({
@@ -6079,8 +6440,8 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
         addPenalty(
           'finNipping',
           28,
-          `${firstName} i ${secondName}: możliwe podgryzanie płetw.`,
-          "Rozdziel gatunki lub zapewnij więcej przestrzeni i kryjówek."
+          `${firstName} i ${secondName}: moĹĽliwe podgryzanie pĹ‚etw.`,
+          "Rozdziel gatunki lub zapewnij wiÄ™cej przestrzeni i kryjĂłwek."
         );
       }
     }
@@ -6099,30 +6460,30 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
       addPenalty(
         'territoriality',
         26,
-        `${fishLabel}: dostępna przestrzen może byc za mala do liczby rewirow (${zone}).`,
-        'Zmniejsz liczbe osobnikow lub zwiększ przestrzen akwarium.'
+        `${fishLabel}: dostÄ™pna przestrzen moĹĽe byc za mala do liczby rewirow (${zone}).`,
+        'Zmniejsz liczbe osobnikow lub zwiÄ™ksz przestrzen akwarium.'
       );
     } else if (zonePressure > 0.75) {
       addPenalty(
         'territoriality',
         14,
-        `${fishLabel}: rewir może byc ciasny dla tej liczebnosci (${zone}).`
+        `${fishLabel}: rewir moĹĽe byc ciasny dla tej liczebnosci (${zone}).`
       );
     }
     if (profile.needsShelter && hidingFactor < 0.35) {
       addPenalty(
         'territoriality',
         18,
-        `${fishLabel}: gatunek zwykle wymaga kryjówek, a obecnie jest ich niewiele.`,
-        "Dodaj kryjowki (korzenie, kamienie, rośliny) i przelamania linii widzenia."
+        `${fishLabel}: gatunek zwykle wymaga kryjĂłwek, a obecnie jest ich niewiele.`,
+        "Dodaj kryjowki (korzenie, kamienie, roĹ›liny) i przelamania linii widzenia."
       );
     }
     if (profile.needsLineOfSightBreaks && densityLevelToFactor(tank.lineOfSightBreaks) < 0.34) {
       addPenalty(
         'aggression',
         14,
-        `${fishLabel}: niskie przelamanie linii widzenia może zwiększac agresje.`,
-        "Dodaj elementy dzielace widok (rośliny, korzenie, skaly)."
+        `${fishLabel}: niskie przelamanie linii widzenia moĹĽe zwiÄ™kszac agresje.`,
+        "Dodaj elementy dzielace widok (roĹ›liny, korzenie, skaly)."
       );
     }
     if (
@@ -6134,22 +6495,22 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
       addPenalty(
         'aggression',
         sexRatio === 'mostly_males' ? 34 : 20,
-        `${fishLabel}: przy wysokiej agresji samcow i tym litrażu ryzyko konfliktów może byc podwyzszone.`,
-        'Ogranicz liczbe samcow lub zapewnij większy zbiornik.'
+        `${fishLabel}: przy wysokiej agresji samcow i tym litraĹĽu ryzyko konfliktĂłw moĹĽe byc podwyzszone.`,
+        'Ogranicz liczbe samcow lub zapewnij wiÄ™kszy zbiornik.'
       );
     }
     if (profile.breedingAggression === 'high' && profile.socialStructure !== 'school') {
       addPenalty(
         'territoriality',
         8,
-        `${fishLabel}: w okresie tarla ten gatunek może silnie bronic rewiru.`
+        `${fishLabel}: w okresie tarla ten gatunek moĹĽe silnie bronic rewiru.`
       );
     }
     if (zoneLoad >= 10 && zone !== 'whole_tank') {
       addPenalty(
         'zoneCompetition',
         10,
-        `${fishLabel}: duze zagęszczenie ryb w strefie ${zone} może prowadzic do konkurencji.`
+        `${fishLabel}: duze zagÄ™szczenie ryb w strefie ${zone} moĹĽe prowadzic do konkurencji.`
       );
     }
   });
@@ -6158,7 +6519,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
     Number(
       filtrationCompensation.filtrationCompensationScore ?? filtrationCompensation.compensationPercent
     ) || 0;
-  if (filtrationCompensation.status === "za słaba") {
+  if (filtrationCompensation.status === "za sĹ‚aba") {
     biologicalCompensationPercent = 0;
   } else if (filtrationCompensation.status === 'OK') {
     biologicalCompensationPercent = clampScore(biologicalCompensationPercent, 0, 10);
@@ -6206,19 +6567,19 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
   if (riskToRank(biologicalLoadRawRisk) >= 2 && biologicalCompensationPercent > 0) {
     appendUnique(
       warnings,
-      'Mocna filtracja czesciowo kompensuje obciążenie biologiczne.'
+      'Mocna filtracja czesciowo kompensuje obciÄ…ĹĽenie biologiczne.'
     );
   }
   if (riskToRank(biologicalLoadRawRisk) >= 1 && plantCompensationPercent >= 8) {
     appendUnique(
       warnings,
-      "Masa roślinna wspiera buforowanie obciążenia azotowego i stabilizacje biologii."
+      "Masa roĹ›linna wspiera buforowanie obciÄ…ĹĽenia azotowego i stabilizacje biologii."
     );
   }
   if (riskToRank(biologicalLoadRawRisk) >= 1 && plantItems.length > 0 && plantCompensationPercent < 8) {
     appendUnique(
       recommendations,
-      "Zwiększ mase roślin (szczególnie szybkorosnacych), aby mocniej odciazyc obieg azotu."
+      "ZwiÄ™ksz mase roĹ›lin (szczegĂłlnie szybkorosnacych), aby mocniej odciazyc obieg azotu."
     );
   }
   appendUnique(
@@ -6231,19 +6592,19 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
   ) {
     appendUnique(
       warnings,
-      "Mocna filtracja pomaga w stabilizacji biologicznej, ale nie usuwa koncowych produktow przemiany azotu. Przy takiej obsadzie konieczne są regularne podmiany wody i kontrola NO3."
+      "Mocna filtracja pomaga w stabilizacji biologicznej, ale nie usuwa koncowych produktow przemiany azotu. Przy takiej obsadzie konieczne sÄ… regularne podmiany wody i kontrola NO3."
     );
   }
   if (filtrationCompensation.status === 'za silny nurt') {
     appendUnique(
       warnings,
-      "Zbyt silny nurt może stresowac gatunki spokojne lub słabo plywajace."
+      "Zbyt silny nurt moĹĽe stresowac gatunki spokojne lub sĹ‚abo plywajace."
     );
   }
   if (riskToRank(biologicalLoadRawRisk) >= 1) {
     appendUnique(
       recommendations,
-      "Przy wysokiej obsadzie konieczne są regularne podmiany wody."
+      "Przy wysokiej obsadzie konieczne sÄ… regularne podmiany wody."
     );
   }
   (filtrationCompensation.warnings ?? []).forEach((warningText) => {
@@ -6285,16 +6646,16 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
       : biologicalLoadAdjustedRisk === 'medium'
         ? 'Obciazenie biologiczne jest podwyzszone. Kontroluj NO3 i regularnosc podmian.'
         : biologicalLoadAdjustedRisk === 'high'
-          ? "Obciazenie biologiczne jest wysokie. Filtracja może pomagac, ale nie zastapi podmian."
-          : "Obciazenie biologiczne jest krytyczne - ryzyko skoków NH3/NH4, NO2 i NO3 jest wysokie.");
+          ? "Obciazenie biologiczne jest wysokie. Filtracja moĹĽe pomagac, ale nie zastapi podmian."
+          : "Obciazenie biologiczne jest krytyczne - ryzyko skokĂłw NH3/NH4, NO2 i NO3 jest wysokie.");
   const spaceLoadMessage =
     universalStockingModel?.componentStatus?.space?.message ||
     (spaceLoadRisk === 'low'
-      ? "Przestrzen akwarium wydaje się odpowiednia dla obecnej obsady."
+      ? "Przestrzen akwarium wydaje siÄ™ odpowiednia dla obecnej obsady."
       : spaceLoadRisk === 'medium'
         ? 'Przestrzen jest na granicy komfortu dla czesci obsady.'
         : spaceLoadRisk === 'high'
-          ? "Akwarium może byc zbyt male przestrzennie dla tej obsady."
+          ? "Akwarium moĹĽe byc zbyt male przestrzennie dla tej obsady."
           : 'Przestrzen jest krytycznie niewystarczajaca dla obecnej obsady.');
   const behaviorLoadMessage =
     universalStockingModel?.componentStatus?.behaviour?.message ||
@@ -6311,7 +6672,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
   ) {
     appendUnique(
       warnings,
-      'Nadfiltracja nie oznacza, ze mozna dowolnie zwiększac obsade.'
+      'Nadfiltracja nie oznacza, ze mozna dowolnie zwiÄ™kszac obsade.'
     );
   }
 
@@ -6442,9 +6803,9 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
         category === 'predation'
           ? 'Mozliwosc drapieznictwa.'
           : category === 'finNipping'
-            ? "Możliwe podgryzanie płetw."
+            ? "MoĹĽliwe podgryzanie pĹ‚etw."
             : category === 'territoriality'
-              ? "Możliwy konflikt terytorialny."
+              ? "MoĹĽliwy konflikt terytorialny."
               : 'Mozliwa agresja miedzy gatunkami.';
       return {
         type: category || 'aggression',
@@ -6479,7 +6840,7 @@ function evaluateStockingCompatibility(aquarium, stockingList, measurement = nul
           severity: String(item?.severity ?? 'warning').toLowerCase(),
           source,
           target,
-          message: String(item?.message ?? '').trim() || "Możliwy konflikt miedzy gatunkami.",
+          message: String(item?.message ?? '').trim() || "MoĹĽliwy konflikt miedzy gatunkami.",
         },
       ];
     });
@@ -6715,7 +7076,7 @@ const FISH_LATIN_TO_POLISH_COMMON = {
   'sahyadria denisonii': 'Brzanka Denissona',
   'stiphodon percnopterygionus': 'Babka Stiphodon',
   'stiphodon rutilaureus': 'Babka Stiphodon zlota',
-  'symphysodon aequifasciatus': "Dyskowiec brązowy",
+  'symphysodon aequifasciatus': "Dyskowiec brÄ…zowy",
   'symphysodon discus': 'Dyskowiec Heckla',
   'tanichthys micagemmae': 'Kardynalek wietnamski',
   'tateurndina ocellicauda': 'Babka pawiooka',
@@ -6904,7 +7265,7 @@ function getSanitizedPlantCatalogFields(rawPlant) {
     rawPlant?.commonName ?? rawPlant?.name ?? ''
   ).trim();
   const latinNameRaw = String(rawPlant?.latinName ?? '').trim();
-  const latinName = latinNameRaw || commonName || "Roślina";
+  const latinName = latinNameRaw || commonName || "RoĹ›lina";
   const phMinRaw = coerceNumberToRange(
     rawPlant?.phMin,
     EXPANDED_PLANT_DEFAULTS.phMin,
@@ -7076,6 +7437,7 @@ function getFishCatalogEntryScore(item) {
   const hasDistinctCommonName =
     normalizeText(item.commonName) &&
     normalizeText(item.commonName) !== normalizeText(item.latinName);
+  const hasImage = hasCatalogImageData(item);
 
   let score = 0;
 
@@ -7101,6 +7463,11 @@ function getFishCatalogEntryScore(item) {
     score += 5;
   }
 
+  if (hasImage) {
+    // Keep entries with manually curated photos instead of older seed duplicates.
+    score += 120;
+  }
+
   if (item.notes && String(item.notes).trim().length > 0) {
     score += 1;
   }
@@ -7117,10 +7484,11 @@ function pickPreferredFishCatalogEntry(items) {
       return byScore;
     }
 
-    const byCreatedAt = getCreatedAtMs(a.createdAt) - getCreatedAtMs(b.createdAt);
+    const byRecency =
+      getCatalogEntryRecencyMs(b) - getCatalogEntryRecencyMs(a);
 
-    if (byCreatedAt !== 0) {
-      return byCreatedAt;
+    if (byRecency !== 0) {
+      return byRecency;
     }
 
     return String(a.id).localeCompare(String(b.id));
@@ -7148,7 +7516,7 @@ function dedupeFishCatalogEntriesByLatin(entries) {
     }
 
     const keeper = pickPreferredFishCatalogEntry(items);
-    uniqueEntries.push(keeper);
+    uniqueEntries.push(mergeCatalogImageFields(keeper, items));
 
     items.forEach((item) => {
       if (item.id !== keeper.id) {
@@ -7176,6 +7544,7 @@ function getPlantCatalogEntryScore(item) {
   const hasDistinctCommonName =
     normalizeText(item.commonName) &&
     normalizeText(item.commonName) !== normalizeText(item.latinName);
+  const hasImage = hasCatalogImageData(item);
 
   let score = 0;
 
@@ -7197,6 +7566,10 @@ function getPlantCatalogEntryScore(item) {
     score += 5;
   }
 
+  if (hasImage) {
+    score += 120;
+  }
+
   if (item.notes && String(item.notes).trim().length > 0) {
     score += 1;
   }
@@ -7213,10 +7586,11 @@ function pickPreferredPlantCatalogEntry(items) {
       return byScore;
     }
 
-    const byCreatedAt = getCreatedAtMs(a.createdAt) - getCreatedAtMs(b.createdAt);
+    const byRecency =
+      getCatalogEntryRecencyMs(b) - getCatalogEntryRecencyMs(a);
 
-    if (byCreatedAt !== 0) {
-      return byCreatedAt;
+    if (byRecency !== 0) {
+      return byRecency;
     }
 
     return String(a.id).localeCompare(String(b.id));
@@ -7244,7 +7618,7 @@ function dedupePlantCatalogEntriesByLatin(entries) {
     }
 
     const keeper = pickPreferredPlantCatalogEntry(items);
-    uniqueEntries.push(keeper);
+    uniqueEntries.push(mergeCatalogImageFields(keeper, items));
 
     items.forEach((item) => {
       if (item.id !== keeper.id) {
@@ -7258,50 +7632,6 @@ function dedupePlantCatalogEntriesByLatin(entries) {
     duplicateIds,
   };
 }
-
-const FISH_CATALOG_ALLOWED_LATIN_NAMES = [
-  'Poecilia reticulata',
-  'Poecilia sphenops',
-  'Xiphophorus maculatus',
-  'Xiphophorus hellerii',
-  'Paracheirodon innesi',
-  'Paracheirodon axelrodi',
-  'Hyphessobrycon herbertaxelrodi',
-  'Hyphessobrycon amandae',
-  'Inpaichthys kerri',
-  'Trigonostigma heteromorpha',
-  'Danio rerio',
-  'Tanichthys albonubes',
-  'Corydoras panda',
-  'Corydoras aeneus',
-  'Otocinclus affinis',
-  'Ancistrus cf. cirrhosus',
-  'Pangio kuhlii',
-  'Betta splendens',
-  'Trichogaster lalius',
-  'Trichopodus leerii',
-  'Mikrogeophagus ramirezi',
-  'Pterophyllum scalare',
-  'Chindongo saulosi',
-  'Epalzeorhynchos frenatum',
-  'Andinoacara pulcher',
-  'Caridina multidentata',
-  'Neocaridina davidi',
-  'Caridina cf. cantonensis',
-  'Neocaridina davidi var. blue dream',
-  'Neocaridina davidi var. yellow',
-  'Caridina cf. babaulti',
-  'Atyopsis moluccensis',
-  'Neritina pulligera',
-  'Vittina natalensis',
-  'Pomacea diffusa',
-  'Melanoides tuberculata',
-  'Brotia herculea',
-  'Physella acuta',
-  'Planorbella duryi',
-  'Lymnaea stagnalis',
-  'Anentome helena',
-];
 
 const PLANT_CATALOG_ALLOWED_LATIN_NAMES = [
   'Anubias barteri',
@@ -7574,7 +7904,7 @@ const FISH_LOCALIZED_COMMON_NAMES_BY_LATIN = Object.freeze({
   },
   'physella acuta': {
     pl: 'Rozdetka',
-    en: 'Błądder snail',
+    en: 'BĹ‚Ä…dder snail',
     de: 'Blasenschnecke',
   },
   'planorbella duryi': {
@@ -7732,128 +8062,8 @@ const PLANT_LOCALIZED_COMMON_NAMES_BY_LATIN = Object.freeze({
   },
 });
 
-const GENERIC_FISH_IMAGE_URL =
-  'https://upload.wikimedia.org/wikipedia/commons/thumb/e/e0/Poecilia_reticulata_male.jpg/640px-Poecilia_reticulata_male.jpg';
 const GENERIC_PLANT_IMAGE_URL =
   'https://upload.wikimedia.org/wikipedia/commons/thumb/8/86/Anubias_barteri_var._nana_01.jpg/640px-Anubias_barteri_var._nana_01.jpg';
-
-const FISH_WIKI_TITLE_ALIASES_BY_LATIN = Object.freeze({
-  'hyphessobrycon columbianus': ['Hyphessobrycon_columbianus', 'Hyphessobrycon_colombianus'],
-  'hyphessobrycon scholzei': ['Hyphessobrycon_scholzei'],
-  'crossocheilus oblongus': ['Crossocheilus_oblongus', 'Siamese_algae_eater'],
-  'crossocheilus siamensis': ['Crossocheilus_siamensis', 'Siamese_algae_eater'],
-  'epalzeorhynchos bicolor': ['Epalzeorhynchos_bicolor', 'Red-tail_black_shark'],
-  'epalzeorhynchos frenatum': ['Epalzeorhynchos_frenatum', 'Rainbow_shark'],
-  'inpaichthys kerri': ['Inpaichthys_kerri'],
-  'moenkhausia sanctaefilomenae': ['Moenkhausia_sanctaefilomenae'],
-  'moenkhausia pittieri': ['Moenkhausia_pittieri'],
-  'hyphessobrycon sweglesi': ['Hyphessobrycon_sweglesi'],
-  'thayeria boehlkei': ['Thayeria_boehlkei'],
-  'xiphophorus hellerii': ['Xiphophorus_hellerii', 'Xiphophorus_helleri'],
-  'trichogaster chuna': ['Trichogaster_chuna', 'Colisa_chuna'],
-  'puntigrus tetrazona': ['Puntigrus_tetrazona', 'Puntius_tetrazona'],
-  'symphysodon discus': ['Symphysodon_discus'],
-  'caridina multidentata': ['Caridina_multidentata'],
-  'caridina cf. cantonensis': ['Caridina_cantonensis', 'Bee_shrimp'],
-  'caridina cf. cantonensis var. black': ['Caridina_cantonensis', 'Bee_shrimp'],
-  'caridina mariae': ['Caridina_cantonensis', 'Bee_shrimp'],
-  'danio rerio': ['Danio_rerio'],
-  'danio albolineatus': ['Danio_albolineatus'],
-  'danio margaritatus': ['Danio_margaritatus'],
-  'otocinclus affinis': ['Otocinclus_affinis', 'Macrotocinclus_affinis'],
-  'otocinclus vittatus': ['Otocinclus_vittatus'],
-  'ancistrus cf. cirrhosus': ['Ancistrus_cirrhosus'],
-  'ancistrus dolichopterus': ['Ancistrus_dolichopterus'],
-  'pterygoplichthys gibbiceps': ['Pterygoplichthys_gibbiceps'],
-  'hypancistrus zebra': ['Hypancistrus_zebra'],
-  'poecilia wingei': ['Poecilia_wingei', 'Poeciliawingei', 'Endlers_Guppy_Poecilia_wingei'],
-  'atyopsis moluccensis': ['Atyopsis_moluccensis'],
-  'atyopsis spinipes': ['Atyopsis_spinipes'],
-});
-
-function buildDefaultFishCommonsFileByLatin(latinNames = []) {
-  const entries = [];
-
-  latinNames.forEach((latinName) => {
-    const normalizedKey = normalizeLatinCatalogKey(latinName);
-    const words = String(latinName ?? '')
-      .trim()
-      .replace(/\s+/g, ' ')
-      .split(' ')
-      .filter(Boolean);
-
-    if (!normalizedKey || words.length < 2) {
-      return;
-    }
-
-    entries.push([normalizedKey, `${words[0]}_${words[1]}.jpg`]);
-  });
-
-  return Object.fromEntries(entries);
-}
-
-const FISH_DEFAULT_COMMONS_FILE_BY_LATIN = Object.freeze(
-  buildDefaultFishCommonsFileByLatin(FISH_CATALOG_ALLOWED_LATIN_NAMES)
-);
-
-const FISH_COMMONS_FILE_OVERRIDES_BY_LATIN = Object.freeze({
-  'poecilia wingei': 'Endlers_Guppy_Poecilia_wingei.JPG',
-  'ancistrus sp.': 'Ancistrus_sp.jpg',
-  'xiphophorus hellerii': 'Xiphophorus_hellerii_-_male_and_female.jpg',
-  'symphysodon discus': 'Symphysodon_discus_02.jpg',
-  'trichogaster chuna': 'Colisa_chuna_male.jpg',
-  'puntigrus tetrazona': 'Puntius_tetrazona_(aka).jpg',
-  'caridina multidentata': 'Caridina_multidentata_close.jpg',
-  'caridina cf. cantonensis': 'Caridina-cf-cantonensis-crystal-red.jpg',
-  'caridina cf. cantonensis var. black': 'Caridina-cf-cantonensis-black-bee.jpg',
-  'caridina mariae': 'Caridina-cf-cantonensis-tiger.jpg',
-  'danio rerio': 'Danio_rerio.JPG',
-  'danio albolineatus': 'Danio_albolineatus.jpg',
-  'danio margaritatus': 'Danio_margaritatus.jpg',
-  'inpaichthys kerri': '05.Inpaichtys_kerri.JPG',
-  'otocinclus affinis': 'Otocinclus_affinis.jpg',
-  'otocinclus vittatus': 'Otocinclus_vittatus.jpg',
-  'ancistrus cf. cirrhosus': 'Ancistrus_cirrhosus.jpg',
-  'ancistrus dolichopterus': 'Siluriformes_-_Ancistrus_dolichopterus_-_1.jpg',
-  'pterygoplichthys gibbiceps': 'Pterygoplichthys_gibbiceps_1.jpg',
-  'hypancistrus zebra': 'Hypancistrus_zebra4305.jpg',
-  'crossocheilus siamensis': 'Crossocheilus_siamensis.jpg',
-  'hyphessobrycon columbianus': 'Hyphessobrycon_colombianus.jpg',
-  'hyphessobrycon scholzei': 'Hyphessobrycon_scholzei_(31520).png',
-  'hyphessobrycon sweglesi': 'Hyphessobrycon_sweglesi_(31473-C).png',
-  'thayeria boehlkei': 'Thayeria_boehlkei.jpg',
-  'crossocheilus oblongus': 'Crossocheilus_Oblongus_(1).jpg',
-  'epalzeorhynchos bicolor': 'Epalzeorhynchos_bicolor.jpg',
-  'epalzeorhynchos frenatum': 'Epalzeorhynchos_frenatum.jpg',
-  'caridina cf. babaulti': 'Caridina_cf._babaulti.jpg',
-  'caridina gracilirostris': 'Caridina_gracilirostris.JPG',
-  'atyopsis moluccensis': 'Atyopsis_moluccensis.jpg',
-  'atyopsis spinipes': 'Atyopsis_moluccensis.jpg',
-});
-
-const FISH_COMMONS_FILE_BY_LATIN = Object.freeze({
-  ...FISH_DEFAULT_COMMONS_FILE_BY_LATIN,
-  ...FISH_COMMONS_FILE_OVERRIDES_BY_LATIN,
-});
-
-function buildFishCatalogImageUrl(latinName) {
-  const normalizedLatinKey = normalizeLatinCatalogKey(latinName);
-  const manualCommonsFileName = normalizedLatinKey
-    ? FISH_COMMONS_FILE_BY_LATIN[normalizedLatinKey]
-    : '';
-
-  if (manualCommonsFileName) {
-    return (
-      buildCommonsFileThumbnailUrl(manualCommonsFileName, 900) ||
-      GENERIC_FISH_IMAGE_URL
-    );
-  }
-
-  return (
-    buildFishCommonsFallbackImageUrl(String(latinName ?? '').trim(), 900) ||
-    GENERIC_FISH_IMAGE_URL
-  );
-}
 
 const PLANT_COMMONS_FILE_OVERRIDES_BY_LATIN = Object.freeze({
   'anubias barteri var. nana': 'Anubias_barteri_var._nana_01.jpg',
@@ -7901,7 +8111,7 @@ const PLANT_COMMON_NAME_OVERRIDES_BY_LATIN = Object.freeze({
   'hygrophila polysperma': 'Nadwodka wielonasienna',
   'hygrophila corymbosa': 'Nadwodka corymbosa',
   'hygrophila corymbosa siamensis': 'Nadwodka syjamska',
-  'hygrophila difformis': 'Nadwodka wielokształtna',
+  'hygrophila difformis': 'Nadwodka wieloksztaĹ‚tna',
   'hygrophila pinnatifida': 'Nadwodka pinnatifida',
   'taxiphyllum barbieri': 'Mch jawajski',
   'vesicularia montagnei': 'Mch christmas',
@@ -8111,7 +8321,7 @@ const EXPANDED_PLANT_DEFAULTS = {
   tempMax: 28,
   minLiters: 20,
   notes:
-    "Profil orientacyjny rośliny. Zweryfikuj wymagania pod konkretna odmiane.",
+    "Profil orientacyjny roĹ›liny. Zweryfikuj wymagania pod konkretna odmiane.",
 };
 
 function getPolishPlantCommonName(rawCommonName, latinName) {
@@ -8292,13 +8502,13 @@ function localizeStockItemsForLanguage(entries = [], locale = 'pl') {
 }
 
 function resolveCatalogImageUrls(item) {
-  const imageLink = String(item?.imageLink ?? '').trim();
-  const imagePreviewUrl = String(
+  const imageLink = normalizeCatalogImageUrl(String(item?.imageLink ?? '').trim(), 420);
+  const imagePreviewUrl = normalizeCatalogImageUrl(
     item?.imagePreviewUrl ?? item?.imageUrl ?? imageLink
-  ).trim();
-  const imageUrl = String(
+  , 420);
+  const imageUrl = normalizeCatalogImageUrl(
     item?.imageUrl ?? item?.imagePreviewUrl ?? imageLink
-  ).trim();
+  , 900);
 
   return {
     imagePreviewUrl,
@@ -8518,9 +8728,9 @@ const PRACTICAL_WATER_TOLERANCE = {
 
 const SENSITIVE_STOCK_KEYWORDS = [
   'wrazliw',
-  'stabilnych parametrów',
+  'stabilnych parametrĂłw',
   'stabilne warunki',
-  'miękkiej wod',
+  'miÄ™kkiej wod',
   'crystal red',
   'ramireza',
   'dyskowiec',
@@ -8579,7 +8789,7 @@ function getPracticalWaterParameterIssues(item, measurement, stockType) {
       : PRACTICAL_WATER_TOLERANCE.fish;
   const toleranceMultiplier = getStockPracticalToleranceMultiplier(item);
   const subjectLabel =
-    stockType === 'plant' ? "dla tej rośliny" : 'dla tego gatunku';
+    stockType === 'plant' ? "dla tej roĹ›liny" : 'dla tego gatunku';
   const checks = [
     {
       key: 'ph',
@@ -8648,7 +8858,7 @@ function checkFishCompatibility(item, measurement, tankLiters, tankProfile = nul
     Number(item.minLiters) > Number(tankLiters)
   ) {
     issues.push(
-      `Ten gatunek zwykle lepiej czuje się od ${item.minLiters} l, a akwarium ma ${tankLiters} l.`
+      `Ten gatunek zwykle lepiej czuje siÄ™ od ${item.minLiters} l, a akwarium ma ${tankLiters} l.`
     );
   }
 
@@ -8666,7 +8876,7 @@ function checkFishCompatibility(item, measurement, tankLiters, tankProfile = nul
       !isSoftBottomSubstrate(substrateTypes)
     ) {
       issues.push(
-        `Ten gatunek zwykle lepiej czuje się na miękkim podłożu, a w akwarium ustawiono: ${getSubstrateLabels(substrateTypes)}.`
+        `Ten gatunek zwykle lepiej czuje siÄ™ na miÄ™kkim podĹ‚oĹĽu, a w akwarium ustawiono: ${getSubstrateLabels(substrateTypes)}.`
       );
     }
 
@@ -8684,9 +8894,9 @@ function checkFishCompatibility(item, measurement, tankLiters, tankProfile = nul
         tankLightRank > lightLevelToRank(fishLightRange.max))
     ) {
       issues.push(
-        `światło (${getTankLightingLabelForIssues(
+        `Ĺ›wiatĹ‚o (${getTankLightingLabelForIssues(
           tankProfile
-        )}) może nie byc optymalne dla tego gatunku.`
+        )}) moĹĽe nie byc optymalne dla tego gatunku.`
       );
     }
   }
@@ -8708,7 +8918,7 @@ function isPotentialDiggingFish(item) {
     'kopi',
     'przekop',
     'grzebi',
-    'podłoże',
+    'podĹ‚oĹĽe',
     'geophagus',
     'earth eater',
     'pyszczak',
@@ -8752,7 +8962,7 @@ function checkPlantCompatibility(
     Number(item.minLiters) > Number(tankLiters)
   ) {
     issues.push(
-      `Ta roślina zwykle lepiej sprawdza się od ${item.minLiters} l, a akwarium ma ${tankLiters} l.`
+      `Ta roĹ›lina zwykle lepiej sprawdza siÄ™ od ${item.minLiters} l, a akwarium ma ${tankLiters} l.`
     );
   }
   if (
@@ -8763,7 +8973,7 @@ function checkPlantCompatibility(
     ) > 1
   ) {
     issues.push(
-      `Docelowy litraż dla tej rośliny to min. ${requirementsProfile.minTankVolumeL} l, a akwarium ma ${tankLiters} l.`
+      `Docelowy litraĹĽ dla tej roĹ›liny to min. ${requirementsProfile.minTankVolumeL} l, a akwarium ma ${tankLiters} l.`
     );
   }
 
@@ -8775,7 +8985,7 @@ function checkPlantCompatibility(
       Number(tankProfile.heightCm) < Number(requirementsProfile.minTankHeightCm)
     ) {
       issues.push(
-        `Wysokość zbiornika (${Math.round(Number(tankProfile.heightCm))} cm) jest poniżej zalecenia dla tej rośliny (${requirementsProfile.minTankHeightCm} cm).`
+        `WysokoĹ›Ä‡ zbiornika (${Math.round(Number(tankProfile.heightCm))} cm) jest poniĹĽej zalecenia dla tej roĹ›liny (${requirementsProfile.minTankHeightCm} cm).`
       );
     }
 
@@ -8784,7 +8994,7 @@ function checkPlantCompatibility(
       normalizeDensityLevel(tankProfile?.zones?.plantArea) === 'low'
     ) {
       issues.push(
-        "Tylna strefa nasadzen jest uboga, a ta roślina najlepiej pracuje jako tlo. Rozważ więcej miejsca na tyl zbiornika."
+        "Tylna strefa nasadzen jest uboga, a ta roĹ›lina najlepiej pracuje jako tlo. RozwaĹĽ wiÄ™cej miejsca na tyl zbiornika."
       );
     }
 
@@ -8803,14 +9013,14 @@ function checkPlantCompatibility(
 
       if (!hasActiveRootTabsSupport) {
         issues.push(
-          `Ta roślina zwykle rosnie lepiej w bardziej zasobnym podłożu, a w akwarium ustawiono: ${getSubstrateLabels(substrateTypes)}.`
+          `Ta roĹ›lina zwykle rosnie lepiej w bardziej zasobnym podĹ‚oĹĽu, a w akwarium ustawiono: ${getSubstrateLabels(substrateTypes)}.`
         );
       } else if (
         Number.isFinite(rootTabsSupportDaysLeft) &&
         rootTabsSupportDaysLeft <= ROOT_TABS_DUE_SOON_DAYS
       ) {
         issues.push(
-          `Podłoże (${getSubstrateLabels(substrateTypes)}) jest wspierane kulkami nawozowymi, ale ich działanie może się skonczyc za ok. ${Math.max(
+          `PodĹ‚oĹĽe (${getSubstrateLabels(substrateTypes)}) jest wspierane kulkami nawozowymi, ale ich dziaĹ‚anie moĹĽe siÄ™ skonczyc za ok. ${Math.max(
             0,
             Math.round(rootTabsSupportDaysLeft)
           )} dni.`
@@ -8839,7 +9049,7 @@ function checkPlantCompatibility(
         (lightHours < minHours || lightHours > maxHours)
       ) {
         issues.push(
-          `Czas świecenia (${lightHours} h) może utrudniac tej roslinie stabilny wzrost (zwykle ${minHours}-${maxHours} h).`
+          `Czas Ĺ›wiecenia (${lightHours} h) moĹĽe utrudniac tej roslinie stabilny wzrost (zwykle ${minHours}-${maxHours} h).`
         );
       }
     }
@@ -8848,11 +9058,11 @@ function checkPlantCompatibility(
     if (requirementsProfile.co2Demand === 'high') {
       if (Number.isFinite(Number(measuredCo2)) && Number(measuredCo2) < 15) {
         issues.push(
-          `Ta roślina ma wysokie zapotrzebowanie na CO2, a aktualnie jest ok. ${Math.round(Number(measuredCo2))} mg/l.`
+          `Ta roĹ›lina ma wysokie zapotrzebowanie na CO2, a aktualnie jest ok. ${Math.round(Number(measuredCo2))} mg/l.`
         );
       } else if (!Number.isFinite(Number(measuredCo2))) {
         issues.push(
-          "Ta roślina ma wysokie zapotrzebowanie na CO2 - warto monitorować CO2 (pomiar bezpośredni lub z KH/pH)."
+          "Ta roĹ›lina ma wysokie zapotrzebowanie na CO2 - warto monitorowaÄ‡ CO2 (pomiar bezpoĹ›redni lub z KH/pH)."
         );
       }
     } else if (
@@ -8861,7 +9071,7 @@ function checkPlantCompatibility(
       Number(measuredCo2) < 8
     ) {
       issues.push(
-        `CO2 (${Math.round(Number(measuredCo2))} mg/l) może byc zbyt niskie dla stabilnego wzrostu tej rośliny.`
+        `CO2 (${Math.round(Number(measuredCo2))} mg/l) moĹĽe byc zbyt niskie dla stabilnego wzrostu tej roĹ›liny.`
       );
     }
 
@@ -8871,7 +9081,7 @@ function checkPlantCompatibility(
       !isNutrientSubstrate(substrateTypes)
     ) {
       issues.push(
-        "Roślina ma wysokie zapotrzebowanie nawozowe - przy tym podłożu rozważ regularne nawożenie i wsparcie strefy korzeniowej."
+        "RoĹ›lina ma wysokie zapotrzebowanie nawozowe - przy tym podĹ‚oĹĽu rozwaĹĽ regularne nawoĹĽenie i wsparcie strefy korzeniowej."
       );
     }
   }
@@ -8882,18 +9092,18 @@ function checkPlantCompatibility(
   const diggerCount = fishItems.filter((fishItem) => isPotentialDiggingFish(fishItem)).length;
   if (!requirementsProfile.compatibleWithDiggers && diggerCount > 0) {
     issues.push(
-      `W akwarium są ryby potencjalnie kopiace w podłożu (${diggerCount}), a ta roślina słabo to toleruje.`
+      `W akwarium sÄ… ryby potencjalnie kopiace w podĹ‚oĹĽu (${diggerCount}), a ta roĹ›lina sĹ‚abo to toleruje.`
     );
   }
 
   if (issues.length > 0 && requirementsProfile.parameterStabilitySensitivity === 'high') {
     issues.push(
-      "Ta roślina jest wrażliwa na skoki parametrów - korekty wykonuj stopniowo."
+      "Ta roĹ›lina jest wraĹĽliwa na skoki parametrĂłw - korekty wykonuj stopniowo."
     );
   }
   if (issues.length > 0 && requirementsProfile.carboSensitivity === 'high') {
     issues.push(
-      "Roślina może byc wrażliwa na agresywne dawkowanie carbo - zaczynaj od mniejszych dawek i obserwuj liście."
+      "RoĹ›lina moĹĽe byc wraĹĽliwa na agresywne dawkowanie carbo - zaczynaj od mniejszych dawek i obserwuj liĹ›cie."
     );
   }
 
@@ -9160,7 +9370,7 @@ function buildContextualEcosystemInsights({
   if (fishCount > 0 && hasLowPlantBuffer) {
     riskNotes.push({
       severity: hasStrongBioloadPressure ? 'critical' : 'warning',
-      text: `Uklad obsady (${fishCount} ryb, ${plantCount} roślin) sprzyja narastaniu NO3 i glonom.`,
+      text: `Uklad obsady (${fishCount} ryb, ${plantCount} roĹ›lin) sprzyja narastaniu NO3 i glonom.`,
     });
   }
 
@@ -9184,14 +9394,14 @@ function buildContextualEcosystemInsights({
       value: `${Math.round(no3Value * 10) / 10} mg/l`,
       expectedRange: `NO3 <= ${no3SafeMax} mg/l i trend stabilny`,
       issue:
-        "Duża obsada przy malej masie roślin zwiększa produkcje azotanow szybciej niż zbiornik je wykorzystuje.",
+        "DuĹĽa obsada przy malej masie roĹ›lin zwiÄ™ksza produkcje azotanow szybciej niĹĽ zbiornik je wykorzystuje.",
       action:
-        "Na 10-14 dni: podmiany 20-25% co 3-4 dni, karmienie -20-30%, odmulanie dna i dodanie szybko rosnacych roślin (np. rogatek, hygrophila, nurzaniec).",
+        "Na 10-14 dni: podmiany 20-25% co 3-4 dni, karmienie -20-30%, odmulanie dna i dodanie szybko rosnacych roĹ›lin (np. rogatek, hygrophila, nurzaniec).",
       dueInDays: severity === 'critical' ? 0 : 1,
     });
 
     summaryHints.push(
-      "Parametry trzeba czytac razem z obciążeniem zbiornika: przy tej obsadzie NO3 będzie wracalo bez korekty karmienia i masy roślin."
+      "Parametry trzeba czytac razem z obciÄ…ĹĽeniem zbiornika: przy tej obsadzie NO3 bÄ™dzie wracalo bez korekty karmienia i masy roĹ›lin."
     );
   }
 
@@ -9206,9 +9416,9 @@ function buildContextualEcosystemInsights({
       value: 'brak aktywnego testu',
       expectedRange: `NO3 <= ${no3SafeMax} mg/l`,
       issue:
-        'Przy tej obsadzie bez testu NO3 trudno wychwycic narastanie obciążenia biologicznego.',
+        'Przy tej obsadzie bez testu NO3 trudno wychwycic narastanie obciÄ…ĹĽenia biologicznego.',
       action:
-        'Włącz test NO3 w ustawieniach i kontroluj go min. 2 razy w tygodniu przez najbliższe 2 tygodnie.',
+        'WĹ‚Ä…cz test NO3 w ustawieniach i kontroluj go min. 2 razy w tygodniu przez najbliĹĽsze 2 tygodnie.',
       dueInDays: 1,
     });
   }
@@ -9220,13 +9430,13 @@ function buildContextualEcosystemInsights({
   ) {
     recommendations.push({
       severity: hasStrongBioloadPressure ? 'critical' : 'warning',
-      parameter: 'Filtracja / obciążenie',
+      parameter: 'Filtracja / obciÄ…ĹĽenie',
       value: hasStrongBioloadPressure ? 'wysokie' : 'podwyzszone',
       expectedRange: 'wydajna filtracja biologiczna dla aktualnej obsady',
       issue:
-        'Obciążenie biologiczne jest wysokie, a filtracja wymaga poprawy - to przyspiesza skoki NO2/NO3.',
+        'ObciÄ…ĹĽenie biologiczne jest wysokie, a filtracja wymaga poprawy - to przyspiesza skoki NO2/NO3.',
       action:
-        "Popraw filtracje: wyczysc prefiltr, zwiększ media biologiczne i rozważ mocniejszy zestaw lub drugi filtr.",
+        "Popraw filtracje: wyczysc prefiltr, zwiÄ™ksz media biologiczne i rozwaĹĽ mocniejszy zestaw lub drugi filtr.",
       dueInDays: hasStrongBioloadPressure ? 0 : 2,
     });
   }
@@ -9350,7 +9560,7 @@ function buildAquariumHealthAssessment({
   };
 
   if (!Number.isFinite(tankLiters) || tankLiters <= 0) {
-    applyPenalty(22, 'Brak poprawnego litrażu akwarium.');
+    applyPenalty(22, 'Brak poprawnego litraĹĽu akwarium.');
   } else {
     accuracy += 20;
 
@@ -9363,13 +9573,13 @@ function buildAquariumHealthAssessment({
       lightingStatus === 'none'
         ? 'Brak lampy przypisanej do akwarium.'
         : lightingStatus === 'warning'
-          ? "Lampa jest przypisana, ale brakuje godzin świecenia."
-          : "Oświetlenie jest przypisane i ma ustawione godziny świecenia.";
+          ? "Lampa jest przypisana, ale brakuje godzin Ĺ›wiecenia."
+          : "OĹ›wietlenie jest przypisane i ma ustawione godziny Ĺ›wiecenia.";
     const equipmentEntries = [
-      { label: "Grzałka", entry: equipmentAssessment.heater },
+      { label: "GrzaĹ‚ka", entry: equipmentAssessment.heater },
       { label: 'Filtr', entry: equipmentAssessment.filter },
       {
-        label: "Oświetlenie",
+        label: "OĹ›wietlenie",
         entry: {
           status: lightingStatus,
           details: lightingDetails,
@@ -9463,9 +9673,9 @@ function buildAquariumHealthAssessment({
     });
 
     if (analysis?.status === 'critical') {
-      applyPenalty(16, "Parametry wody są wyraznie poza bezpiecznym zakresem.");
+      applyPenalty(16, "Parametry wody sÄ… wyraznie poza bezpiecznym zakresem.");
     } else if (analysis?.status === 'warning') {
-      applyPenalty(8, "Część parametrów wody warto skorygowac.");
+      applyPenalty(8, "CzÄ™Ĺ›Ä‡ parametrĂłw wody warto skorygowac.");
     } else if (analysis?.status === 'ok') {
       applyBonus(3);
     }
@@ -9477,7 +9687,7 @@ function buildAquariumHealthAssessment({
 
     const riskPenalty = Math.min(riskNotes.length * 2, 8);
     if (riskPenalty > 0) {
-      applyPenalty(riskPenalty, 'Widac dodatkowe ryzyka dla stabilności zbiornika.');
+      applyPenalty(riskPenalty, 'Widac dodatkowe ryzyka dla stabilnoĹ›ci zbiornika.');
     }
   }
 
@@ -9525,7 +9735,7 @@ function buildAquariumHealthAssessment({
   if (plantItems.length === 0) {
     applyPenalty(
       18,
-      "Brak roślin w zbiorniku. Rośliny pomagaja stabilizowac biologicznie akwarium i ograniczac glony.",
+      "Brak roĹ›lin w zbiorniku. RoĹ›liny pomagaja stabilizowac biologicznie akwarium i ograniczac glony.",
       'plants'
     );
   } else {
@@ -9537,11 +9747,11 @@ function buildAquariumHealthAssessment({
     if (plantCompatibilityPenalty > 0) {
       const plantSubstrateHint =
         plantCompatibilitySummary.totalSubstrateIssues > 0
-          ? " (w tym podłoże: " + plantCompatibilitySummary.totalSubstrateIssues + ' ostrz.)'
+          ? " (w tym podĹ‚oĹĽe: " + plantCompatibilitySummary.totalSubstrateIssues + ' ostrz.)'
           : '';
       applyPenalty(
         plantCompatibilityPenalty,
-        "Rośliny maja " + plantCompatibilitySummary.totalIssues + " sygnalow niedopasowania do warunków" + plantSubstrateHint + '.',
+        "RoĹ›liny maja " + plantCompatibilitySummary.totalIssues + " sygnalow niedopasowania do warunkĂłw" + plantSubstrateHint + '.',
         'plants'
       );
     }
@@ -9599,7 +9809,7 @@ function buildAquariumHealthAssessment({
     ];
 
     if (names.length === 0) {
-      return 'problem wymagający kontroli';
+      return 'problem wymagajÄ…cy kontroli';
     }
 
     const visibleNames = names.slice(0, 3).join(', ');
@@ -9625,7 +9835,7 @@ function buildAquariumHealthAssessment({
     const fishDiseasePenalty = Math.min(6 + Math.round((fishDiseaseLoad - 1) * 3), 14);
     applyPenalty(
       fishDiseasePenalty,
-      `Choroby ryb wymagają terapii: ${formatIssueNames(activeFishDiseaseCases)}.`,
+      `Choroby ryb wymagajÄ… terapii: ${formatIssueNames(activeFishDiseaseCases)}.`,
       'health'
     );
   }
@@ -9635,7 +9845,7 @@ function buildAquariumHealthAssessment({
     const plantDiseasePenalty = Math.min(4 + Math.round((plantDiseaseLoad - 1) * 2), 10);
     applyPenalty(
       plantDiseasePenalty,
-      `Choroby roślin wymagają terapii: ${formatIssueNames(activePlantDiseaseCases)}.`,
+      `Choroby roĹ›lin wymagajÄ… terapii: ${formatIssueNames(activePlantDiseaseCases)}.`,
       'health'
     );
   }
@@ -9645,7 +9855,7 @@ function buildAquariumHealthAssessment({
     const algaePenalty = Math.min(5 + Math.round((algaeLoad - 1) * 2), 12);
     applyPenalty(
       algaePenalty,
-      `Glony wymagają opanowania: ${formatIssueNames(activeAlgaeCases)}.`,
+      `Glony wymagajÄ… opanowania: ${formatIssueNames(activeAlgaeCases)}.`,
       'health'
     );
   }
@@ -9666,7 +9876,7 @@ function buildAquariumHealthAssessment({
   if (activeIssueCategoryCount >= 2) {
     applyPenalty(
       4,
-      "Jednoczesne problemy w wielu obszarach (ryby/rośliny/glony).",
+      "Jednoczesne problemy w wielu obszarach (ryby/roĹ›liny/glony).",
       'health'
     );
   }
@@ -10114,24 +10324,24 @@ function buildProbableCausesByContext(kind, candidate, context) {
     push('Trend PO4 jest wzrostowy.');
   }
   if (trends?.ph?.direction !== 'stable' && trends?.ph?.direction !== 'unknown') {
-    push('pH wykazuje niestabilność między pomiarami.');
+    push('pH wykazuje niestabilnoĹ›Ä‡ miÄ™dzy pomiarami.');
   }
   if (
     trends?.temperature?.direction !== 'stable' &&
     trends?.temperature?.direction !== 'unknown'
   ) {
-    push('Temperatura wykazuje wahania między pomiarami.');
+    push('Temperatura wykazuje wahania miÄ™dzy pomiarami.');
   }
 
   if (kind === 'algae' || kind === 'plant_disease') {
     if (Number.isFinite(lightHours) && lightHours > 9) {
-      push(`Dlugie swiecenie (${lightHours} h) może napedzac nierownowage.`);
+      push(`Dlugie swiecenie (${lightHours} h) moĹĽe napedzac nierownowage.`);
     }
     if (Number.isFinite(lumensPerLiter) && lumensPerLiter > 50) {
-      push(`Mocne oświetlenie (${Math.round(lumensPerLiter)} lm/l) wymaga stabilnego nawożenia i CO2.`);
+      push(`Mocne oĹ›wietlenie (${Math.round(lumensPerLiter)} lm/l) wymaga stabilnego nawoĹĽenia i CO2.`);
     }
     if (Number.isFinite(co2) && co2 < 10) {
-      push(`CO2 jest niskie (${Math.round(co2)} mg/l), co może oslabiac konkurencje roślin.`);
+      push(`CO2 jest niskie (${Math.round(co2)} mg/l), co moĹĽe oslabiac konkurencje roĹ›lin.`);
     }
     if (Number.isFinite(po4) && po4 > 2) {
       push(`PO4 jest wysokie (${Math.round(po4 * 100) / 100} mg/l).`);
@@ -10140,10 +10350,10 @@ function buildProbableCausesByContext(kind, candidate, context) {
       push('Mozliwa nierownowaga NO3/PO4 (wysokie NO3 przy bardzo niskim PO4).');
     }
     if (context?.fertilizationSummary?.hasActiveRootTabs === false) {
-      push("Brak aktywnego wsparcia nawożenia strefy korzeniowej.");
+      push("Brak aktywnego wsparcia nawoĹĽenia strefy korzeniowej.");
     }
     if (Number.isFinite(fe) && fe < 0.02 && kind === 'plant_disease') {
-      push(`Niskie Fe (${Math.round(fe * 100) / 100} mg/l) może ograniczac wzrost roślin.`);
+      push(`Niskie Fe (${Math.round(fe * 100) / 100} mg/l) moĹĽe ograniczac wzrost roĹ›lin.`);
     }
   }
 
@@ -10152,16 +10362,16 @@ function buildProbableCausesByContext(kind, candidate, context) {
       context?.stockingCompatibility?.overallStatus ?? ''
     );
     if (overallStockingStatus === 'high_risk' || overallStockingStatus === 'incompatible') {
-      push('Obsada jest ryzykowna, co zwiększa stres i podatnosc ryb na choroby.');
+      push('Obsada jest ryzykowna, co zwiÄ™ksza stres i podatnosc ryb na choroby.');
     }
   }
 
   if (kind === 'algae' && Number(context?.plantToFishRatio) < 0.25 && Number(context?.fishCount) > 6) {
-    push("Masa roślinna jest relatywnie mala względem obsady ryb.");
+    push("Masa roĹ›linna jest relatywnie mala wzglÄ™dem obsady ryb.");
   }
 
   if (Number.isFinite(tankAgeDays) && tankAgeDays > 0 && tankAgeDays < 30) {
-    push(`Mlody wiek akwarium (${tankAgeDays} dni) może zwiększac ryzyko nierownowagi.`);
+    push(`Mlody wiek akwarium (${tankAgeDays} dni) moĹĽe zwiÄ™kszac ryzyko nierownowagi.`);
   }
 
   return dedupeTextList(causes, 6);
@@ -10181,29 +10391,29 @@ function buildDiagnosisTimelinePlan(kind, candidate, context) {
   const d30 = [];
 
   if (kind === 'disease') {
-    h24.push('Sprawdź NO2, NH3/NH4, temperature i napowietrzanie; popraw warunki zanim wdrozysz leczenie.');
+    h24.push('SprawdĹş NO2, NH3/NH4, temperature i napowietrzanie; popraw warunki zanim wdrozysz leczenie.');
     h24.push('Oddziel osobniki najslabsze do obserwacji (jesli to bezpieczne).');
-    d7.push('Prowadz codzieńna obserwacje zachowania i apetytu; zapisuj zmiany.');
-    d7.push('Wykonaj 2-3 kontrolę parametrów i utrzymuj regularne podmiany.');
+    d7.push('Prowadz codzieĹ„na obserwacje zachowania i apetytu; zapisuj zmiany.');
+    d7.push('Wykonaj 2-3 kontrolÄ™ parametrĂłw i utrzymuj regularne podmiany.');
     d30.push('Po ustabilizowaniu zbiornika zweryfikuj obsade i ogranicz dlugoterminowy stres.');
   } else if (kind === 'plant_disease') {
-    h24.push('Sprawdź światło (czas/moc), CO2 i podstawowe makro/mikro; nie zmieniaj wszystkiego naraz.');
-    h24.push("Usuń najmocniej uszkodzone liście.");
-    d7.push('Wprowadź jedna korekte co 2-3 dni i obserwuj nowe przyrosty.');
-    d7.push("Kontroluj NO3/PO4/Fe oraz stabilność pH.");
-    d30.push("Ustal stały schemat światła, nawożenia i podmian; oceniaj głównie nowe liście.");
+    h24.push('SprawdĹş Ĺ›wiatĹ‚o (czas/moc), CO2 i podstawowe makro/mikro; nie zmieniaj wszystkiego naraz.');
+    h24.push("UsuĹ„ najmocniej uszkodzone liĹ›cie.");
+    d7.push('WprowadĹş jedna korekte co 2-3 dni i obserwuj nowe przyrosty.');
+    d7.push("Kontroluj NO3/PO4/Fe oraz stabilnoĹ›Ä‡ pH.");
+    d30.push("Ustal staĹ‚y schemat Ĺ›wiatĹ‚a, nawoĹĽenia i podmian; oceniaj gĹ‚Ăłwnie nowe liĹ›cie.");
   } else {
-    h24.push("Mechanicznie usuń glony i wykonaj serwis, bez agresywnych dawek preparatów na start.");
-    h24.push('Skoryguj światło do stabilnego zakresu i ogranicz przekarmianie.');
+    h24.push("Mechanicznie usuĹ„ glony i wykonaj serwis, bez agresywnych dawek preparatĂłw na start.");
+    h24.push('Skoryguj Ĺ›wiatĹ‚o do stabilnego zakresu i ogranicz przekarmianie.');
     d7.push('Monitoruj trendy NO3/PO4/CO2 i poprawiaj jedna zmienna naraz.');
-    d7.push("Wzmocnij konkurencje roślin (masa roślinna, stabilność nawożenia).");
+    d7.push("Wzmocnij konkurencje roĹ›lin (masa roĹ›linna, stabilnoĹ›Ä‡ nawoĹĽenia).");
     d30.push('Utrzymaj profilaktyke: regularne podmiany, przycinki i higiena filtra.');
   }
 
   baseSteps.slice(0, 2).forEach((step) => h24.push(step));
   baseSteps.slice(2, 4).forEach((step) => d7.push(step));
   if (causes.length > 0) {
-    d30.push(`Pracuj nad przyczyna główna: ${causes[0]}`);
+    d30.push(`Pracuj nad przyczyna gĹ‚Ăłwna: ${causes[0]}`);
   }
 
   return {
@@ -10565,7 +10775,7 @@ function buildTankOnboardingPlan(tank, measurements, enabledTests = {}) {
       checklistStart: [],
       firstMeasurements: [],
       statusText:
-        'Nie udało się zbudować planu onboardingu dla tego akwarium. Sprawdź dane i spróbuj ponownie.',
+        'Nie udaĹ‚o siÄ™ zbudowaÄ‡ planu onboardingu dla tego akwarium. SprawdĹş dane i sprĂłbuj ponownie.',
       dayNumber: 0,
       targetEndDay: 0,
       isStabilized: false,
@@ -10628,6 +10838,7 @@ export default function HomeScreen() {
   const currentParameterTileWidth = `${(100 / currentParameterTileColumns).toFixed(4)}%`;
   const catalogSortLocale = getSupportedCatalogLocale(appSettings.language);
   const catalogLanguageRef = useRef(appSettings.language);
+  const fishCatalogLastFetchAtRef = useRef(0);
   const subscriptionPlans = useMemo(() => listSubscriptionPlans(), []);
 
   const [user, setUser] = useState(null);
@@ -10924,7 +11135,12 @@ export default function HomeScreen() {
   const [diseaseImageModalTitle, setDiseaseImageModalTitle] = useState('');
   const [diseaseImageZoomLevel, setDiseaseImageZoomLevel] = useState(1);
   const [diseasePreviewLoadStageById, setDiseasePreviewLoadStageById] = useState({});
-  const [fishImageUriByKey, setFishImageUriByKey] = useState({});
+  const [fishImageDirectFallbackByKey, setFishImageDirectFallbackByKey] = useState({});
+  const [fishImageDataUriByKey, setFishImageDataUriByKey] = useState({});
+  const [fishImageDataUriFailedByKey, setFishImageDataUriFailedByKey] = useState({});
+  const [wikimediaImageDataUriByKey, setWikimediaImageDataUriByKey] = useState({});
+  const [wikimediaImageDataUriFailedByKey, setWikimediaImageDataUriFailedByKey] =
+    useState({});
   const [plantImageUriByKey, setPlantImageUriByKey] = useState({});
   const [plantDiseaseMode, setPlantDiseaseMode] = useState('catalog');
   const [selectedPlantDiseaseSymptoms, setSelectedPlantDiseaseSymptoms] = useState({});
@@ -10990,6 +11206,89 @@ export default function HomeScreen() {
   const [acceptedProblemBusyKey, setAcceptedProblemBusyKey] = useState('');
   const [acceptedProblemAcksOverlayByTankId, setAcceptedProblemAcksOverlayByTankId] = useState({});
 
+  const getWikimediaCachedImageSource = useCallback(
+    (
+      uri,
+      cacheKey,
+      width = WIKIMEDIA_THUMBNAIL_WIDTH,
+      getDefaultSource = getDiseaseRemoteImageSource
+    ) => {
+      const normalizedUri = normalizeCatalogImageUrl(uri, width);
+      const normalizedCacheKey = String(cacheKey || normalizedUri || '').trim();
+      if (!normalizedUri) {
+        return DISEASE_IMAGE_PLACEHOLDER_SOURCE;
+      }
+
+      const cachedDataUri = normalizedCacheKey
+        ? wikimediaImageDataUriByKey[normalizedCacheKey]
+        : '';
+      if (cachedDataUri) {
+        return { uri: cachedDataUri };
+      }
+
+      if (
+        ENABLE_ANDROID_WIKIMEDIA_JS_FETCH &&
+        isWikimediaImageUri(normalizedUri) &&
+        normalizedCacheKey &&
+        !wikimediaImageDataUriFailedByKey[normalizedCacheKey]
+      ) {
+        return getRemoteImageSource(normalizedUri);
+      }
+
+      return getDefaultSource(normalizedUri);
+    },
+    [wikimediaImageDataUriByKey, wikimediaImageDataUriFailedByKey]
+  );
+
+  const requestWikimediaDataUriForKey = useCallback(
+    (
+      cacheKey,
+      uri,
+      width = WIKIMEDIA_THUMBNAIL_WIDTH,
+      debugTag = 'image-debug'
+    ) => {
+      const normalizedUri = normalizeCatalogImageUrl(uri, width);
+      const normalizedCacheKey = String(cacheKey || normalizedUri || '').trim();
+
+      if (
+        !ENABLE_ANDROID_WIKIMEDIA_JS_FETCH ||
+        !normalizedUri ||
+        !isWikimediaImageUri(normalizedUri) ||
+        !normalizedCacheKey ||
+        wikimediaImageDataUriByKey[normalizedCacheKey] ||
+        wikimediaImageDataUriFailedByKey[normalizedCacheKey]
+      ) {
+        return false;
+      }
+
+      fetchWikimediaImageDataUri(normalizedUri, width)
+        .then((dataUri) => {
+          if (!dataUri) {
+            return;
+          }
+          setWikimediaImageDataUriByKey((prev) =>
+            prev[normalizedCacheKey] ? prev : { ...prev, [normalizedCacheKey]: dataUri }
+          );
+        })
+        .catch((error) => {
+          setWikimediaImageDataUriFailedByKey((prev) => ({
+            ...prev,
+            [normalizedCacheKey]: true,
+          }));
+          if (ENABLE_IMAGE_DEBUG_LOGS) {
+            console.warn(`[${debugTag}] js fetch failed`, {
+              cacheKey: normalizedCacheKey,
+              previewUri: normalizedUri,
+              error: String(error?.message ?? error ?? ''),
+            });
+          }
+        });
+
+      return true;
+    },
+    [wikimediaImageDataUriByKey, wikimediaImageDataUriFailedByKey]
+  );
+
   const mergedEquipmentCatalog = useMemo(() => {
     const catalogById = new Map();
 
@@ -11052,8 +11351,6 @@ export default function HomeScreen() {
   const firstRunStatusTrackedTankIdRef = useRef('');
   const firstRunRecommendationTrackedTankIdRef = useRef('');
   const deleteAccountConfirmedRef = useRef(null);
-  const fishImageLookupInFlightRef = useRef(new Set());
-  const fishImageLookupAttemptedRef = useRef(new Set());
   const plantImageLookupInFlightRef = useRef(new Set());
   const plantImageLookupAttemptedRef = useRef(new Set());
 
@@ -11088,7 +11385,7 @@ export default function HomeScreen() {
             resolvedUser = auth.currentUser ?? nextUser;
           } catch (reloadError) {
             console.warn(
-              'Błąd odświeżenia statusu emailVerified:',
+              'BĹ‚Ä…d odĹ›wieĹĽenia statusu emailVerified:',
               reloadError instanceof Error ? reloadError.message : String(reloadError)
             );
           }
@@ -11100,7 +11397,7 @@ export default function HomeScreen() {
 
           signOut(auth).catch((error) => {
             console.warn(
-              'Błąd wylogowania nieweryfikowanego konta:',
+              'BĹ‚Ä…d wylogowania nieweryfikowanego konta:',
               error instanceof Error ? error.message : String(error)
             );
           });
@@ -11109,7 +11406,7 @@ export default function HomeScreen() {
           setInitialDataReady(true);
           if (shouldShowAlert) {
             showUnverifiedEmailAlert(
-              'Najpierw zweryfikuj email. Sprawdź skrzynke i kliknij link aktywacyjny.'
+              'Najpierw zweryfikuj email. SprawdĹş skrzynke i kliknij link aktywacyjny.'
             );
           }
           return;
@@ -11120,6 +11417,7 @@ export default function HomeScreen() {
         setLoading(false);
 
         if (!resolvedUser) {
+          fishCatalogLastFetchAtRef.current = 0;
           setTanks([]);
           setSelectedTank(null);
           setActiveSection('home');
@@ -11215,9 +11513,7 @@ export default function HomeScreen() {
           setDiseaseImageModalTitle('');
           setDiseaseImageZoomLevel(1);
           setDiseasePreviewLoadStageById({});
-          setFishImageUriByKey({});
-          fishImageLookupInFlightRef.current = new Set();
-          fishImageLookupAttemptedRef.current = new Set();
+          setFishImageDirectFallbackByKey({});
           setPlantImageUriByKey({});
           plantImageLookupInFlightRef.current = new Set();
           plantImageLookupAttemptedRef.current = new Set();
@@ -11250,7 +11546,7 @@ export default function HomeScreen() {
         }
       } catch (error) {
         console.warn(
-          'Błąd obslugi onAuthStateChanged:',
+          'BĹ‚Ä…d obslugi onAuthStateChanged:',
           error instanceof Error ? error.message : String(error)
         );
         logTelemetryError(error, {
@@ -11370,7 +11666,7 @@ export default function HomeScreen() {
         await AsyncStorage.setItem(storageKey, nextSelectedTank.id);
       } catch (error) {
         alert(
-          'Błąd pobierania akwariów: ' +
+          'BĹ‚Ä…d pobierania akwariĂłw: ' +
             (error instanceof Error ? error.message : '')
         );
       } finally {
@@ -11424,7 +11720,7 @@ export default function HomeScreen() {
       setMeasurements(data);
     } catch (error) {
       alert(
-        'Błąd pobierania historii: ' +
+        'BĹ‚Ä…d pobierania historii: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -11481,7 +11777,7 @@ export default function HomeScreen() {
       );
     } catch (error) {
       alert(
-        'Błąd pobierania obsady: ' +
+        'BĹ‚Ä…d pobierania obsady: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -11562,7 +11858,7 @@ export default function HomeScreen() {
       setHomeActiveIssueCases(activeIssues);
     } catch (error) {
       alert(
-        'Błąd pobierania danych ekranu glownego: ' +
+        'BĹ‚Ä…d pobierania danych ekranu glownego: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -11601,7 +11897,7 @@ export default function HomeScreen() {
       setTankDiseaseHistoryCases(allCases);
     } catch (error) {
       alert(
-        'Błąd pobierania chorób akwarium: ' +
+        'BĹ‚Ä…d pobierania chorĂłb akwarium: ' +
           (error instanceof Error ? error.message : '')
       );
     }
@@ -11626,23 +11922,26 @@ export default function HomeScreen() {
         uniqueEntries: dedupedData,
       } = dedupeFishCatalogEntriesByLatin(existingRaw);
 
-      const hydratedCatalogEntries = dedupedData
+      const allowedEntries = dedupedData
         .filter((item) => isAllowedFishCatalogLatinName(item.latinName))
-        .map((item) => {
-          const imageUrl = String(item?.imageUrl ?? '').trim();
-          const imagePreviewUrl = String(item?.imagePreviewUrl ?? '').trim();
-          const fallbackImageUrl = buildFishCatalogImageUrl(item?.latinName);
+        .map((item) => ({
+          ...item,
+          id: String(item?.id ?? '').trim() || getFishCatalogEntryId(item),
+        }));
+      const allowedByLatinKey = new Set(
+        allowedEntries
+          .map((item) => normalizeLatinCatalogKey(item?.latinName))
+          .filter(Boolean)
+      );
+      const seedFallbackEntries = FISH_CATALOG_SEED.filter((item) => {
+        const latinKey = normalizeLatinCatalogKey(item?.latinName);
+        return Boolean(latinKey) && !allowedByLatinKey.has(latinKey);
+      }).map((item) => ({
+        ...item,
+        id: String(item?.id ?? '').trim() || getFishCatalogEntryId(item),
+      }));
 
-          if (!fallbackImageUrl) {
-            return item;
-          }
-
-          return {
-            ...item,
-            imageUrl: imageUrl || fallbackImageUrl,
-            imagePreviewUrl: imagePreviewUrl || imageUrl || fallbackImageUrl,
-          };
-        });
+      const hydratedCatalogEntries = [...allowedEntries, ...seedFallbackEntries];
 
       const data = sortCatalogEntriesByCommonName(
         localizeFishCatalogEntriesForLanguage(
@@ -11678,6 +11977,7 @@ export default function HomeScreen() {
       });
 
       setFishCatalog(hydratedData);
+      fishCatalogLastFetchAtRef.current = Date.now();
     } catch (error) {
       if (isFirestorePermissionDeniedError(error)) {
         const fallbackData = sortCatalogEntriesByCommonName(
@@ -11721,9 +12021,10 @@ export default function HomeScreen() {
         });
 
         setFishCatalog(hydratedFallbackData);
+        fishCatalogLastFetchAtRef.current = Date.now();
       } else {
         alert(
-          'Błąd pobierania katalogu ryb: ' +
+          'BĹ‚Ä…d pobierania katalogu ryb: ' +
             (error instanceof Error ? error.message : '')
         );
       }
@@ -12040,7 +12341,7 @@ export default function HomeScreen() {
       setPlantCatalog(data);
     } catch (error) {
       alert(
-        "Błąd pobierania katalogu roślin: " +
+        "BĹ‚Ä…d pobierania katalogu roĹ›lin: " +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -12141,7 +12442,7 @@ export default function HomeScreen() {
       'algaeCatalog',
       setAlgaeCatalog,
       setAlgaeCatalogLoading,
-      "Błąd pobierania katalogu glonów"
+      "BĹ‚Ä…d pobierania katalogu glonĂłw"
     );
   }, [fetchIssueCatalog]);
 
@@ -12150,7 +12451,7 @@ export default function HomeScreen() {
       'fishDiseaseCatalog',
       setDiseaseCatalog,
       setDiseaseCatalogLoading,
-      'Błąd pobierania katalogu chorób ryb'
+      'BĹ‚Ä…d pobierania katalogu chorĂłb ryb'
     );
   }, [fetchIssueCatalog]);
 
@@ -12159,7 +12460,7 @@ export default function HomeScreen() {
       'plantDiseaseCatalog',
       setPlantDiseaseCatalog,
       setPlantDiseaseCatalogLoading,
-      "Błąd pobierania katalogu chorób roślin"
+      "BĹ‚Ä…d pobierania katalogu chorĂłb roĹ›lin"
     );
   }, [fetchIssueCatalog]);
 
@@ -12185,7 +12486,7 @@ export default function HomeScreen() {
     } catch (error) {
       setEquipmentCatalog([]);
       alert(
-        'Błąd pobierania katalogu sprzętu: ' +
+        'BĹ‚Ä…d pobierania katalogu sprzÄ™tu: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -12254,9 +12555,15 @@ export default function HomeScreen() {
     if (
       !user?.uid ||
       activeSection !== 'fish' ||
-      fishCatalogLoading ||
-      fishCatalog.length > 0
+      fishCatalogLoading
     ) {
+      return;
+    }
+
+    const shouldRefresh =
+      fishCatalog.length === 0 ||
+      Date.now() - fishCatalogLastFetchAtRef.current > CATALOG_REFRESH_INTERVAL_MS;
+    if (!shouldRefresh) {
       return;
     }
 
@@ -12642,7 +12949,7 @@ export default function HomeScreen() {
       }
     } catch (error) {
       alert(
-        'Błąd odświeżania danych: ' +
+        'BĹ‚Ä…d odĹ›wieĹĽania danych: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -12700,7 +13007,7 @@ export default function HomeScreen() {
         setPassword('');
         setAuthMode('login');
         alert(
-          'Konto utworzone. Wysłaliśmy link weryfikacyjny na email. Zweryfikuj adres i zaloguj się ponownie.'
+          'Konto utworzone. WysĹ‚aliĹ›my link weryfikacyjny na email. Zweryfikuj adres i zaloguj siÄ™ ponownie.'
         );
       } else {
         const credentials = await signInWithEmailAndPassword(
@@ -12716,7 +13023,7 @@ export default function HomeScreen() {
             await sendEmailVerification(refreshedUser);
           } catch (verificationError) {
             console.warn(
-              'Błąd ponownej wysylki weryfikacji email:',
+              'BĹ‚Ä…d ponownej wysylki weryfikacji email:',
               verificationError instanceof Error
                 ? verificationError.message
                 : String(verificationError)
@@ -12726,7 +13033,7 @@ export default function HomeScreen() {
           skipNextUnverifiedAlertRef.current = true;
           await signOut(auth);
           showUnverifiedEmailAlert(
-            'Najpierw zweryfikuj email. Wysłaliśmy ponownie link aktywacyjny.'
+            'Najpierw zweryfikuj email. WysĹ‚aliĹ›my ponownie link aktywacyjny.'
           );
           return;
         }
@@ -12734,7 +13041,7 @@ export default function HomeScreen() {
     } catch (error) {
       skipNextUnverifiedAlertRef.current = false;
       alert(
-        `${authMode === 'register' ? 'Błąd rejestracji' : 'Błąd logowania'}: ` +
+        `${authMode === 'register' ? 'BĹ‚Ä…d rejestracji' : 'BĹ‚Ä…d logowania'}: ` +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -12771,7 +13078,7 @@ export default function HomeScreen() {
           );
         } else {
           alert(
-            'Błąd logowania Google: ' +
+            'BĹ‚Ä…d logowania Google: ' +
               (error instanceof Error ? error.message : '')
           );
         }
@@ -12840,7 +13147,7 @@ export default function HomeScreen() {
       setAuthBusy(false);
     }
     alert(
-      'Logowanie Google wróilo do aplikacji, ale Google nie przekazal tokenu. Spróbuj ponownie za chwile.'
+      'Logowanie Google wrĂłilo do aplikacji, ale Google nie przekazal tokenu. SprĂłbuj ponownie za chwile.'
     );
   }, [
     completeGoogleAuthWithTokens,
@@ -12861,7 +13168,7 @@ export default function HomeScreen() {
 
     if (IS_EXPO_GO) {
       alert(
-        "Logowanie Google nie dziala poprawnie w Expo Go. Uruchom aplikacje w development build (dev client), wtedy Google OAuth będzie zgodny z polityka Google."
+        "Logowanie Google nie dziala poprawnie w Expo Go. Uruchom aplikacje w development build (dev client), wtedy Google OAuth bÄ™dzie zgodny z polityka Google."
       );
       return;
     }
@@ -12880,7 +13187,7 @@ export default function HomeScreen() {
 
     if (!googleAuthRequest) {
       alert(
-        'Logowanie Google nie jest jeszcze gotowe. Sprawdź konfiguracje client ID.'
+        'Logowanie Google nie jest jeszcze gotowe. SprawdĹş konfiguracje client ID.'
       );
       return;
     }
@@ -12919,7 +13226,7 @@ export default function HomeScreen() {
           setAuthBusy(false);
         }
         alert(
-          'Logowanie Google nie zwróilo tokenu. Sprawdź konfiguracje OAuth i spróbuj ponownie.'
+          'Logowanie Google nie zwrĂłilo tokenu. SprawdĹş konfiguracje OAuth i sprĂłbuj ponownie.'
         );
         return;
       }
@@ -12941,7 +13248,7 @@ export default function HomeScreen() {
           ? t('deleteAccountReauthGoogleStartError', {
               value: error instanceof Error ? error.message : String(error ?? ''),
             })
-          : 'Błąd uruchamiania logowania Google: ' +
+          : 'BĹ‚Ä…d uruchamiania logowania Google: ' +
             (error instanceof Error ? error.message : '')
       );
     }
@@ -12972,10 +13279,10 @@ export default function HomeScreen() {
     try {
       await sendPasswordResetEmail(auth, normalizedEmail);
       setIsForgotPasswordModalVisible(false);
-      alert('Wysłaliśmy link do resetu hasla na podany email.');
+      alert('WysĹ‚aliĹ›my link do resetu hasla na podany email.');
     } catch (error) {
       alert(
-        'Błąd wysylki resetu hasla: ' +
+        'BĹ‚Ä…d wysylki resetu hasla: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -13089,7 +13396,7 @@ export default function HomeScreen() {
 
     if (!nextTank) {
       alert(
-        'W obecnym planie nie ma kolejnych aktywnych akwariów do przełączenia.'
+        'W obecnym planie nie ma kolejnych aktywnych akwariĂłw do przeĹ‚Ä…czenia.'
       );
       return;
     }
@@ -13101,7 +13408,7 @@ export default function HomeScreen() {
       await AsyncStorage.setItem(storageKey, nextTank.id);
     } catch (error) {
       alert(
-        'Błąd zapisu wybranego akwarium: ' +
+        'BĹ‚Ä…d zapisu wybranego akwarium: ' +
           (error instanceof Error ? error.message : '')
       );
     }
@@ -13115,7 +13422,7 @@ export default function HomeScreen() {
     const tankIndex = tanks.findIndex((item) => item?.id === tank?.id);
     if (tankIndex >= 0 && isTankLockedByPlan(currentPlan, tankIndex)) {
       alert(
-        'W planie Free możesz aktywnie prowadzić 1 akwarium. Pozostałe akwaria są bezpiecznie zapisane i odblokują się po powrocie do Premium.'
+        'W planie Free moĹĽesz aktywnie prowadziÄ‡ 1 akwarium. PozostaĹ‚e akwaria sÄ… bezpiecznie zapisane i odblokujÄ… siÄ™ po przejĹ›ciu na Plus.'
       );
       return;
     }
@@ -13133,7 +13440,7 @@ export default function HomeScreen() {
       ]);
     } catch (error) {
       alert(
-        'Błąd otwierania akwarium: ' +
+        'BĹ‚Ä…d otwierania akwarium: ' +
           (error instanceof Error ? error.message : '')
       );
     }
@@ -13190,7 +13497,7 @@ export default function HomeScreen() {
     }
     if (selectedTankLockedByPlan) {
       alert(
-        'To akwarium jest zablokowane przez obecny plan i jest dostępne tylko do odczytu.'
+        'To akwarium jest zablokowane przez obecny plan i jest dostÄ™pne tylko do odczytu.'
       );
       return;
     }
@@ -13310,7 +13617,7 @@ export default function HomeScreen() {
         `${t('subscriptionTankLimitReached', {
           plan: currentSubscriptionTierLabel,
           limit: tankLimit,
-        })}\n\nW planie Free możesz aktywnie prowadzić 1 akwarium. Pozostałe akwaria są bezpiecznie zapisane i odblokują się po powrocie do Premium.`
+        })}\n\nW planie Free moĹĽesz aktywnie prowadziÄ‡ 1 akwarium. PozostaĹ‚e akwaria sÄ… bezpiecznie zapisane i odblokujÄ… siÄ™ po przejĹ›ciu na Plus.`
       );
       return;
     }
@@ -13507,7 +13814,10 @@ export default function HomeScreen() {
   const handleOpenSingleSpeciesFishCatalog = useCallback(() => {
     setSingleSpeciesFishCatalogContext('default');
     setIsSingleSpeciesFishCatalogVisible(true);
-    if (!user?.uid || fishCatalogLoading || fishCatalog.length > 0) {
+    const shouldRefresh =
+      fishCatalog.length === 0 ||
+      Date.now() - fishCatalogLastFetchAtRef.current > CATALOG_REFRESH_INTERVAL_MS;
+    if (!user?.uid || fishCatalogLoading || !shouldRefresh) {
       return;
     }
     fetchFishCatalog().catch(() => null);
@@ -13515,7 +13825,10 @@ export default function HomeScreen() {
   const handleOpenSingleSpeciesFishCatalogForEditProfile = useCallback(() => {
     setSingleSpeciesFishCatalogContext('edit-profile');
     setIsSingleSpeciesFishCatalogVisible(true);
-    if (!user?.uid || fishCatalogLoading || fishCatalog.length > 0) {
+    const shouldRefresh =
+      fishCatalog.length === 0 ||
+      Date.now() - fishCatalogLastFetchAtRef.current > CATALOG_REFRESH_INTERVAL_MS;
+    if (!user?.uid || fishCatalogLoading || !shouldRefresh) {
       return;
     }
     fetchFishCatalog().catch(() => null);
@@ -13547,7 +13860,7 @@ export default function HomeScreen() {
       <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
         {selectedSingleSpeciesFish
           ? `Wybrano: ${getFishCatalogDisplayLabel(selectedSingleSpeciesFish)}`
-          : "Wybierz gatunek z katalogu, a zakresy pH/GH/temperatury ustawia się z karty ryby."}
+          : "Wybierz gatunek z katalogu, a zakresy pH/GH/temperatury ustawia siÄ™ z karty ryby."}
       </Text>
       <Pressable
         onPress={handleOpenSingleSpeciesFishCatalog}
@@ -13769,36 +14082,36 @@ export default function HomeScreen() {
     (stepId) => {
       if (stepId === 'basic') {
         if (!String(tankName ?? '').trim()) {
-          alert("Podaj nazwę akwarium.");
+          alert("Podaj nazwÄ™ akwarium.");
           return false;
         }
         try {
-          parsePositiveNumberOrThrow('litraż', tankLiters);
+          parsePositiveNumberOrThrow('litraĹĽ', tankLiters);
         } catch (error) {
-          alert(error instanceof Error ? error.message : 'Niepoprawny litraż.');
+          alert(error instanceof Error ? error.message : 'Niepoprawny litraĹĽ.');
           return false;
         }
         if (String(tankLengthCm ?? '').trim()) {
           try {
-            parseOptionalNonNegativeNumberOrThrow("długość akwarium", tankLengthCm);
+            parseOptionalNonNegativeNumberOrThrow("dĹ‚ugoĹ›Ä‡ akwarium", tankLengthCm);
           } catch (error) {
-            alert(error instanceof Error ? error.message : "Niepoprawna długość.");
+            alert(error instanceof Error ? error.message : "Niepoprawna dĹ‚ugoĹ›Ä‡.");
             return false;
           }
         }
         if (String(tankWidthCm ?? '').trim()) {
           try {
-            parseOptionalNonNegativeNumberOrThrow("szerokość akwarium", tankWidthCm);
+            parseOptionalNonNegativeNumberOrThrow("szerokoĹ›Ä‡ akwarium", tankWidthCm);
           } catch (error) {
-            alert(error instanceof Error ? error.message : "Niepoprawna szerokość.");
+            alert(error instanceof Error ? error.message : "Niepoprawna szerokoĹ›Ä‡.");
             return false;
           }
         }
         if (String(tankHeightCm ?? '').trim()) {
           try {
-            parseOptionalNonNegativeNumberOrThrow("wysokość akwarium", tankHeightCm);
+            parseOptionalNonNegativeNumberOrThrow("wysokoĹ›Ä‡ akwarium", tankHeightCm);
           } catch (error) {
-            alert(error instanceof Error ? error.message : "Niepoprawna wysokość.");
+            alert(error instanceof Error ? error.message : "Niepoprawna wysokoĹ›Ä‡.");
             return false;
           }
         }
@@ -13839,7 +14152,7 @@ export default function HomeScreen() {
 
       if (stepId === 'substrate') {
         if (!Array.isArray(tankSubstrateLayers) || tankSubstrateLayers.length === 0) {
-          alert('Dodaj przynajmniej jedna warstwe podłoża.');
+          alert('Dodaj przynajmniej jedna warstwe podĹ‚oĹĽa.');
           return false;
         }
         return true;
@@ -13855,7 +14168,7 @@ export default function HomeScreen() {
           alert(
             error instanceof Error
               ? error.message
-              : 'Popraw zakresy parametrów wody.'
+              : 'Popraw zakresy parametrĂłw wody.'
           );
           return false;
         }
@@ -14162,7 +14475,7 @@ export default function HomeScreen() {
           fontSize: 12,
           lineHeight: 17,
         }}>
-        Analiza będzie porównywać pomiary do tych ustawień.
+        Analiza bÄ™dzie porĂłwnywaÄ‡ pomiary do tych ustawieĹ„.
       </Text>
       {renderTankWaterProfileSelector(scopeKey)}
       {renderTankWaterTargetRangesGrid(scopeKey)}
@@ -14236,8 +14549,8 @@ export default function HomeScreen() {
         {currentStepId === 'basic' ? (
           <>
             <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
-              Podaj nazwę i pojemność akwarium. Na tej podstawie aplikacja będzie liczyć
-              obsadę, sprzęt i zalecenia.
+              Podaj nazwÄ™ i pojemnoĹ›Ä‡ akwarium. Na tej podstawie aplikacja bÄ™dzie liczyÄ‡
+              obsadÄ™, sprzÄ™t i zalecenia.
             </Text>
             <TextInput
               placeholder={t('tankNamePlaceholder')}
@@ -14287,7 +14600,7 @@ export default function HomeScreen() {
             {isTankDimensionsExpanded ? (
               <View style={{ marginTop: 8 }}>
                 <TextInput
-                  placeholder="Długość akwarium (cm)"
+                  placeholder="DĹ‚ugoĹ›Ä‡ akwarium (cm)"
                   placeholderTextColor={themePlaceholder}
                   value={tankLengthCm}
                   onChangeText={setTankLengthCm}
@@ -14303,7 +14616,7 @@ export default function HomeScreen() {
                   }}
                 />
                 <TextInput
-                  placeholder="Szerokość akwarium (cm)"
+                  placeholder="SzerokoĹ›Ä‡ akwarium (cm)"
                   placeholderTextColor={themePlaceholder}
                   value={tankWidthCm}
                   onChangeText={setTankWidthCm}
@@ -14319,7 +14632,7 @@ export default function HomeScreen() {
                   }}
                 />
                 <TextInput
-                  placeholder="Wysokość akwarium (cm)"
+                  placeholder="WysokoĹ›Ä‡ akwarium (cm)"
                   placeholderTextColor={themePlaceholder}
                   value={tankHeightCm}
                   onChangeText={setTankHeightCm}
@@ -14420,7 +14733,7 @@ export default function HomeScreen() {
                   </View>
                 ) : (
                   <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
-                    Brak listy akwariów do skopiowania. Miejsce pod integracje jest przygotowane.
+                    Brak listy akwariĂłw do skopiowania. Miejsce pod integracje jest przygotowane.
                   </Text>
                 )}
               </View>
@@ -14434,7 +14747,7 @@ export default function HomeScreen() {
               Czy chcesz, zeby aplikacja prowadzila Cie krok po kroku?
             </Text>
             <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
-              Onboarding pomoże zaplanowac pierwsze dni działania zbiornika, kontrolę parametrów,
+              Onboarding pomoĹĽe zaplanowac pierwsze dni dziaĹ‚ania zbiornika, kontrolÄ™ parametrĂłw,
               dojrzewanie filtra i moment bezpiecznego wpuszczania obsady.
             </Text>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
@@ -14473,7 +14786,7 @@ export default function HomeScreen() {
         {currentStepId === 'profile' ? (
           <>
             <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
-              Wybierz profil akwarium. Profil ustawia domyślne zakresy parametrów.
+              Wybierz profil akwarium. Profil ustawia domyĹ›lne zakresy parametrĂłw.
             </Text>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
               {ADD_TANK_PROFILE_OPTIONS.map((option) => {
@@ -14531,7 +14844,7 @@ export default function HomeScreen() {
                 </Text>
               </View>
               <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
-                Chce wprowadzić parametry recznie
+                Chce wprowadziÄ‡ parametry recznie
               </Text>
             </Pressable>
           </>
@@ -14540,7 +14853,7 @@ export default function HomeScreen() {
         {currentStepId === 'substrate' ? (
           <>
             <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
-              Dodaj warstwy podłoża. Możesz łączyć kilka typow.
+              Dodaj warstwy podĹ‚oĹĽa. MoĹĽesz Ĺ‚Ä…czyÄ‡ kilka typow.
             </Text>
             <View style={{ gap: 8 }}>
               {tankSubstrateLayers.map((layer, index) => (
@@ -14589,7 +14902,7 @@ export default function HomeScreen() {
                     })}
                   </View>
                   <TextInput
-                    placeholder="Wysokość warstwy (cm) - opcjonalnie"
+                    placeholder="WysokoĹ›Ä‡ warstwy (cm) - opcjonalnie"
                     placeholderTextColor={themePlaceholder}
                     value={layer.heightCm ?? ''}
                     onChangeText={(value) =>
@@ -14637,7 +14950,7 @@ export default function HomeScreen() {
                       }}
                       style={{ marginTop: 8 }}>
                       <Text style={{ color: themeDangerText, fontSize: 12, fontWeight: '700' }}>
-                        Usuń warstwe
+                        UsuĹ„ warstwe
                       </Text>
                     </Pressable>
                   ) : null}
@@ -14662,7 +14975,7 @@ export default function HomeScreen() {
                 backgroundColor: themeCardBg,
               }}>
               <Text style={{ color: themeTextPrimary, fontWeight: '700', textAlign: 'center' }}>
-                Dodaj podłoże
+                Dodaj podĹ‚oĹĽe
               </Text>
             </Pressable>
           </>
@@ -14671,7 +14984,7 @@ export default function HomeScreen() {
         {currentStepId === 'water' ? (
           <>
             <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
-              Możesz zostawić wartości domyślne albo dopasowac zakresy do swojej obsady, roślin
+              MoĹĽesz zostawiÄ‡ wartoĹ›ci domyĹ›lne albo dopasowac zakresy do swojej obsady, roĹ›lin
               i sposobu prowadzenia akwarium.
             </Text>
             {renderTankWaterTargetsSection(`${scopeKey}-water`)}
@@ -14682,7 +14995,7 @@ export default function HomeScreen() {
           <>
             <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
               Podaj docelowa temperature wody oraz typowa temperature w pomieszczeniu. Dla oceny
-              grzałki najwazniejsza jest roznica między docelowa temperatura wody a najniższa
+              grzaĹ‚ki najwazniejsza jest roznica miÄ™dzy docelowa temperatura wody a najniĹĽsza
               temperatura pomieszczenia.
             </Text>
             <Text
@@ -14834,7 +15147,7 @@ export default function HomeScreen() {
                 Nazwa: <Text style={{ color: themeTextPrimary }}>{tankName || '-'}</Text>
               </Text>
               <Text style={{ color: themeTextSecondary }}>
-                Litraż: <Text style={{ color: themeTextPrimary }}>{tankLiters || '-'} l</Text>
+                LitraĹĽ: <Text style={{ color: themeTextPrimary }}>{tankLiters || '-'} l</Text>
               </Text>
               <Text style={{ color: themeTextSecondary }}>
                 Sposob uruchomienia:{' '}
@@ -14856,7 +15169,7 @@ export default function HomeScreen() {
                 Profil: <Text style={{ color: themeTextPrimary }}>{wizardProfileLabel(tankWizardProfile)}</Text>
               </Text>
               <Text style={{ color: themeTextSecondary }}>
-                Podłoże:{' '}
+                PodĹ‚oĹĽe:{' '}
                 <Text style={{ color: themeTextPrimary }}>
                   {tankSubstrateLayers.length > 0
                     ? tankSubstrateLayers
@@ -14885,7 +15198,7 @@ export default function HomeScreen() {
               <Text style={{ color: themeTextSecondary }}>
                 Parametry wody:{' '}
                 <Text style={{ color: themeTextPrimary }}>
-                  {profileUsesManualParameters ? 'recznie dostosowane' : "domyślne z profilu"}
+                  {profileUsesManualParameters ? 'recznie dostosowane' : "domyĹ›lne z profilu"}
                 </Text>
               </Text>
             </View>
@@ -15112,7 +15425,7 @@ export default function HomeScreen() {
       setEquipmentCatalogSearch('');
     } catch (error) {
       alert(
-        'Błąd zapisu sprzętu: ' +
+        'BĹ‚Ä…d zapisu sprzÄ™tu: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -15137,7 +15450,7 @@ export default function HomeScreen() {
     const brand = String(customEquipmentBrand ?? '').trim();
     const model = String(customEquipmentModel ?? '').trim();
     if (!model) {
-      alert("Podaj model lub nazwę sprzętu.");
+      alert("Podaj model lub nazwÄ™ sprzÄ™tu.");
       return;
     }
 
@@ -15200,14 +15513,14 @@ export default function HomeScreen() {
 
       const primaryValue =
         equipmentType === 'heater'
-          ? parsePositiveNumberOrThrow("moc grzałki (W)", customEquipmentPrimaryValue)
+          ? parsePositiveNumberOrThrow("moc grzaĹ‚ki (W)", customEquipmentPrimaryValue)
           : parsePositiveNumberOrThrow('wydajnosc filtra (l/h)', customEquipmentPrimaryValue);
       const tankMinLiters = parseOptionalNonNegativeNumberOrThrow(
-        'min litraż',
+        'min litraĹĽ',
         customEquipmentTankMinLiters
       );
       const tankMaxLiters = parseOptionalNonNegativeNumberOrThrow(
-        'max litraż',
+        'max litraĹĽ',
         customEquipmentTankMaxLiters
       );
 
@@ -15216,7 +15529,7 @@ export default function HomeScreen() {
         Number.isFinite(Number(tankMaxLiters)) &&
         Number(tankMaxLiters) < Number(tankMinLiters)
       ) {
-        throw new Error('Maksymalny litraż nie może byc mniejszy niż minimalny.');
+        throw new Error('Maksymalny litraĹĽ nie moĹĽe byc mniejszy niĹĽ minimalny.');
       }
 
       const customEquipmentItem = {
@@ -15266,7 +15579,7 @@ export default function HomeScreen() {
       setEquipmentCatalogSearch('');
     } catch (error) {
       alert(
-        'Błąd zapisu innego sprzętu: ' +
+        'BĹ‚Ä…d zapisu innego sprzÄ™tu: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -15331,7 +15644,7 @@ export default function HomeScreen() {
       await fetchTanks(user.uid, selectedTank.id);
     } catch (error) {
       alert(
-        'Błąd aktualizacji sprzętu: ' +
+        'BĹ‚Ä…d aktualizacji sprzÄ™tu: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -15369,7 +15682,7 @@ export default function HomeScreen() {
       await fetchTanks(user.uid, selectedTank.id);
     } catch (error) {
       alert(
-        'Błąd aktualizacji oświetlenia: ' +
+        'BĹ‚Ä…d aktualizacji oĹ›wietlenia: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -15389,14 +15702,14 @@ export default function HomeScreen() {
 
     let lightHours = 0;
     try {
-      lightHours = parsePositiveNumberOrThrow('godziny świecenia', equipmentLightHoursDraft);
+      lightHours = parsePositiveNumberOrThrow('godziny Ĺ›wiecenia', equipmentLightHoursDraft);
     } catch (error) {
-      alert(error instanceof Error ? error.message : 'Niepoprawna liczba godzin świecenia.');
+      alert(error instanceof Error ? error.message : 'Niepoprawna liczba godzin Ĺ›wiecenia.');
       return;
     }
 
     if (!Number.isFinite(lightHours) || lightHours < 1 || lightHours > 24) {
-      alert('Godziny świecenia musza byc w zakresie 1-24.');
+      alert('Godziny Ĺ›wiecenia musza byc w zakresie 1-24.');
       return;
     }
 
@@ -15416,7 +15729,7 @@ export default function HomeScreen() {
       setEquipmentLightHoursDraft(String(lightHours));
     } catch (error) {
       alert(
-        'Błąd zapisu czasu świecenia: ' +
+        'BĹ‚Ä…d zapisu czasu Ĺ›wiecenia: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -15431,23 +15744,23 @@ export default function HomeScreen() {
 
     const productName = String(plantFertilizerName ?? '').trim();
     if (!productName) {
-      alert("Podaj nazwę nawozu");
+      alert("Podaj nazwÄ™ nawozu");
       return;
     }
 
     let quantity = 1;
     try {
       quantity = parsePositiveInteger(
-        parsePositiveNumberOrThrow("ilość kulek nawozowych", plantFertilizerQuantityInput),
+        parsePositiveNumberOrThrow("iloĹ›Ä‡ kulek nawozowych", plantFertilizerQuantityInput),
         1
       );
     } catch (error) {
-      alert(error instanceof Error ? error.message : "Niepoprawna ilość kulek");
+      alert(error instanceof Error ? error.message : "Niepoprawna iloĹ›Ä‡ kulek");
       return;
     }
 
     if (quantity > 999) {
-      alert("Ilość kulek ustaw w zakresie 1-999");
+      alert("IloĹ›Ä‡ kulek ustaw w zakresie 1-999");
       return;
     }
 
@@ -15455,18 +15768,18 @@ export default function HomeScreen() {
     try {
       durationDays = parsePositiveInteger(
         parsePositiveNumberOrThrow(
-          'czas działania kulek nawozowych (dni)',
+          'czas dziaĹ‚ania kulek nawozowych (dni)',
           rootTabsDurationDaysInput
         ),
         ROOT_TABS_DEFAULT_DURATION_DAYS
       );
     } catch (error) {
-      alert(error instanceof Error ? error.message : 'Niepoprawny czas działania kulek');
+      alert(error instanceof Error ? error.message : 'Niepoprawny czas dziaĹ‚ania kulek');
       return;
     }
 
     if (durationDays > 365) {
-      alert('Czas działania kulek ustaw w zakresie 1-365 dni');
+      alert('Czas dziaĹ‚ania kulek ustaw w zakresie 1-365 dni');
       return;
     }
 
@@ -15515,7 +15828,7 @@ export default function HomeScreen() {
       alert('Kulki nawozowe dodane do harmonogramu.');
     } catch (error) {
       alert(
-        "Błąd zapisu nawożenia: " + (error instanceof Error ? error.message : '')
+        "BĹ‚Ä…d zapisu nawoĹĽenia: " + (error instanceof Error ? error.message : '')
       );
     } finally {
       setPlantFertilizationBusy(false);
@@ -15551,7 +15864,7 @@ export default function HomeScreen() {
 
     const productName = String(editingPlantFertilizerName ?? '').trim();
     if (!productName) {
-      alert("Podaj nazwę nawozu");
+      alert("Podaj nazwÄ™ nawozu");
       return;
     }
 
@@ -15559,18 +15872,18 @@ export default function HomeScreen() {
     try {
       quantity = parsePositiveInteger(
         parsePositiveNumberOrThrow(
-          "ilość kulek nawozowych",
+          "iloĹ›Ä‡ kulek nawozowych",
           editingPlantFertilizerQuantityInput
         ),
         1
       );
     } catch (error) {
-      alert(error instanceof Error ? error.message : "Niepoprawna ilość kulek");
+      alert(error instanceof Error ? error.message : "Niepoprawna iloĹ›Ä‡ kulek");
       return;
     }
 
     if (quantity > 999) {
-      alert("Ilość kulek ustaw w zakresie 1-999");
+      alert("IloĹ›Ä‡ kulek ustaw w zakresie 1-999");
       return;
     }
 
@@ -15578,18 +15891,18 @@ export default function HomeScreen() {
     try {
       durationDays = parsePositiveInteger(
         parsePositiveNumberOrThrow(
-          'czas działania kulek nawozowych (dni)',
+          'czas dziaĹ‚ania kulek nawozowych (dni)',
           editingRootTabsDurationDaysInput
         ),
         ROOT_TABS_DEFAULT_DURATION_DAYS
       );
     } catch (error) {
-      alert(error instanceof Error ? error.message : 'Niepoprawny czas działania kulek');
+      alert(error instanceof Error ? error.message : 'Niepoprawny czas dziaĹ‚ania kulek');
       return;
     }
 
     if (durationDays > 365) {
-      alert('Czas działania kulek ustaw w zakresie 1-365 dni');
+      alert('Czas dziaĹ‚ania kulek ustaw w zakresie 1-365 dni');
       return;
     }
 
@@ -15634,7 +15947,7 @@ export default function HomeScreen() {
       handleCancelEditPlantFertilizationEntry();
     } catch (error) {
       alert(
-        "Błąd edycji wpisu nawożenia: " +
+        "BĹ‚Ä…d edycji wpisu nawoĹĽenia: " +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -15680,7 +15993,7 @@ export default function HomeScreen() {
       }
     } catch (error) {
       alert(
-        "Błąd usuwania wpisu nawożenia: " +
+        "BĹ‚Ä…d usuwania wpisu nawoĹĽenia: " +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -15698,7 +16011,7 @@ export default function HomeScreen() {
         `${t('subscriptionTankLimitReached', {
           plan: currentSubscriptionTierLabel,
           limit: tankLimit,
-        })}\n\nW planie Free możesz aktywnie prowadzić 1 akwarium. Pozostałe akwaria są bezpiecznie zapisane i odblokują się po powrocie do Premium.`
+        })}\n\nW planie Free moĹĽesz aktywnie prowadziÄ‡ 1 akwarium. PozostaĹ‚e akwaria sÄ… bezpiecznie zapisane i odblokujÄ… siÄ™ po przejĹ›ciu na Plus.`
       );
       return;
     }
@@ -15717,7 +16030,7 @@ export default function HomeScreen() {
         throw new Error('Pole nazwa akwarium jest wymagane');
       }
 
-      const liters = parsePositiveNumberOrThrow('litraż', tankLiters);
+      const liters = parsePositiveNumberOrThrow('litraĹĽ', tankLiters);
       const startType = normalizeAddTankStartType(tankStartType);
       const profileMapping = mapWizardProfileToModel(tankWizardProfile);
       const aquariumType = normalizeAquariumType(
@@ -15727,15 +16040,15 @@ export default function HomeScreen() {
         throw new Error('Wybierz typ akwarium przed zapisaniem onboardingu.');
       }
       const lengthCm = parseOptionalNonNegativeNumberOrThrow(
-        "długość akwarium",
+        "dĹ‚ugoĹ›Ä‡ akwarium",
         tankLengthCm
       );
       const widthCm = parseOptionalNonNegativeNumberOrThrow(
-        "szerokość akwarium",
+        "szerokoĹ›Ä‡ akwarium",
         tankWidthCm
       );
       const heightCm = parseOptionalNonNegativeNumberOrThrow(
-        "wysokość akwarium",
+        "wysokoĹ›Ä‡ akwarium",
         tankHeightCm
       );
       const targetTemperatureC = parsePositiveNumberOrThrow(
@@ -15805,7 +16118,7 @@ export default function HomeScreen() {
           : draftTargetRanges;
 
       if (substrateTypes.length === 0) {
-        throw new Error('Wybierz przynajmniej 1 rodzaj podłoża');
+        throw new Error('Wybierz przynajmniej 1 rodzaj podĹ‚oĹĽa');
       }
 
       if (waterProfile === 'single_species') {
@@ -15813,7 +16126,7 @@ export default function HomeScreen() {
           throw new Error('Dla akwarium jednogatunkowego wybierz gatunek ryby');
         }
         if (!singleSpeciesFish) {
-          throw new Error('Wybrany gatunek ryby nie jest dostępny w katalogu');
+          throw new Error('Wybrany gatunek ryby nie jest dostÄ™pny w katalogu');
         }
       }
 
@@ -16069,7 +16382,7 @@ export default function HomeScreen() {
         setActiveEditTankSectionDraft(null);
         if (savedInCompatibilityMode) {
           alert(
-            "Akwarium zaktualizowane w trybie zgodnosci. Aby wszystkie nowe ustawieńia zapisywaly się od razu, opublikuj aktualne reguly Firestore."
+            "Akwarium zaktualizowane w trybie zgodnosci. Aby wszystkie nowe ustawieĹ„ia zapisywaly siÄ™ od razu, opublikuj aktualne reguly Firestore."
           );
         } else {
           alert('Akwarium zaktualizowane');
@@ -16101,25 +16414,25 @@ export default function HomeScreen() {
         }
         if (savedInCompatibilityMode) {
           alert(
-            "Akwarium dodane w trybie zgodnosci. Aby wszystkie nowe ustawieńia zapisywaly się od razu, opublikuj aktualne reguly Firestore."
+            "Akwarium dodane w trybie zgodnosci. Aby wszystkie nowe ustawieĹ„ia zapisywaly siÄ™ od razu, opublikuj aktualne reguly Firestore."
           );
         } else {
           if (!onboardingEnabled) {
-            alert('Akwarium dodane. Onboarding jest wyłączony.');
+            alert('Akwarium dodane. Onboarding jest wyĹ‚Ä…czony.');
           } else {
             alert(
               onboardingMode === 'fresh_start'
-                ? 'Akwarium dodane. Włączylismy onboarding fresh start (dzień 1/14).'
+                ? 'Akwarium dodane. WĹ‚Ä…czylismy onboarding fresh start (dzieĹ„ 1/14).'
                 : onboardingMode === 'restart'
-                  ? 'Akwarium dodane. Włączylismy onboarding restartu (dzień 1/14).'
-                  : 'Akwarium dodane. Włączylismy onboarding startu na dojrzalym medium (dzień 1/14).'
+                  ? 'Akwarium dodane. WĹ‚Ä…czylismy onboarding restartu (dzieĹ„ 1/14).'
+                  : 'Akwarium dodane. WĹ‚Ä…czylismy onboarding startu na dojrzalym medium (dzieĹ„ 1/14).'
             );
           }
         }
       }
     } catch (error) {
       alert(
-        `Błąd ${editingTankId ? 'edycji' : 'dodawania'} akwarium: ` +
+        `BĹ‚Ä…d ${editingTankId ? 'edycji' : 'dodawania'} akwarium: ` +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -16135,12 +16448,12 @@ export default function HomeScreen() {
     const tankToDelete = selectedTank;
 
     Alert.alert(
-      "Usuń akwarium",
-      `Czy na pewno chcesz usuńąć akwarium "${tankToDelete.name}"?\n\nTej operacji nie da się cofnąć (nieodwracalne).`,
+      "UsuĹ„ akwarium",
+      `Czy na pewno chcesz usuĹ„Ä…Ä‡ akwarium "${tankToDelete.name}"?\n\nTej operacji nie da siÄ™ cofnÄ…Ä‡ (nieodwracalne).`,
       [
         { text: 'Anuluj', style: 'cancel' },
         {
-          text: 'Usuń',
+          text: 'UsuĹ„',
           style: 'destructive',
           onPress: async () => {
             if (!user?.uid || !tankToDelete.id || addTankBusy) {
@@ -16178,10 +16491,10 @@ export default function HomeScreen() {
 
               await fetchTanks(user.uid);
               await fetchHomeData(user.uid);
-              alert("Akwarium i powiązane dane zostały usunięte.");
+              alert("Akwarium i powiÄ…zane dane zostaĹ‚y usuniÄ™te.");
             } catch (error) {
               alert(
-                'Błąd usuwania akwarium: ' +
+                'BĹ‚Ä…d usuwania akwarium: ' +
                   (error instanceof Error ? error.message : '')
               );
             } finally {
@@ -16198,7 +16511,7 @@ export default function HomeScreen() {
       return;
     }
     if (stockBusy) {
-      alert('Trwa zapisywanie poprzedniej zmiany. Spróbuj ponownie za chwile.');
+      alert('Trwa zapisywanie poprzedniej zmiany. SprĂłbuj ponownie za chwile.');
       return;
     }
 
@@ -16226,10 +16539,10 @@ export default function HomeScreen() {
               String(item?.type ?? '').toLowerCase() === 'fish'
           );
 
-        const quantity = parsePositiveNumberOrThrow('ilość', fishQuantity);
+        const quantity = parsePositiveNumberOrThrow('iloĹ›Ä‡', fishQuantity);
 
         if (!Number.isInteger(quantity)) {
-          throw new Error("Pole ilość musi byc liczba calkowita");
+          throw new Error("Pole iloĹ›Ä‡ musi byc liczba calkowita");
         }
 
         const searchPhrase = String(stockFishSearch ?? '').trim();
@@ -16286,11 +16599,11 @@ export default function HomeScreen() {
             createdAt: new Date(),
           };
         } else if (!searchPhrase) {
-          throw new Error("Wpisz nazwę ryby albo wybierz gatunek z katalogu.");
+          throw new Error("Wpisz nazwÄ™ ryby albo wybierz gatunek z katalogu.");
         } else {
           const manualFishName = searchPhrase.replace(/\s+/g, ' ').trim();
           if (manualFishName.length < 2) {
-            throw new Error("Wpisz pełna nazwę ryby (minimum 2 znaki).");
+            throw new Error("Wpisz peĹ‚na nazwÄ™ ryby (minimum 2 znaki).");
           }
 
           payload = {
@@ -16347,7 +16660,7 @@ export default function HomeScreen() {
         ];
 
         if (uniqueSelectedPlantIds.length === 0) {
-          throw new Error("Wybierz roślinę z katalogu.");
+          throw new Error("Wybierz roĹ›linÄ™ z katalogu.");
         }
 
         const selectedPlants = uniqueSelectedPlantIds
@@ -16356,7 +16669,7 @@ export default function HomeScreen() {
 
         if (selectedPlants.length !== uniqueSelectedPlantIds.length) {
           throw new Error(
-            "Jedna z wybranych roślin nie istnieje w katalogu. Odśwież liste i spróbuj ponownie."
+            "Jedna z wybranych roĹ›lin nie istnieje w katalogu. OdĹ›wieĹĽ liste i sprĂłbuj ponownie."
           );
         }
 
@@ -16597,7 +16910,7 @@ export default function HomeScreen() {
 
       if (Number(selectedTank.liters) < minLiters) {
         addWarnings.push(
-          'Uwaga: minimalny litraż tej pozycji jest większy niż litraż aktywnego akwarium.'
+          'Uwaga: minimalny litraĹĽ tej pozycji jest wiÄ™kszy niĹĽ litraĹĽ aktywnego akwarium.'
         );
       }
 
@@ -16610,7 +16923,7 @@ export default function HomeScreen() {
       }
     } catch (error) {
       alert(
-        'Błąd dodawania obsady: ' +
+        'BĹ‚Ä…d dodawania obsady: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -16627,10 +16940,10 @@ export default function HomeScreen() {
 
     try {
       const draft = fishQuantityDrafts[itemId] ?? '';
-      const quantity = parseNonNegativeNumberOrThrow('ilość', String(draft));
+      const quantity = parseNonNegativeNumberOrThrow('iloĹ›Ä‡', String(draft));
 
       if (!Number.isInteger(quantity)) {
-        throw new Error("Pole ilość musi byc liczba calkowita");
+        throw new Error("Pole iloĹ›Ä‡ musi byc liczba calkowita");
       }
 
       if (quantity === 0) {
@@ -16654,13 +16967,13 @@ export default function HomeScreen() {
 
       alert(
         quantity === 0
-          ? "Ryba usunięta z obsady (ilość ustawiona na 0)."
-          : "Ilość ryby zaktualizowana"
+          ? "Ryba usuniÄ™ta z obsady (iloĹ›Ä‡ ustawiona na 0)."
+          : "IloĹ›Ä‡ ryby zaktualizowana"
       );
       return true;
     } catch (error) {
       alert(
-        'Błąd aktualizacji ilosci: ' +
+        'BĹ‚Ä…d aktualizacji ilosci: ' +
           (error instanceof Error ? error.message : '')
       );
       return false;
@@ -16674,23 +16987,23 @@ export default function HomeScreen() {
       return;
     }
 
-    const itemLabel = itemType === 'plant' ? "te roślinę" : 'te rybe';
+    const itemLabel = itemType === 'plant' ? "te roĹ›linÄ™" : 'te rybe';
     const successMessage =
       itemType === 'plant'
-        ? "Pozycja usunięta z obsady roślin"
-        : "Pozycja usunięta z obsady";
+        ? "Pozycja usuniÄ™ta z obsady roĹ›lin"
+        : "Pozycja usuniÄ™ta z obsady";
     const errorMessage =
       itemType === 'plant'
-        ? "Błąd usuwania rośliny z obsady: "
-        : 'Błąd usuwania obsady: ';
+        ? "BĹ‚Ä…d usuwania roĹ›liny z obsady: "
+        : 'BĹ‚Ä…d usuwania obsady: ';
 
     Alert.alert(
-      "Potwierdź usunięcie",
-      `Czy na pewno chcesz usuńąć ${itemLabel} z obsady? Tej zmiany nie da się cofnąć.`,
+      "PotwierdĹş usuniÄ™cie",
+      `Czy na pewno chcesz usuĹ„Ä…Ä‡ ${itemLabel} z obsady? Tej zmiany nie da siÄ™ cofnÄ…Ä‡.`,
       [
         { text: 'Anuluj', style: 'cancel' },
         {
-          text: 'Usuń',
+          text: 'UsuĹ„',
           style: 'destructive',
           onPress: async () => {
             if (!user || !selectedTank?.id || stockBusy) {
@@ -16875,7 +17188,7 @@ export default function HomeScreen() {
 
       if (measurementInputRows.length === 0) {
         throw new Error(
-          'W ustawieniach włącz przynajmniej 1 pole, aby pokazac je w formularzu.'
+          'W ustawieniach wĹ‚Ä…cz przynajmniej 1 pole, aby pokazac je w formularzu.'
         );
       }
 
@@ -16981,7 +17294,7 @@ export default function HomeScreen() {
             editingMeasurementId
               ? `Zaktualizowano wpis dla akwarium: ${selectedTank.name}.`
               : `Zapisano dla akwarium: ${selectedTank.name}.`
-          }\n\nParametry są w normie.`
+          }\n\nParametry sÄ… w normie.`
         );
       } else {
         const highlights = analysis.recommendations
@@ -16998,8 +17311,8 @@ export default function HomeScreen() {
       }
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : 'nieznany błąd';
-      alert('Błąd: ' + message);
+        error instanceof Error ? error.message : 'nieznany bĹ‚Ä…d';
+      alert('BĹ‚Ä…d: ' + message);
     } finally {
       setSaveBusy(false);
     }
@@ -17015,12 +17328,12 @@ export default function HomeScreen() {
     }
 
     Alert.alert(
-      "Usuń wpis z historii",
-      "Czy na pewno chcesz usuńąć ten wpis pomiaru? Tej operacji nie da się cofnąć (nieodwracalne).",
+      "UsuĹ„ wpis z historii",
+      "Czy na pewno chcesz usuĹ„Ä…Ä‡ ten wpis pomiaru? Tej operacji nie da siÄ™ cofnÄ…Ä‡ (nieodwracalne).",
       [
         { text: 'Anuluj', style: 'cancel' },
         {
-          text: 'Usuń',
+          text: 'UsuĹ„',
           style: 'destructive',
           onPress: async () => {
             if (!user?.uid || !selectedTank?.id || measurementDeleteBusy) {
@@ -17041,10 +17354,10 @@ export default function HomeScreen() {
 
               await fetchMeasurements(user.uid, selectedTank.id);
               await fetchHomeData(user.uid);
-              alert("Wpis z historii został usunięty.");
+              alert("Wpis z historii zostaĹ‚ usuniÄ™ty.");
             } catch (error) {
               alert(
-                'Błąd usuwania wpisu z historii: ' +
+                'BĹ‚Ä…d usuwania wpisu z historii: ' +
                   (error instanceof Error ? error.message : '')
               );
             } finally {
@@ -17069,12 +17382,12 @@ export default function HomeScreen() {
 
     const issueName = String(issueEntry?.issueName ?? t('noData')).trim();
     Alert.alert(
-      "Usuń wpis z historii problemów",
-      `Czy na pewno chcesz usuńąć "${issueName}"? Tej operacji nie da się cofnąć (nieodwracalne).`,
+      "UsuĹ„ wpis z historii problemĂłw",
+      `Czy na pewno chcesz usuĹ„Ä…Ä‡ "${issueName}"? Tej operacji nie da siÄ™ cofnÄ…Ä‡ (nieodwracalne).`,
       [
         { text: 'Anuluj', style: 'cancel' },
         {
-          text: 'Usuń',
+          text: 'UsuĹ„',
           style: 'destructive',
           onPress: async () => {
             if (
@@ -17092,10 +17405,10 @@ export default function HomeScreen() {
               await fetchTankDiseaseCases(user.uid, selectedTank.id);
               await fetchHomeData(user.uid);
               setExpandedHistoryIssueId((prev) => (prev === issueId ? null : prev));
-              alert("Wpis z historii problemów został usunięty.");
+              alert("Wpis z historii problemĂłw zostaĹ‚ usuniÄ™ty.");
             } catch (error) {
               alert(
-                'Błąd usuwania wpisu z historii problemów: ' +
+                'BĹ‚Ä…d usuwania wpisu z historii problemĂłw: ' +
                   (error instanceof Error ? error.message : '')
               );
             } finally {
@@ -17150,7 +17463,7 @@ export default function HomeScreen() {
       });
     } catch (error) {
       alert(
-        'Błąd zapisu statusu zadania onboardingu: ' +
+        'BĹ‚Ä…d zapisu statusu zadania onboardingu: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -17213,10 +17526,10 @@ export default function HomeScreen() {
                 : {}),
             }
       );
-      alert(nextEnabled ? 'Onboarding włączony.' : 'Onboarding wyłączony.');
+      alert(nextEnabled ? 'Onboarding wĹ‚Ä…czony.' : 'Onboarding wyĹ‚Ä…czony.');
     } catch (error) {
       alert(
-        'Błąd zmiany statusu onboardingu: ' +
+        'BĹ‚Ä…d zmiany statusu onboardingu: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -17285,7 +17598,7 @@ export default function HomeScreen() {
         });
       } catch (error) {
         alert(
-          'Błąd zapisu akcji kalendarza: ' +
+          'BĹ‚Ä…d zapisu akcji kalendarza: ' +
             (error instanceof Error ? error.message : '')
         );
       } finally {
@@ -17334,7 +17647,7 @@ export default function HomeScreen() {
       return;
     }
     if (stockBusy) {
-      alert('Trwa zapisywanie poprzedniej zmiany. Spróbuj ponownie za chwile.');
+      alert('Trwa zapisywanie poprzedniej zmiany. SprĂłbuj ponownie za chwile.');
       return;
     }
 
@@ -17532,7 +17845,7 @@ export default function HomeScreen() {
 
       if (Number(tank?.liters) < minLiters) {
         addWarnings.push(
-          'Uwaga: minimalny litraż tej ryby jest większy niż litraż wybranego akwarium.'
+          'Uwaga: minimalny litraĹĽ tej ryby jest wiÄ™kszy niĹĽ litraĹĽ wybranego akwarium.'
         );
       }
 
@@ -17543,7 +17856,7 @@ export default function HomeScreen() {
       }
     } catch (error) {
       alert(
-        'Błąd dodawania ryby do akwarium: ' +
+        'BĹ‚Ä…d dodawania ryby do akwarium: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -17560,10 +17873,10 @@ export default function HomeScreen() {
 
     try {
       const draft = plantQuantityDrafts[itemId] ?? '';
-      const quantity = parseNonNegativeNumberOrThrow('ilość', String(draft));
+      const quantity = parseNonNegativeNumberOrThrow('iloĹ›Ä‡', String(draft));
 
       if (!Number.isInteger(quantity)) {
-        throw new Error("Pole ilość musi byc liczba calkowita");
+        throw new Error("Pole iloĹ›Ä‡ musi byc liczba calkowita");
       }
 
       if (quantity === 0) {
@@ -17587,13 +17900,13 @@ export default function HomeScreen() {
 
       alert(
         quantity === 0
-          ? "Roślina usunięta z obsady (ilość ustawiona na 0)."
-          : "Ilość rośliny zaktualizowana"
+          ? "RoĹ›lina usuniÄ™ta z obsady (iloĹ›Ä‡ ustawiona na 0)."
+          : "IloĹ›Ä‡ roĹ›liny zaktualizowana"
       );
       return true;
     } catch (error) {
       alert(
-        'Błąd aktualizacji ilosci: ' +
+        'BĹ‚Ä…d aktualizacji ilosci: ' +
           (error instanceof Error ? error.message : '')
       );
       return false;
@@ -17607,7 +17920,7 @@ export default function HomeScreen() {
       return;
     }
     if (stockBusy) {
-      alert('Trwa zapisywanie poprzedniej zmiany. Spróbuj ponownie za chwile.');
+      alert('Trwa zapisywanie poprzedniej zmiany. SprĂłbuj ponownie za chwile.');
       return;
     }
 
@@ -17616,7 +17929,7 @@ export default function HomeScreen() {
     try {
       const selectedPlant = plantCatalog.find((item) => item.id === plant?.id) ?? plant;
       if (!selectedPlant?.id) {
-        throw new Error("Wybrana roślina nie istnieje w katalogu.");
+        throw new Error("Wybrana roĹ›lina nie istnieje w katalogu.");
       }
 
       const sanitizedPlant = getSanitizedPlantCatalogFields(selectedPlant);
@@ -17704,7 +18017,7 @@ export default function HomeScreen() {
       const addWarnings = [];
       if (Number(tank?.liters) < minLiters) {
         addWarnings.push(
-          "Uwaga: minimalny litraż tej rośliny jest większy niż litraż wybranego akwarium."
+          "Uwaga: minimalny litraĹĽ tej roĹ›liny jest wiÄ™kszy niĹĽ litraĹĽ wybranego akwarium."
         );
       }
 
@@ -17715,7 +18028,7 @@ export default function HomeScreen() {
       }
     } catch (error) {
       alert(
-        "Błąd dodawania rośliny do akwarium: " +
+        "BĹ‚Ä…d dodawania roĹ›liny do akwarium: " +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -17830,13 +18143,13 @@ export default function HomeScreen() {
 
     const summaryParts = [
       `Akwarium: ${String(tank?.name ?? 'Akwarium').trim()}`,
-      Number.isFinite(Number(tank?.liters)) ? `Litraż: ${Math.round(Number(tank.liters))} l` : '',
+      Number.isFinite(Number(tank?.liters)) ? `LitraĹĽ: ${Math.round(Number(tank.liters))} l` : '',
       String(tank?.waterProfile ?? '').trim()
         ? `Profil: ${String(tank.waterProfile).trim()}`
         : '',
       latestMeasurement
         ? `Ostatni pomiar: pH ${latestMeasurement.ph ?? '-'}, NO2 ${latestMeasurement.no2 ?? '-'}, NO3 ${latestMeasurement.no3 ?? '-'}, temp ${latestMeasurement.temperature ?? '-'}`
-        : 'Brak pomiarów dla tego akwarium.',
+        : 'Brak pomiarĂłw dla tego akwarium.',
     ].filter(Boolean);
 
     return summaryParts.join('. ');
@@ -17858,11 +18171,11 @@ export default function HomeScreen() {
       setCatalogAiContextTankId(tank.id);
       setCatalogAiContextSummary(contextSummary);
       if (!contextSummary) {
-        setCatalogAiError('Nie udało się zbudować kontekstu. Sprawdź dane akwarium.');
+        setCatalogAiError('Nie udaĹ‚o siÄ™ zbudowaÄ‡ kontekstu. SprawdĹş dane akwarium.');
       }
     } catch (error) {
       setCatalogAiError(
-        'Błąd pobierania parametrów z akwarium: ' +
+        'BĹ‚Ä…d pobierania parametrĂłw z akwarium: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -17881,11 +18194,11 @@ export default function HomeScreen() {
       return;
     }
     if (!appSettings.aiConsentDataProcessing) {
-      setCatalogAiError('Włącz zgodę na przetwarzanie danych AI, aby uruchomić analizę.');
+      setCatalogAiError('WĹ‚Ä…cz zgodÄ™ na przetwarzanie danych AI, aby uruchomiÄ‡ analizÄ™.');
       return;
     }
     if (!user?.getIdToken) {
-      setCatalogAiError('Brak aktywnej sesji. Zaloguj się ponownie.');
+      setCatalogAiError('Brak aktywnej sesji. Zaloguj siÄ™ ponownie.');
       return;
     }
 
@@ -17897,7 +18210,7 @@ export default function HomeScreen() {
       const contextFromTank = catalogAiContextSummary || fallbackContext;
       const userProblem = String(catalogAiProblemInput ?? '').trim().slice(0, 500);
       const effectiveQuestion = userProblem
-        ? `${String(question ?? '').trim()}\nUwzglednij dodatkowy problem użytkownika: ${userProblem}`
+        ? `${String(question ?? '').trim()}\nUwzglednij dodatkowy problem uĹĽytkownika: ${userProblem}`
         : String(question ?? '').trim();
       const additionalInfo = [contextFromTank, contextDetails]
         .map((value) => String(value ?? '').trim())
@@ -17928,7 +18241,7 @@ export default function HomeScreen() {
         rawError instanceof AiChatRequestError
           ? rawError
           : new AiChatRequestError(
-              'Błąd analizy AI w katalogu. Spróbuj ponownie.',
+              'BĹ‚Ä…d analizy AI w katalogu. SprĂłbuj ponownie.',
               'AIW_INTERNAL',
               true
             );
@@ -17945,7 +18258,7 @@ export default function HomeScreen() {
     }
     if (!appSettings.aiConsentDataProcessing || !appSettings.aiConsentImageAnalysis) {
       setCatalogAiError(
-        'Aby analizowac zdjęcia, włącz zgody: przetwarzanie danych AI i analiza obrazow.'
+        'Aby analizowac zdjÄ™cia, wĹ‚Ä…cz zgody: przetwarzanie danych AI i analiza obrazow.'
       );
       return;
     }
@@ -17968,7 +18281,7 @@ export default function HomeScreen() {
         rawError instanceof AiChatRequestError
           ? rawError
           : new AiChatRequestError(
-              'Nie udało się wybrać zdjęcia. Spróbuj ponownie.',
+              'Nie udaĹ‚o siÄ™ wybraÄ‡ zdjÄ™cia. SprĂłbuj ponownie.',
               'AIW_INTERNAL',
               true
             );
@@ -17990,16 +18303,16 @@ export default function HomeScreen() {
     }
     if (!appSettings.aiConsentDataProcessing || !appSettings.aiConsentImageAnalysis) {
       setCatalogAiError(
-        'Aby analizowac zdjęcia, włącz zgody: przetwarzanie danych AI i analiza obrazow.'
+        'Aby analizowac zdjÄ™cia, wĹ‚Ä…cz zgody: przetwarzanie danych AI i analiza obrazow.'
       );
       return;
     }
     if (!user?.uid || !user?.getIdToken) {
-      setCatalogAiError('Brak aktywnej sesji. Zaloguj się ponownie.');
+      setCatalogAiError('Brak aktywnej sesji. Zaloguj siÄ™ ponownie.');
       return;
     }
     if (!catalogAiSelectedImage?.uri) {
-      setCatalogAiError('Dodaj zdjęcie z aparatu lub galerii przed analiza.');
+      setCatalogAiError('Dodaj zdjÄ™cie z aparatu lub galerii przed analiza.');
       return;
     }
 
@@ -18011,7 +18324,7 @@ export default function HomeScreen() {
       const contextFromTank = catalogAiContextSummary || fallbackContext;
       const userProblem = String(catalogAiProblemInput ?? '').trim().slice(0, 500);
       const effectiveQuestion = userProblem
-        ? `${String(question ?? '').trim()}\nUwzglednij dodatkowy problem użytkownika: ${userProblem}`
+        ? `${String(question ?? '').trim()}\nUwzglednij dodatkowy problem uĹĽytkownika: ${userProblem}`
         : String(question ?? '').trim();
       const additionalInfo = [contextFromTank, contextDetails]
         .map((value) => String(value ?? '').trim())
@@ -18055,7 +18368,7 @@ export default function HomeScreen() {
         rawError instanceof AiChatRequestError
           ? rawError
           : new AiChatRequestError(
-              'Błąd analizy AI w katalogu. Spróbuj ponownie.',
+              'BĹ‚Ä…d analizy AI w katalogu. SprĂłbuj ponownie.',
               'AIW_INTERNAL',
               true
             );
@@ -18300,7 +18613,7 @@ export default function HomeScreen() {
       return;
     }
     if (!appSettings.aiConsentDataProcessing || !appSettings.aiConsentImageAnalysis) {
-      setDiseaseAiError("Włącz zgody AI, aby analizowac objawy ze zdjeciem.");
+      setDiseaseAiError("WĹ‚Ä…cz zgody AI, aby analizowac objawy ze zdjeciem.");
       return;
     }
     setDiseaseAiBusy(true);
@@ -18317,7 +18630,7 @@ export default function HomeScreen() {
         mimeType: String(picked.mimeType || 'image/jpeg'),
       });
     } catch (error) {
-      setDiseaseAiError(error instanceof Error ? error.message : 'Nie udało się dodać zdjęcia.');
+      setDiseaseAiError(error instanceof Error ? error.message : 'Nie udaĹ‚o siÄ™ dodaÄ‡ zdjÄ™cia.');
     } finally {
       setDiseaseAiBusy(false);
     }
@@ -18329,11 +18642,11 @@ export default function HomeScreen() {
       return;
     }
     if (!appSettings.aiConsentDataProcessing) {
-      setDiseaseAiError('Włącz zgodę na przetwarzanie danych AI.');
+      setDiseaseAiError('WĹ‚Ä…cz zgodÄ™ na przetwarzanie danych AI.');
       return;
     }
     if (!user?.uid || !user?.getIdToken) {
-      setDiseaseAiError("Brak aktywnej sesji. Zaloguj się ponownie.");
+      setDiseaseAiError("Brak aktywnej sesji. Zaloguj siÄ™ ponownie.");
       return;
     }
 
@@ -18346,11 +18659,11 @@ export default function HomeScreen() {
     const description = String(diseaseAiDescription ?? '').trim().slice(0, 1000);
     const hasImage = Boolean(diseaseAiSelectedImage?.uri);
     if (!description && !hasImage) {
-      setDiseaseAiError("Dodaj opis objawów albo zdjecie.");
+      setDiseaseAiError("Dodaj opis objawĂłw albo zdjecie.");
       return;
     }
     if (hasImage && !appSettings.aiConsentImageAnalysis) {
-      setDiseaseAiError('Włącz zgodę na analizę obrazów AI.');
+      setDiseaseAiError('WĹ‚Ä…cz zgodÄ™ na analizÄ™ obrazĂłw AI.');
       return;
     }
 
@@ -18375,13 +18688,13 @@ export default function HomeScreen() {
       const latest = diseaseAiLatestMeasurement;
       const waterLine = latest
         ? `Ostatnie parametry: NO2 ${latest.no2 ?? '-'}, NO3 ${latest.no3 ?? '-'}, NH3/NH4 ${latest.nh3nh4 ?? '-'}, pH ${latest.ph ?? '-'}, GH ${latest.gh ?? '-'}, KH ${latest.kh ?? '-'}, temp ${latest.temperature ?? '-'}.`
-        : 'Brak aktualnych parametrów wody.';
+        : 'Brak aktualnych parametrĂłw wody.';
       const additionalInfo = [
         `Akwarium: ${tank.name ?? 'Akwarium'}, litraz ${tank.liters ?? '-'} l.`,
         selectedFishOption?.label
           ? `Dotyczy gatunku/ryby: ${selectedFishOption.label}.`
           : 'Dotyczy: nie wiem / kilka ryb.',
-        `Czas trwania objawów: ${
+        `Czas trwania objawĂłw: ${
           DISEASE_AI_DURATION_OPTIONS.find((item) => item.id === diseaseAiDuration)?.label || 'Nie wiem'
         }.`,
         `Czy inne ryby maja objawy: ${
@@ -18403,7 +18716,7 @@ export default function HomeScreen() {
             imageUrl: uploaded.downloadUrl,
             question:
               description ||
-              "Przeanalizuj objawy ryby i podaj maksymalnie 3 możliwe podejrzenia chorob z katalogu.",
+              "Przeanalizuj objawy ryby i podaj maksymalnie 3 moĹĽliwe podejrzenia chorob z katalogu.",
             additionalInfo,
             tankId: String(tank.id),
             mode: 'sick_fish',
@@ -18432,7 +18745,7 @@ export default function HomeScreen() {
           idToken: String(idToken ?? ''),
           question:
             description ||
-            "Przeanalizuj objawy ryby i podaj maksymalnie 3 możliwe podejrzenia chorob z katalogu.",
+            "Przeanalizuj objawy ryby i podaj maksymalnie 3 moĹĽliwe podejrzenia chorob z katalogu.",
           additionalInfo,
           tankId: String(tank.id),
           mode: 'sick_fish',
@@ -18473,7 +18786,7 @@ export default function HomeScreen() {
         selectedFishId: selectedFishOption?.id || null,
       });
     } catch (error) {
-      setDiseaseAiError(error instanceof Error ? error.message : 'Nie udało się uruchomić analizy AI.');
+      setDiseaseAiError(error instanceof Error ? error.message : 'Nie udaĹ‚o siÄ™ uruchomiÄ‡ analizy AI.');
     } finally {
       setDiseaseAiBusy(false);
     }
@@ -18599,7 +18912,7 @@ export default function HomeScreen() {
       alert('Podejrzenie zapisane w akwarium.');
       setIsDiseaseAiAnalyzerVisible(false);
     } catch (error) {
-      setDiseaseAiError(error instanceof Error ? error.message : 'Nie udało się zapisać podejrzenia.');
+      setDiseaseAiError(error instanceof Error ? error.message : 'Nie udaĹ‚o siÄ™ zapisaÄ‡ podejrzenia.');
     } finally {
       setDiseaseAiSavingBusy(false);
     }
@@ -18632,7 +18945,7 @@ export default function HomeScreen() {
       return;
     }
     if (!appSettings.aiConsentDataProcessing || !appSettings.aiConsentImageAnalysis) {
-      setPlantDiseaseAiError("Włącz zgody AI, aby analizowac problemy roślin ze zdjeciem.");
+      setPlantDiseaseAiError("WĹ‚Ä…cz zgody AI, aby analizowac problemy roĹ›lin ze zdjeciem.");
       return;
     }
     setPlantDiseaseAiBusy(true);
@@ -18649,7 +18962,7 @@ export default function HomeScreen() {
         mimeType: String(picked.mimeType || 'image/jpeg'),
       });
     } catch (error) {
-      setPlantDiseaseAiError(error instanceof Error ? error.message : 'Nie udało się dodać zdjęcia.');
+      setPlantDiseaseAiError(error instanceof Error ? error.message : 'Nie udaĹ‚o siÄ™ dodaÄ‡ zdjÄ™cia.');
     } finally {
       setPlantDiseaseAiBusy(false);
     }
@@ -18663,11 +18976,11 @@ export default function HomeScreen() {
       return;
     }
     if (!appSettings.aiConsentDataProcessing) {
-      setPlantDiseaseAiError('Włącz zgodę na przetwarzanie danych AI.');
+      setPlantDiseaseAiError('WĹ‚Ä…cz zgodÄ™ na przetwarzanie danych AI.');
       return;
     }
     if (!user?.uid || !user?.getIdToken) {
-      setPlantDiseaseAiError("Brak aktywnej sesji. Zaloguj się ponownie.");
+      setPlantDiseaseAiError("Brak aktywnej sesji. Zaloguj siÄ™ ponownie.");
       return;
     }
 
@@ -18684,7 +18997,7 @@ export default function HomeScreen() {
       return;
     }
     if (hasImage && !appSettings.aiConsentImageAnalysis) {
-      setPlantDiseaseAiError('Włącz zgodę na analizę obrazów AI.');
+      setPlantDiseaseAiError('WĹ‚Ä…cz zgodÄ™ na analizÄ™ obrazĂłw AI.');
       return;
     }
 
@@ -18740,28 +19053,28 @@ export default function HomeScreen() {
         .join(', ');
       const waterLine = latest
         ? `Ostatnie parametry: NO3 ${latest.no3 ?? '-'}, PO4 ${latest.po4 ?? '-'}, K ${latest.k ?? '-'}, Fe ${latest.fe ?? '-'}, pH ${latest.ph ?? '-'}, GH ${latest.gh ?? '-'}, KH ${latest.kh ?? '-'}, temp ${latest.temperature ?? '-'}.`
-        : 'Brak aktualnych parametrów wody.';
+        : 'Brak aktualnych parametrĂłw wody.';
       const additionalInfo = [
         `Akwarium: ${tank.name ?? 'Akwarium'}, litraz ${tank.liters ?? '-'} l.`,
         selectedPlantOption?.label
-          ? `Dotyczy rośliny: ${selectedPlantOption.label}.`
-          : "Dotyczy: nie wiem / kilka roślin.",
+          ? `Dotyczy roĹ›liny: ${selectedPlantOption.label}.`
+          : "Dotyczy: nie wiem / kilka roĹ›lin.",
         `Czas trwania problemu: ${
           DISEASE_AI_DURATION_OPTIONS.find((item) => item.id === plantDiseaseAiDuration)
             ?.label || 'Nie wiem'
         }.`,
-        `Czy problem dotyczy wielu roślin: ${
+        `Czy problem dotyczy wielu roĹ›lin: ${
           PLANT_AI_MULTIPLE_OPTIONS.find((item) => item.id === plantDiseaseAiMultipleAffected)
             ?.label || 'Nie wiem'
         }.`,
-        plantsInTargetTank ? `Rośliny w akwarium: ${plantsInTargetTank}.` : '',
+        plantsInTargetTank ? `RoĹ›liny w akwarium: ${plantsInTargetTank}.` : '',
         waterLine,
-        `Oświetlenie: ${profile?.lightModelName || '-'}, czas świecenia ${profile?.lightHours ?? '-'} h, lm/l ${profile?.lumensPerLiter ?? '-'}.`,
-        `CO2: ${latest?.co2 ?? '-'}, nawożenie: root tabs aktywne: ${
+        `OĹ›wietlenie: ${profile?.lightModelName || '-'}, czas Ĺ›wiecenia ${profile?.lightHours ?? '-'} h, lm/l ${profile?.lumensPerLiter ?? '-'}.`,
+        `CO2: ${latest?.co2 ?? '-'}, nawoĹĽenie: root tabs aktywne: ${
           fertilizationSummary?.hasActiveRootTabs ? 'tak' : 'nie'
         }, dni wsparcia: ${fertilizationSummary?.rootTabsSupportDaysLeft ?? '-'}.`,
-        substrateLabels ? `Podłoże: ${substrateLabels}.` : '',
-        `Katalog problemów roślin (skrot): ${compactCatalog}`,
+        substrateLabels ? `PodĹ‚oĹĽe: ${substrateLabels}.` : '',
+        `Katalog problemĂłw roĹ›lin (skrot): ${compactCatalog}`,
       ]
         .map((entry) => String(entry ?? '').trim())
         .filter(Boolean)
@@ -18779,7 +19092,7 @@ export default function HomeScreen() {
             imageUrl: uploaded.downloadUrl,
             question:
               description ||
-              "Przeanalizuj problem rośliny i podaj maksymalnie 3 możliwe przyczyny z katalogu problemów roślin.",
+              "Przeanalizuj problem roĹ›liny i podaj maksymalnie 3 moĹĽliwe przyczyny z katalogu problemĂłw roĹ›lin.",
             additionalInfo,
             tankId: String(tank.id),
             mode: 'plant_problem_analysis',
@@ -18808,7 +19121,7 @@ export default function HomeScreen() {
           idToken: String(idToken ?? ''),
           question:
             description ||
-            "Przeanalizuj problem rośliny i podaj maksymalnie 3 możliwe przyczyny z katalogu problemów roślin.",
+            "Przeanalizuj problem roĹ›liny i podaj maksymalnie 3 moĹĽliwe przyczyny z katalogu problemĂłw roĹ›lin.",
           additionalInfo,
           tankId: String(tank.id),
           mode: 'plant_problem_analysis',
@@ -18850,7 +19163,7 @@ export default function HomeScreen() {
       });
     } catch (error) {
       setPlantDiseaseAiError(
-        error instanceof Error ? error.message : 'Nie udało się uruchomić analizy AI.'
+        error instanceof Error ? error.message : 'Nie udaĹ‚o siÄ™ uruchomiÄ‡ analizy AI.'
       );
     } finally {
       setPlantDiseaseAiBusy(false);
@@ -18971,11 +19284,11 @@ export default function HomeScreen() {
         await fetchTankDiseaseCases(user.uid, tank.id);
       }
 
-      alert("Podejrzenie problemu rośliny zapisane w akwarium.");
+      alert("Podejrzenie problemu roĹ›liny zapisane w akwarium.");
       setIsPlantDiseaseAiAnalyzerVisible(false);
     } catch (error) {
       setPlantDiseaseAiError(
-        error instanceof Error ? error.message : 'Nie udało się zapisać podejrzenia.'
+        error instanceof Error ? error.message : 'Nie udaĹ‚o siÄ™ zapisaÄ‡ podejrzenia.'
       );
     } finally {
       setPlantDiseaseAiSavingBusy(false);
@@ -19009,7 +19322,7 @@ export default function HomeScreen() {
       return;
     }
     if (!appSettings.aiConsentDataProcessing || !appSettings.aiConsentImageAnalysis) {
-      setAlgaeAiError("Włącz zgody AI, aby analizowac glony ze zdjeciem.");
+      setAlgaeAiError("WĹ‚Ä…cz zgody AI, aby analizowac glony ze zdjeciem.");
       return;
     }
     setAlgaeAiBusy(true);
@@ -19026,7 +19339,7 @@ export default function HomeScreen() {
         mimeType: String(picked.mimeType || 'image/jpeg'),
       });
     } catch (error) {
-      setAlgaeAiError(error instanceof Error ? error.message : 'Nie udało się dodać zdjęcia.');
+      setAlgaeAiError(error instanceof Error ? error.message : 'Nie udaĹ‚o siÄ™ dodaÄ‡ zdjÄ™cia.');
     } finally {
       setAlgaeAiBusy(false);
     }
@@ -19055,11 +19368,11 @@ export default function HomeScreen() {
       return;
     }
     if (!appSettings.aiConsentDataProcessing) {
-      setAlgaeAiError('Włącz zgodę na przetwarzanie danych AI.');
+      setAlgaeAiError('WĹ‚Ä…cz zgodÄ™ na przetwarzanie danych AI.');
       return;
     }
     if (!user?.uid || !user?.getIdToken) {
-      setAlgaeAiError("Brak aktywnej sesji. Zaloguj się ponownie.");
+      setAlgaeAiError("Brak aktywnej sesji. Zaloguj siÄ™ ponownie.");
       return;
     }
 
@@ -19076,7 +19389,7 @@ export default function HomeScreen() {
       return;
     }
     if (hasImage && !appSettings.aiConsentImageAnalysis) {
-      setAlgaeAiError('Włącz zgodę na analizę obrazów AI.');
+      setAlgaeAiError('WĹ‚Ä…cz zgodÄ™ na analizÄ™ obrazĂłw AI.');
       return;
     }
 
@@ -19124,18 +19437,18 @@ export default function HomeScreen() {
         .join(', ');
       const additionalInfo = [
         `Akwarium: ${tank.name ?? 'Akwarium'}, litraz ${tank.liters ?? '-'} l.`,
-        `Lokalizacje glonów: ${locationLabels || 'nie podano'}.`,
-        `Wyglad glonów: ${appearanceLabels || 'nie podano'}.`,
+        `Lokalizacje glonĂłw: ${locationLabels || 'nie podano'}.`,
+        `Wyglad glonĂłw: ${appearanceLabels || 'nie podano'}.`,
         `Czas trwania problemu: ${
           DISEASE_AI_DURATION_OPTIONS.find((item) => item.id === algaeAiDuration)?.label || 'Nie wiem'
         }.`,
         latest
           ? `Parametry: NO2 ${latest.no2 ?? '-'}, NO3 ${latest.no3 ?? '-'}, PO4 ${latest.po4 ?? '-'}, pH ${latest.ph ?? '-'}, GH ${latest.gh ?? '-'}, KH ${latest.kh ?? '-'}, temp ${latest.temperature ?? '-'}, CO2 ${latest.co2 ?? '-'}.`
-          : 'Brak aktualnych parametrów wody.',
-        `Oświetlenie: ${profile?.lightModelName || '-'}, czas świecenia ${profile?.lightHours ?? '-'} h, lm/l ${profile?.lumensPerLiter ?? '-'}.`,
+          : 'Brak aktualnych parametrĂłw wody.',
+        `OĹ›wietlenie: ${profile?.lightModelName || '-'}, czas Ĺ›wiecenia ${profile?.lightHours ?? '-'} h, lm/l ${profile?.lumensPerLiter ?? '-'}.`,
         `Obsada ryb (szt): ${fishInTargetTank}.`,
-        substrateLabels ? `Podłoże: ${substrateLabels}.` : '',
-        `Katalog glonów (skrot): ${compactCatalog}`,
+        substrateLabels ? `PodĹ‚oĹĽe: ${substrateLabels}.` : '',
+        `Katalog glonĂłw (skrot): ${compactCatalog}`,
       ]
         .map((entry) => String(entry ?? '').trim())
         .filter(Boolean)
@@ -19159,7 +19472,7 @@ export default function HomeScreen() {
             imageUrl: uploaded.downloadUrl,
             question:
               description ||
-              "Przeanalizuj glony i podaj maksymalnie 3 możliwe typy glonów z katalogu.",
+              "Przeanalizuj glony i podaj maksymalnie 3 moĹĽliwe typy glonĂłw z katalogu.",
             additionalInfo,
             tankId: String(tank.id),
             mode: 'algae_analysis',
@@ -19188,7 +19501,7 @@ export default function HomeScreen() {
           idToken: String(idToken ?? ''),
           question:
             description ||
-            "Przeanalizuj glony i podaj maksymalnie 3 możliwe typy glonów z katalogu.",
+            "Przeanalizuj glony i podaj maksymalnie 3 moĹĽliwe typy glonĂłw z katalogu.",
           additionalInfo,
           tankId: String(tank.id),
           mode: 'algae_analysis',
@@ -19233,8 +19546,8 @@ export default function HomeScreen() {
       });
     } catch (error) {
       const mappedError =
-        error instanceof Error ? error : new Error('Nie udało się uruchomić analizy AI.');
-      setAlgaeAiError(mappedError.message || 'Nie udało się uruchomić analizy AI.');
+        error instanceof Error ? error : new Error('Nie udaĹ‚o siÄ™ uruchomiÄ‡ analizy AI.');
+      setAlgaeAiError(mappedError.message || 'Nie udaĹ‚o siÄ™ uruchomiÄ‡ analizy AI.');
       trackAiRequestFailure(mappedError, {
         source: 'algae_catalog_analysis',
         mode: 'algae_analysis',
@@ -19394,7 +19707,7 @@ export default function HomeScreen() {
       setIsAlgaeAiAnalyzerVisible(false);
     } catch (error) {
       setAlgaeAiError(
-        error instanceof Error ? error.message : 'Nie udało się zapisać podejrzenia.'
+        error instanceof Error ? error.message : 'Nie udaĹ‚o siÄ™ zapisaÄ‡ podejrzenia.'
       );
     } finally {
       setAlgaeAiSavingBusy(false);
@@ -19479,10 +19792,10 @@ export default function HomeScreen() {
         await fetchTankDiseaseCases(user.uid, tank.id);
       }
 
-      alert(`Dodano do akwarium "${tank.name}". Szczegóły pojawily się w sekcji akwarium.`);
+      alert(`Dodano do akwarium "${tank.name}". SzczegĂłĹ‚y pojawily siÄ™ w sekcji akwarium.`);
     } catch (error) {
       alert(
-        'Błąd dodawania choroby do akwarium: ' +
+        'BĹ‚Ä…d dodawania choroby do akwarium: ' +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -19554,7 +19867,7 @@ export default function HomeScreen() {
       );
       if (!plantDiseaseCaseValidation.ok) {
         throw new Error(
-          `Nieprawidlowy payload przypadku choroby roślin: ${plantDiseaseCaseValidation.issues.join(', ')}`
+          `Nieprawidlowy payload przypadku choroby roĹ›lin: ${plantDiseaseCaseValidation.issues.join(', ')}`
         );
       }
       await addDocWithTelemetry(
@@ -19572,10 +19885,10 @@ export default function HomeScreen() {
         await fetchTankDiseaseCases(user.uid, tank.id);
       }
 
-      alert(`Dodano chorobę roślin do akwarium "${tank.name}". Szczegóły pojawily się w sekcji akwarium.`);
+      alert(`Dodano chorobÄ™ roĹ›lin do akwarium "${tank.name}". SzczegĂłĹ‚y pojawily siÄ™ w sekcji akwarium.`);
     } catch (error) {
       alert(
-        "Błąd dodawania choroby roślin do akwarium: " +
+        "BĹ‚Ä…d dodawania choroby roĹ›lin do akwarium: " +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -19650,7 +19963,7 @@ export default function HomeScreen() {
       const algaeCaseValidation = validateTankDiseaseCaseModelRuntime(algaeCasePayload);
       if (!algaeCaseValidation.ok) {
         throw new Error(
-          `Nieprawidlowy payload przypadku glonów: ${algaeCaseValidation.issues.join(', ')}`
+          `Nieprawidlowy payload przypadku glonĂłw: ${algaeCaseValidation.issues.join(', ')}`
         );
       }
       await addDocWithTelemetry(
@@ -19668,10 +19981,10 @@ export default function HomeScreen() {
         await fetchTankDiseaseCases(user.uid, tank.id);
       }
 
-      alert(`Dodano glony do akwarium "${tank.name}". Szczegóły pojawily się w sekcji akwarium.`);
+      alert(`Dodano glony do akwarium "${tank.name}". SzczegĂłĹ‚y pojawily siÄ™ w sekcji akwarium.`);
     } catch (error) {
       alert(
-        "Błąd dodawania glonów do akwarium: " +
+        "BĹ‚Ä…d dodawania glonĂłw do akwarium: " +
           (error instanceof Error ? error.message : '')
       );
     } finally {
@@ -19723,7 +20036,7 @@ export default function HomeScreen() {
 
       if (errorMessage && stage >= 1) {
         console.warn(
-          `Nie udało się załadować miniatury choroby (${diseaseId}, etap ${stage + 1}):`,
+          `Nie udaĹ‚o siÄ™ zaĹ‚adowaÄ‡ miniatury choroby (${diseaseId}, etap ${stage + 1}):`,
           errorMessage
         );
       }
@@ -19753,7 +20066,7 @@ export default function HomeScreen() {
       const nextStage = Math.min(2, prevStage + 1);
       if (errorMessage && prevStage >= 1) {
         console.warn(
-          `Nie udało się załadować zdjęcia choroby (etap ${prevStage + 1}):`,
+          `Nie udaĹ‚o siÄ™ zaĹ‚adowaÄ‡ zdjÄ™cia choroby (etap ${prevStage + 1}):`,
           errorMessage
         );
       }
@@ -19797,7 +20110,7 @@ export default function HomeScreen() {
     try {
       await WebBrowser.openBrowserAsync(normalizedUrl);
     } catch (_error) {
-      const message = fallbackMessage || 'Nie udało się otworzyć linku.';
+      const message = fallbackMessage || 'Nie udaĹ‚o siÄ™ otworzyÄ‡ linku.';
       alert(message);
     }
   }, []);
@@ -19808,14 +20121,14 @@ export default function HomeScreen() {
       'https://play.google.com/store/account/subscriptions';
     void handleOpenExternalUrl(
       managementUrl,
-      'Nie udało się otworzyć ustawien subskrypcji.'
+      'Nie udaĹ‚o siÄ™ otworzyÄ‡ ustawien subskrypcji.'
     );
   }, [handleOpenExternalUrl, subscriptionManagementUrl]);
 
   const handleSubscriptionTierManualChange = async (tier) => {
     if (!billingEnabled) {
       alert(
-        "Zakupy subskrypcji nie są jeszcze skonfigurowane dla tej platformy."
+        "Zakupy subskrypcji nie sÄ… jeszcze skonfigurowane dla tej platformy."
       );
       return;
     }
@@ -19823,7 +20136,7 @@ export default function HomeScreen() {
     if (!tier || tier === subscription.tier) {
       const refreshed = await refreshSubscriptionFromBilling();
       if (!refreshed) {
-        alert('Nie udało się odświeżyć statusu subskrypcji.');
+        alert('Nie udaĹ‚o siÄ™ odĹ›wieĹĽyÄ‡ statusu subskrypcji.');
       }
       return;
     }
@@ -19838,7 +20151,7 @@ export default function HomeScreen() {
     try {
       const purchaseStarted = await purchaseSubscriptionTier(tier);
       if (!purchaseStarted) {
-        alert('Nie udało się uruchomić zakupu dla wybranego planu.');
+        alert('Nie udaĹ‚o siÄ™ uruchomiÄ‡ zakupu dla wybranego planu.');
       }
     } catch (error) {
       alert(mapBillingErrorToUserMessage(error, 'purchase'));
@@ -19853,7 +20166,7 @@ export default function HomeScreen() {
 
     try {
       await restoreSubscriptionPurchases();
-      alert('Zakupy zostały przywróone.');
+      alert('Zakupy zostaĹ‚y przywrĂłone.');
     } catch (error) {
       alert(mapBillingErrorToUserMessage(error, 'restore'));
     }
@@ -19878,15 +20191,21 @@ export default function HomeScreen() {
     }));
   };
   const handleToggleAiConsentDataProcessing = useCallback(() => {
+    if (!hasSubscriptionFeature('ai_assistant')) {
+      return;
+    }
     updateAppSettings((prev) => ({
       aiConsentDataProcessing: !Boolean(prev.aiConsentDataProcessing),
     }));
-  }, [updateAppSettings]);
+  }, [hasSubscriptionFeature, updateAppSettings]);
   const handleToggleAiConsentImageAnalysis = useCallback(() => {
+    if (!hasSubscriptionFeature('ai_assistant')) {
+      return;
+    }
     updateAppSettings((prev) => ({
       aiConsentImageAnalysis: !Boolean(prev.aiConsentImageAnalysis),
     }));
-  }, [updateAppSettings]);
+  }, [hasSubscriptionFeature, updateAppSettings]);
 
   const handleToggleEnabledTest = (testKey) => {
     if (!testKey) {
@@ -20137,16 +20456,16 @@ export default function HomeScreen() {
     const caseType = String(caseItem.caseType ?? 'disease').toLowerCase();
     const isAlgaeCase = caseType === 'algae';
     const isPlantDiseaseCase = caseType === 'plant_disease';
-    const actionLabel = isAlgaeCase ? 'usunięte' : 'wyleczone';
+    const actionLabel = isAlgaeCase ? 'usuniÄ™te' : 'wyleczone';
     const nextStatus = isAlgaeCase ? 'removed' : 'resolved';
     const confirmLabel = isAlgaeCase
-      ? "Oznacz jako usunięte"
+      ? "Oznacz jako usuniÄ™te"
       : 'Oznacz jako wyleczone';
     const successLabel = isAlgaeCase
-      ? "Problem z glonami oznaczono jako usunięty."
+      ? "Problem z glonami oznaczono jako usuniÄ™ty."
       : isPlantDiseaseCase
-        ? 'Chorobę roślin oznaczono jako wyleczona.'
-        : 'Chorobę oznaczono jako wyleczona.';
+        ? 'ChorobÄ™ roĹ›lin oznaczono jako wyleczona.'
+        : 'ChorobÄ™ oznaczono jako wyleczona.';
 
     Alert.alert(
       confirmLabel,
@@ -20154,7 +20473,7 @@ export default function HomeScreen() {
       [
         { text: 'Anuluj', style: 'cancel' },
         {
-          text: "Potwierdź",
+          text: "PotwierdĹş",
           style: 'destructive',
           onPress: async () => {
             if (!caseItem?.id || !user?.uid || !selectedTank?.id || diseaseCaseBusy) {
@@ -20199,7 +20518,7 @@ export default function HomeScreen() {
               alert(successLabel);
             } catch (error) {
               alert(
-                'Błąd aktualizacji statusu: ' +
+                'BĹ‚Ä…d aktualizacji statusu: ' +
                   (error instanceof Error ? error.message : '')
               );
             } finally {
@@ -20764,7 +21083,10 @@ export default function HomeScreen() {
     );
   }, [catalogSortLocale, fishCatalog, fishCatalogMenuSearch]);
   const menuVisibleFishCatalog = useMemo(() => {
-    if (String(fishCatalogMenuSearch ?? '').trim().length > 0) {
+    if (
+      String(fishCatalogMenuSearch ?? '').trim().length > 0 ||
+      !IS_IOS_EXPO_GO
+    ) {
       return menuFilteredFishCatalog;
     }
 
@@ -20788,7 +21110,10 @@ export default function HomeScreen() {
     );
   }, [catalogSortLocale, plantCatalog, plantCatalogMenuSearch]);
   const menuVisiblePlantCatalog = useMemo(() => {
-    if (String(plantCatalogMenuSearch ?? '').trim().length > 0) {
+    if (
+      String(plantCatalogMenuSearch ?? '').trim().length > 0 ||
+      !IS_IOS_EXPO_GO
+    ) {
       return menuFilteredPlantCatalog;
     }
 
@@ -21182,17 +21507,11 @@ export default function HomeScreen() {
         return '';
       }
 
-      const cacheKey = getFishImageCacheKey(fish);
-
-      const directPreview = String(
+      const directPreview = normalizeCatalogImageUrl(
         fish.imagePreviewUrl ?? fish.imageUrl ?? fish.imageLink ?? ''
-      ).trim();
+      , 420);
       if (directPreview) {
         return directPreview;
-      }
-
-      if (cacheKey && Object.prototype.hasOwnProperty.call(fishImageUriByKey, cacheKey)) {
-        return String(fishImageUriByKey[cacheKey] ?? '').trim() || GENERIC_FISH_IMAGE_URL;
       }
 
       const catalogEntry =
@@ -21204,128 +21523,194 @@ export default function HomeScreen() {
           catalogEntry?.imageLink ?? ''
       ).trim();
       if (catalogPreview) {
-        return catalogPreview;
+        return normalizeCatalogImageUrl(catalogPreview, 420);
       }
 
-      const latinName = String(
-        fish.latinName ?? catalogEntry?.latinName ?? ''
-      ).trim();
-      const normalizedLatinKey = normalizeLatinCatalogKey(latinName);
-      const manualCommonsFileName = normalizedLatinKey
-        ? FISH_COMMONS_FILE_BY_LATIN[normalizedLatinKey]
-        : '';
-      if (manualCommonsFileName) {
-        return (
-          buildCommonsFileThumbnailUrl(manualCommonsFileName, 420) ||
-          GENERIC_FISH_IMAGE_URL
-        );
-      }
-      return buildFishCommonsFallbackImageUrl(latinName, 420) || GENERIC_FISH_IMAGE_URL;
+      return '';
     },
     [
       fishCatalogById,
       fishCatalogByLatinName,
-      fishImageUriByKey,
-      getFishImageCacheKey,
     ]
   );
   const getFishPreviewImageSource = useCallback(
     (fish, options = {}) => {
       const previewUri = getFishPreviewImageUri(fish, options);
-      return previewUri
-        ? getDiseaseRemoteImageSource(previewUri)
-        : DISEASE_IMAGE_PLACEHOLDER_SOURCE;
-    },
-    [getFishPreviewImageUri]
-  );
-  const requestFishImageLookup = useCallback(
-    (fish) => {
-      if (!ENABLE_FISH_IMAGES) {
-        return;
+      if (!previewUri) {
+        return DISEASE_IMAGE_PLACEHOLDER_SOURCE;
       }
 
       const cacheKey = getFishImageCacheKey(fish);
-      if (!cacheKey) {
-        return;
+      const cachedDataUri = cacheKey ? fishImageDataUriByKey[cacheKey] : '';
+      if (cachedDataUri) {
+        return { uri: cachedDataUri };
       }
 
-      if (IS_IOS_EXPO_GO) {
-        return;
+      const isWikimediaPreview = isWikimediaImageUri(previewUri);
+      const hasExhaustedWikimediaFallbacks = Boolean(
+        cacheKey &&
+          fishImageDataUriFailedByKey[cacheKey] &&
+          fishImageDirectFallbackByKey[cacheKey] &&
+          isWikimediaPreview
+      );
+      if (hasExhaustedWikimediaFallbacks) {
+        return DISEASE_IMAGE_PLACEHOLDER_SOURCE;
       }
 
       if (
-        fishImageLookupAttemptedRef.current.has(cacheKey) ||
-        fishImageLookupInFlightRef.current.has(cacheKey)
+        ENABLE_ANDROID_WIKIMEDIA_JS_FETCH &&
+        isWikimediaPreview &&
+        cacheKey &&
+        !fishImageDataUriFailedByKey[cacheKey]
       ) {
-        return;
+        return getRemoteImageSource(previewUri);
       }
 
-      if (fishImageLookupInFlightRef.current.size >= 2) {
-        return;
-      }
+      const useDirectWikimedia =
+        cacheKey && fishImageDirectFallbackByKey[cacheKey] && isWikimediaPreview;
 
-      fishImageLookupAttemptedRef.current.add(cacheKey);
-      fishImageLookupInFlightRef.current.add(cacheKey);
-
-      const latinName = String(fish?.latinName ?? '').trim();
-      const normalizedLatinKey = normalizeLatinCatalogKey(latinName);
-      const aliasTitles = normalizedLatinKey
-        ? FISH_WIKI_TITLE_ALIASES_BY_LATIN[normalizedLatinKey] ?? []
-        : [];
-      const normalizedLatinTitle = latinName
-        ? latinName.replace(/\s+/g, '_')
-        : '';
-      const wikiPageTitleCandidates = [
-        ...aliasTitles,
-        normalizedLatinTitle,
-      ].filter(Boolean);
-      const searchPhrases = buildFishSearchPhrases(latinName);
-
-      (async () => {
-        let bestImageUri = '';
-
-        bestImageUri = await fetchFishImageFromWikiPageTitles(wikiPageTitleCandidates);
-
-        if (!bestImageUri) {
-          bestImageUri = await fetchFishImageFromWikiPageTitles(searchPhrases);
-        }
-
-        for (const phrase of searchPhrases) {
-          if (bestImageUri) {
-            break;
-          }
-          bestImageUri = await fetchFishImageFromSearchPhrase(phrase);
-          if (bestImageUri) {
-            break;
-          }
-        }
-
-        setFishImageUriByKey((prev) => ({
-          ...prev,
-          [cacheKey]: bestImageUri || prev[cacheKey] || GENERIC_FISH_IMAGE_URL,
-        }));
-      })()
-        .catch(() => null)
-        .finally(() => {
-          fishImageLookupInFlightRef.current.delete(cacheKey);
-        });
+      return useDirectWikimedia
+        ? getRemoteImageSource(previewUri)
+        : getCatalogRemoteImageSource(previewUri, WIKIMEDIA_THUMBNAIL_WIDTH);
     },
     [
-      fetchFishImageFromSearchPhrase,
-      fetchFishImageFromWikiPageTitles,
+      fishImageDataUriByKey,
+      fishImageDataUriFailedByKey,
+      fishImageDirectFallbackByKey,
       getFishImageCacheKey,
+      getFishPreviewImageUri,
+    ]
+  );
+  const logFishPreviewImageError = useCallback(
+    (fish, event) => {
+      if (!ENABLE_IMAGE_DEBUG_LOGS) {
+        return;
+      }
+
+      const previewUri = getFishPreviewImageUri(fish, { allowRemote: true });
+      const cacheKey = getFishImageCacheKey(fish);
+      const usesDirectFallback = Boolean(
+        cacheKey && fishImageDirectFallbackByKey[cacheKey]
+      );
+      const renderedUri = usesDirectFallback
+        ? previewUri
+        : getCatalogRemoteImageUri(previewUri, WIKIMEDIA_THUMBNAIL_WIDTH);
+      const catalogEntry =
+        (fish?.catalogFishId && fishCatalogById.get(fish.catalogFishId)) ||
+        fishCatalogByLatinName.get(normalizeLatinCatalogKey(fish?.latinName));
+
+      console.warn('[fish-image-debug] load failed', {
+        platform: Platform.OS,
+        isExpoGo: IS_EXPO_GO,
+        id: String(fish?.id ?? ''),
+        catalogFishId: String(fish?.catalogFishId ?? ''),
+        commonName: String(fish?.commonName ?? fish?.name ?? ''),
+        latinName: String(fish?.latinName ?? ''),
+        firebaseFields: {
+          imagePreviewUrl: String(fish?.imagePreviewUrl ?? ''),
+          imageUrl: String(fish?.imageUrl ?? ''),
+          imageLink: String(fish?.imageLink ?? ''),
+        },
+        catalogFields: {
+          id: String(catalogEntry?.id ?? ''),
+          imagePreviewUrl: String(catalogEntry?.imagePreviewUrl ?? ''),
+          imageUrl: String(catalogEntry?.imageUrl ?? ''),
+          imageLink: String(catalogEntry?.imageLink ?? ''),
+        },
+        previewUri,
+        renderedUri,
+        usesDirectFallback,
+        hasConfiguredImage: Boolean(
+          String(fish?.imagePreviewUrl ?? fish?.imageUrl ?? fish?.imageLink ?? '').trim() ||
+            String(
+              catalogEntry?.imagePreviewUrl ??
+                catalogEntry?.imageUrl ??
+                catalogEntry?.imageLink ??
+                ''
+            ).trim()
+        ),
+        isWikimedia: isWikimediaImageUri(previewUri),
+        nativeError: String(event?.nativeEvent?.error ?? ''),
+      });
+    },
+    [
+      fishCatalogById,
+      fishCatalogByLatinName,
+      fishImageDirectFallbackByKey,
+      getFishImageCacheKey,
+      getFishPreviewImageUri,
     ]
   );
   const handleFishPreviewImageError = useCallback(
-    (fish) => {
+    (fish, event) => {
       const cacheKey = getFishImageCacheKey(fish);
       if (!cacheKey) {
+        logFishPreviewImageError(fish, event);
         return;
       }
 
-      requestFishImageLookup(fish);
+      const configuredUri = normalizeCatalogImageUrl(
+        fish?.imagePreviewUrl ?? fish?.imageUrl ?? fish?.imageLink ?? '',
+        420
+      );
+      const previewUri = configuredUri || getFishPreviewImageUri(fish, { allowRemote: true });
+      if (
+        previewUri &&
+        Platform.OS === 'android' &&
+        isWikimediaImageUri(previewUri)
+      ) {
+        if (!fishImageDataUriByKey[cacheKey] && !fishImageDataUriFailedByKey[cacheKey]) {
+          fetchWikimediaImageDataUri(previewUri, WIKIMEDIA_THUMBNAIL_WIDTH)
+            .then((dataUri) => {
+              if (!dataUri) {
+                return;
+              }
+              setFishImageDataUriByKey((prev) =>
+                prev[cacheKey] ? prev : { ...prev, [cacheKey]: dataUri }
+              );
+            })
+            .catch((error) => {
+              setFishImageDataUriFailedByKey((prev) => ({
+                ...prev,
+                [cacheKey]: true,
+              }));
+              if (ENABLE_IMAGE_DEBUG_LOGS) {
+                console.warn('[fish-image-debug] js fetch failed', {
+                  id: String(fish?.id ?? ''),
+                  commonName: String(fish?.commonName ?? fish?.name ?? ''),
+                  latinName: String(fish?.latinName ?? ''),
+                  previewUri,
+                  error: String(error?.message ?? error ?? ''),
+                });
+              }
+            });
+          return;
+        }
+
+        if (!fishImageDirectFallbackByKey[cacheKey]) {
+          setFishImageDirectFallbackByKey((prev) => ({
+            ...prev,
+            [cacheKey]: true,
+          }));
+          return;
+        }
+
+        logFishPreviewImageError(fish, event);
+        return;
+      }
+
+      if (configuredUri) {
+        logFishPreviewImageError(fish, event);
+      }
     },
-    [getFishImageCacheKey, requestFishImageLookup]
+    [
+      fishImageDataUriByKey,
+      fishImageDataUriFailedByKey,
+      fishImageDirectFallbackByKey,
+      getFishImageCacheKey,
+      getFishPreviewImageUri,
+      logFishPreviewImageError,
+    ]
   );
   const handleOpenFishImageModal = useCallback(
     (fish) => {
@@ -21339,13 +21724,17 @@ export default function HomeScreen() {
       }
 
       const modalTitle = String(fish?.commonName ?? fish?.name ?? '').trim();
+      const cacheKey = getFishImageCacheKey(fish);
+      const imageUri = cacheKey && fishImageDataUriByKey[cacheKey]
+        ? fishImageDataUriByKey[cacheKey]
+        : previewUri;
       handleOpenDiseaseImageModal({
         name: modalTitle,
-        imageUrl: previewUri,
-        imagePreviewUrl: previewUri,
+        imageUrl: imageUri,
+        imagePreviewUrl: imageUri,
       });
     },
-    [getFishPreviewImageUri, handleOpenDiseaseImageModal]
+    [fishImageDataUriByKey, getFishImageCacheKey, getFishPreviewImageUri, handleOpenDiseaseImageModal]
   );
   const getPlantImageCacheKey = useCallback((plant) => {
     if (!plant) {
@@ -21380,22 +21769,30 @@ export default function HomeScreen() {
         return '';
       }
 
+      const cacheKey = getPlantImageCacheKey(plant);
+      const cachedPreview = cacheKey
+        ? String(plantImageUriByKey[cacheKey] ?? '').trim()
+        : '';
+
       const catalogEntry =
         (plant.catalogPlantId && plantCatalogById.get(plant.catalogPlantId)) ||
         plantCatalogByLatinName.get(normalizeLatinCatalogKey(plant.latinName));
-      const directPreview = String(
+      const directPreview = normalizeCatalogImageUrl(
         plant.imagePreviewUrl ??
           plant.imageUrl ??
           plant.imageLink ??
           catalogEntry?.imagePreviewUrl ??
           catalogEntry?.imageUrl ??
           catalogEntry?.imageLink ?? ''
-      ).trim();
+      , 420);
       if (directPreview) {
         return directPreview;
       }
 
-      const cacheKey = getPlantImageCacheKey(plant);
+      if (cachedPreview && cachedPreview !== GENERIC_PLANT_IMAGE_URL) {
+        return cachedPreview;
+      }
+
       const latinName = String(
         plant.latinName ?? catalogEntry?.latinName ?? ''
       ).trim();
@@ -21406,10 +21803,6 @@ export default function HomeScreen() {
           buildCommonsFileThumbnailUrl(manualCommonsFileName, 420) ||
           GENERIC_PLANT_IMAGE_URL
         );
-      }
-
-      if (cacheKey && Object.prototype.hasOwnProperty.call(plantImageUriByKey, cacheKey)) {
-        return String(plantImageUriByKey[cacheKey] ?? '').trim() || GENERIC_PLANT_IMAGE_URL;
       }
 
       return buildPlantCommonsFallbackImageUrl(latinName, 420) || GENERIC_PLANT_IMAGE_URL;
@@ -21424,11 +21817,20 @@ export default function HomeScreen() {
   const getPlantPreviewImageSource = useCallback(
     (plant, options = {}) => {
       const previewUri = getPlantPreviewImageUri(plant, options);
-      return previewUri
-        ? getDiseaseRemoteImageSource(previewUri)
-        : DISEASE_IMAGE_PLACEHOLDER_SOURCE;
+      if (!previewUri) {
+        return DISEASE_IMAGE_PLACEHOLDER_SOURCE;
+      }
+
+      const cacheKey = getPlantImageCacheKey(plant);
+      const wikimediaCacheKey = cacheKey ? `plant:${cacheKey}` : `plant-uri:${previewUri}`;
+      return getWikimediaCachedImageSource(
+        previewUri,
+        wikimediaCacheKey,
+        WIKIMEDIA_THUMBNAIL_WIDTH,
+        getDiseaseRemoteImageSource
+      );
     },
-    [getPlantPreviewImageUri]
+    [getPlantImageCacheKey, getPlantPreviewImageUri, getWikimediaCachedImageSource]
   );
   const requestPlantImageLookup = useCallback(
     (plant) => {
@@ -21531,9 +21933,26 @@ export default function HomeScreen() {
         return;
       }
 
+      const previewUri = getPlantPreviewImageUri(plant, { allowRemote: true });
+      if (
+        requestWikimediaDataUriForKey(
+          `plant:${cacheKey}`,
+          previewUri,
+          WIKIMEDIA_THUMBNAIL_WIDTH,
+          'plant-image-debug'
+        )
+      ) {
+        return;
+      }
+
       requestPlantImageLookup(plant);
     },
-    [getPlantImageCacheKey, requestPlantImageLookup]
+    [
+      getPlantImageCacheKey,
+      getPlantPreviewImageUri,
+      requestPlantImageLookup,
+      requestWikimediaDataUriForKey,
+    ]
   );
   const handleOpenPlantImageModal = useCallback(
     (plant) => {
@@ -21554,28 +21973,28 @@ export default function HomeScreen() {
         : buildPlantCommonsFallbackImageUrl(latinName, 900);
 
       const modalTitle = String(plant?.commonName ?? plant?.name ?? '').trim();
+      const cacheKey = getPlantImageCacheKey(plant);
+      const wikimediaCacheKey = cacheKey ? `plant:${cacheKey}` : `plant-uri:${previewUri}`;
+      const cachedPreviewUri = wikimediaImageDataUriByKey[wikimediaCacheKey] || previewUri;
       handleOpenDiseaseImageModal({
         name: modalTitle,
-        imageUrl: previewUri,
-        imagePreviewUrl: previewUri,
+        imageUrl: cachedPreviewUri,
+        imagePreviewUrl: cachedPreviewUri,
         imageFallbackUrl: fallbackUri || GENERIC_PLANT_IMAGE_URL,
         imageFallbackPreviewUrl: fallbackUri || GENERIC_PLANT_IMAGE_URL,
       });
     },
-    [getPlantPreviewImageUri, handleOpenDiseaseImageModal]
+    [
+      getPlantImageCacheKey,
+      getPlantPreviewImageUri,
+      handleOpenDiseaseImageModal,
+      wikimediaImageDataUriByKey,
+    ]
   );
   void handleOpenFishImageModal;
   void getPlantPreviewImageSource;
   void handlePlantPreviewImageError;
   void handleOpenPlantImageModal;
-  useEffect(() => {
-    if (!isEditingFish) {
-      return;
-    }
-
-    fishImageLookupAttemptedRef.current = new Set();
-    fishImageLookupInFlightRef.current = new Set();
-  }, [isEditingFish, setFishQuantity, setSelectedCatalogFishId, setStockFishSearch]);
   useEffect(() => {
     if (isEditingFish) {
       return undefined;
@@ -21604,16 +22023,79 @@ export default function HomeScreen() {
       return;
     }
 
+    if (ENABLE_ANDROID_WIKIMEDIA_JS_FETCH) {
+      let isCancelled = false;
+      const candidates = visibleFilteredFishCatalog
+        .slice(0, WIKIMEDIA_EAGER_FETCH_LIMIT)
+        .map((fish) => {
+          const cacheKey = getFishImageCacheKey(fish);
+          const previewUri = getFishPreviewImageUri(fish, { allowRemote: true });
+          return { cacheKey, fish, previewUri };
+        })
+        .filter(({ cacheKey, previewUri }) =>
+          Boolean(
+            cacheKey &&
+              previewUri &&
+              isWikimediaImageUri(previewUri) &&
+              !fishImageDataUriByKey[cacheKey] &&
+              !fishImageDataUriFailedByKey[cacheKey]
+          )
+        );
+
+      candidates.forEach(({ cacheKey, fish, previewUri }) => {
+        fetchWikimediaImageDataUri(previewUri, WIKIMEDIA_THUMBNAIL_WIDTH)
+          .then((dataUri) => {
+            if (isCancelled || !dataUri) {
+              return;
+            }
+            setFishImageDataUriByKey((prev) =>
+              prev[cacheKey] ? prev : { ...prev, [cacheKey]: dataUri }
+            );
+          })
+          .catch((error) => {
+            if (isCancelled) {
+              return;
+            }
+            setFishImageDataUriFailedByKey((prev) => ({
+              ...prev,
+              [cacheKey]: true,
+            }));
+            if (ENABLE_IMAGE_DEBUG_LOGS) {
+              console.warn('[fish-image-debug] js fetch failed', {
+                id: String(fish?.id ?? ''),
+                commonName: String(fish?.commonName ?? fish?.name ?? ''),
+                latinName: String(fish?.latinName ?? ''),
+                previewUri,
+                error: String(error?.message ?? error ?? ''),
+              });
+            }
+          });
+      });
+
+      return () => {
+        isCancelled = true;
+      };
+    }
+
     const previewUris = visibleFilteredFishCatalog
-      .slice(0, 12)
+      .slice(0, WIKIMEDIA_EAGER_FETCH_LIMIT)
       .map((fish) => getFishPreviewImageUri(fish, { allowRemote: true }))
+      .map((uri) => getCatalogRemoteImageUri(uri, WIKIMEDIA_THUMBNAIL_WIDTH))
       .map((uri) => String(uri ?? '').trim())
+      .filter((uri) => !isWikimediaImageUri(uri))
       .filter(Boolean);
 
     previewUris.forEach((uri) => {
       Image.prefetch(uri).catch(() => null);
     });
-  }, [getFishPreviewImageUri, isEditingFish, visibleFilteredFishCatalog]);
+  }, [
+    fishImageDataUriByKey,
+    fishImageDataUriFailedByKey,
+    getFishImageCacheKey,
+    getFishPreviewImageUri,
+    isEditingFish,
+    visibleFilteredFishCatalog,
+  ]);
   useEffect(() => {
     if (!isEditingPlant) {
       return;
@@ -21649,9 +22131,10 @@ export default function HomeScreen() {
     }
 
     const previewUris = visibleFilteredPlantCatalog
-      .slice(0, 12)
+      .slice(0, WIKIMEDIA_EAGER_FETCH_LIMIT)
       .map((plant) => getPlantPreviewImageUri(plant, { allowRemote: true }))
       .map((uri) => String(uri ?? '').trim())
+      .filter((uri) => !isWikimediaImageUri(uri))
       .filter(Boolean);
 
     previewUris.forEach((uri) => {
@@ -22036,7 +22519,7 @@ export default function HomeScreen() {
     return [
       measurementLabel,
       'Plan zadan i harmonogram kontroli',
-      "Obsade i zgodnosc gatunków",
+      "Obsade i zgodnosc gatunkĂłw",
       'Sprzet oraz ryzyko awarii',
     ];
   }, [availableMeasurementTests.temperature]);
@@ -22253,6 +22736,11 @@ export default function HomeScreen() {
   const diseaseImageModalFrameWidth = Math.max(windowWidth - 24, 280);
   const diseaseImageModalFrameHeight = Math.max(windowHeight - 220, 260);
   const diseaseImageModalScaleLabel = `${Math.round(diseaseImageZoomLevel * 100)}%`;
+  const diseaseImageModalCurrentUri =
+    diseaseImageModalLoadStage >= 1 && diseaseImageModalFallbackUri
+      ? diseaseImageModalFallbackUri
+      : diseaseImageModalUri;
+  const diseaseImageModalCacheKey = `modal:${diseaseImageModalCurrentUri}`;
   const accessibleTanks = useMemo(
     () => getAccessibleTanksForPlan(tanks, currentPlan),
     [currentPlan, tanks]
@@ -22311,9 +22799,11 @@ export default function HomeScreen() {
     subscriptionEntitlements?.chartAccess === 'advanced';
   const hasEquipmentSaveAccess =
     subscriptionEntitlements?.equipmentAccess === 'save' ||
+    subscriptionEntitlements?.equipmentAccess === 'analysis' ||
     subscriptionEntitlements?.equipmentAccess === 'analysis_and_recommendations';
   const hasEquipmentManageAccess = hasEquipmentSaveAccess || currentPlan === 'free';
   const hasEquipmentAssessmentAccess =
+    subscriptionEntitlements?.equipmentAccess === 'analysis' ||
     subscriptionEntitlements?.equipmentAccess === 'analysis_and_recommendations';
   const hasGeneralRecommendationAccess =
     subscriptionEntitlements?.recommendationAccess === 'general' ||
@@ -22413,7 +22903,7 @@ export default function HomeScreen() {
             item?.speciesName ||
             item?.latinName ||
             item?.scientificName ||
-            "Roślina"
+            "RoĹ›lina"
         ).trim(),
       }))
       .filter((item) => item.id && item.label)
@@ -22642,13 +23132,13 @@ export default function HomeScreen() {
               <Text
                 key={`${resultKey}-ver-${index}`}
                 style={{ color: themeTextSecondary, marginTop: 3, fontSize: 12 }}>
-                Sprawdź: {entry}
+                SprawdĹş: {entry}
               </Text>
             ))
           : null}
         {result?.unreadableImageFallback ? (
           <Text style={{ color: themeWarningText, fontSize: 12, marginTop: 6 }}>
-            Zdjęcie może być nieczytelne. Dodaj wyraźniejsze ujęcie.
+            ZdjÄ™cie moĹĽe byÄ‡ nieczytelne. Dodaj wyraĹşniejsze ujÄ™cie.
           </Text>
         ) : null}
       </View>
@@ -22802,12 +23292,12 @@ export default function HomeScreen() {
       { key: 'name', title: 'Nazwa', summary: tankName || '-' },
       {
         key: 'liters',
-        title: 'Litraż',
+        title: 'LitraĹĽ',
         summary: String(tankLiters ?? '').trim() ? `${tankLiters} l` : '-',
       },
       {
         key: 'substrate',
-        title: 'Podłoże',
+        title: 'PodĹ‚oĹĽe',
         summary: getSubstrateLabels(tankSubstrateTypes),
       },
       {
@@ -22817,7 +23307,7 @@ export default function HomeScreen() {
       },
       {
         key: 'ranges',
-        title: 'Zakres parametrów',
+        title: 'Zakres parametrĂłw',
         summary: editTankRangesSummary,
       },
       {
@@ -22900,7 +23390,7 @@ export default function HomeScreen() {
         return (
           <>
             <Text style={{ color: themeTextSecondary, marginBottom: 8, fontSize: 12 }}>
-              Możesz zaznaczyc więcej niż jedno podłoże.
+              MoĹĽesz zaznaczyc wiÄ™cej niĹĽ jedno podĹ‚oĹĽe.
             </Text>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
               {SUBSTRATE_OPTIONS.map((option) => (
@@ -22966,7 +23456,7 @@ export default function HomeScreen() {
         return (
           <>
             <Text style={{ color: themeTextSecondary, marginBottom: 8, fontSize: 12 }}>
-              Wybierz profil, który najlepiej opisuje docelowe warunki akwarium.
+              Wybierz profil, ktĂłry najlepiej opisuje docelowe warunki akwarium.
             </Text>
             <View
               style={{
@@ -23064,7 +23554,7 @@ export default function HomeScreen() {
         return (
           <>
             <Text style={{ color: themeTextSecondary, marginBottom: 8, fontSize: 12 }}>
-              Uzupelnij minimalne i maksymalne zakresy dla parametrów.
+              Uzupelnij minimalne i maksymalne zakresy dla parametrĂłw.
             </Text>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -4 }}>
               {WATER_TARGET_FIELDS.map((field) => (
@@ -23189,7 +23679,7 @@ export default function HomeScreen() {
                 fontSize: 13,
                 fontWeight: '700',
               }}>
-              Temperatura i grzałka (zaawansowane)
+              Temperatura i grzaĹ‚ka (zaawansowane)
             </Text>
             <Text
               style={{
@@ -23406,7 +23896,7 @@ export default function HomeScreen() {
         AI - kontekst akwarium
       </Text>
       <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
-        Wybierz akwarium, opisz problem i opcjonalnie dodaj zdjęcie do analizy.
+        Wybierz akwarium, opisz problem i opcjonalnie dodaj zdjÄ™cie do analizy.
       </Text>
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
         {tanks.map((tankItem) => {
@@ -23478,7 +23968,7 @@ export default function HomeScreen() {
             opacity: catalogAiBusy ? 0.7 : 1,
           }}>
           <Text style={{ color: themeTextPrimary, textAlign: 'center', fontWeight: '700', fontSize: 12 }}>
-            Dodaj zdjęcie (galeria)
+            Dodaj zdjÄ™cie (galeria)
           </Text>
         </Pressable>
         <Pressable
@@ -23494,7 +23984,7 @@ export default function HomeScreen() {
             opacity: catalogAiBusy ? 0.7 : 1,
           }}>
           <Text style={{ color: themeTextPrimary, textAlign: 'center', fontWeight: '700', fontSize: 12 }}>
-            Zrób zdjęcie (aparat)
+            ZrĂłb zdjÄ™cie (aparat)
           </Text>
         </Pressable>
       </View>
@@ -23523,7 +24013,7 @@ export default function HomeScreen() {
               backgroundColor: themeCardBg,
             }}>
             <Text style={{ color: themeTextSecondary, textAlign: 'center', fontSize: 12 }}>
-              Usuń zdjęcie
+              UsuĹ„ zdjÄ™cie
             </Text>
           </Pressable>
         </View>
@@ -23622,29 +24112,27 @@ export default function HomeScreen() {
       : String(subscriptionPriceByTier?.[selectedSubscriptionTier] ?? '').trim() || null;
   const subscriptionFeatureBulletsByTier = {
     free: [
-      '1 akwarium',
-      'podstawowe pomiary',
-      'podstawowa historia',
-      'obsada',
-      'sprzet',
-      'podstawowy kalendarz',
-      'katalogi podstawowe',
+      '1 aktywne akwarium',
+      'podstawowe pomiary i 30 dni historii',
+      'katalogi i podstawowe alerty',
+      'rÄ™czne zadania i kalendarz',
+      'podstawowa obsada i sprzÄ™t',
     ],
     premium: [
-      'wiecej akwariow',
-      'pelna historia pomiarow',
-      'lepsze wykresy i trendy',
-      'zaawansowane przypomnienia',
-      "pelniejsza organizacja obsady, sprzetu i roślin",
-      'eksport danych (jesli dostępny)',
+      '3 aktywne akwaria',
+      'peĹ‚ne parametry i peĹ‚na historia',
+      'wykres liniowy parametrĂłw',
+      'automatyczne zadania i przypomnienia',
+      'diagnozy po objawach bez AI',
+      'peĹ‚na ocena obsady, roĹ›lin i sprzÄ™tu',
     ],
     pro: [
       'wszystko z Plus',
-      "analiza AI problemów w akwarium",
-      "analiza zdjec glonów, chorob i roślin",
-      'analiza historii parametrów',
-      'podpowiedzi dopasowane do konkretnego zbiornika',
-      'rekomendowane kolejne kroki',
+      'asystent AI i interpretacja parametrĂłw',
+      'analiza zdjÄ™Ä‡ glonĂłw, chorĂłb i roĹ›lin',
+      'wykresy z metrykami i zaawansowane trendy',
+      'smart plan dziaĹ‚ania',
+      'rekomendacje krok po kroku',
     ],
   };
   const currentSubscriptionFeatures =
@@ -23812,7 +24300,7 @@ export default function HomeScreen() {
     issueTankPickerKind === 'fish_catalog'
       ? 'Dodaj rybe do akwarium'
       : issueTankPickerKind === 'plant_catalog'
-      ? "Dodaj roślinę do akwarium"
+      ? "Dodaj roĹ›linÄ™ do akwarium"
       : issueTankPickerKind === 'plant_disease'
       ? t('issueTankPickerTitlePlantDisease')
       : issueTankPickerKind === 'algae'
@@ -23820,9 +24308,9 @@ export default function HomeScreen() {
         : t('issueTankPickerTitleDisease');
   const issueTankPickerHint =
     issueTankPickerKind === 'fish_catalog'
-      ? `W którym akwarium chcesz dodac "${issueTankPickerItemName}"?`
+      ? `W ktĂłrym akwarium chcesz dodac "${issueTankPickerItemName}"?`
       : issueTankPickerKind === 'plant_catalog'
-      ? `W którym akwarium chcesz dodac "${issueTankPickerItemName}"?`
+      ? `W ktĂłrym akwarium chcesz dodac "${issueTankPickerItemName}"?`
       : issueTankPickerKind === 'plant_disease'
       ? t('issueTankPickerHintPlantDisease', { name: issueTankPickerItemName })
       : issueTankPickerKind === 'algae'
@@ -24006,35 +24494,35 @@ export default function HomeScreen() {
             : formatEquipmentTankRange(item);
 
         let fitsTank = nominalFitsTank;
-        let fitBadgeLabel = fitsTank ? 'Pasuje' : 'Sprawdź';
+        let fitBadgeLabel = fitsTank ? 'Pasuje' : 'SprawdĹş';
         let fitBadgeTone = fitsTank ? 'ok' : 'neutral';
         let fitMessage = fitsTank
-          ? 'Zakres litrażu wyglada sensownie dla Twojego akwarium.'
-          : 'Model jest poza zalecanym zakresem litrażu dla tego zbiornika.';
+          ? 'Zakres litraĹĽu wyglada sensownie dla Twojego akwarium.'
+          : 'Model jest poza zalecanym zakresem litraĹĽu dla tego zbiornika.';
 
         if (item.type === 'filter') {
           if (!Number.isFinite(selectedTankLiters) || selectedTankLiters <= 0) {
             fitsTank = false;
-            fitBadgeLabel = 'Sprawdź';
+            fitBadgeLabel = 'SprawdĹş';
             fitBadgeTone = 'neutral';
             fitMessage =
-              'Ustaw litraż akwarium, aby ocenic filtr na bazie realnego przepływu.';
+              'Ustaw litraĹĽ akwarium, aby ocenic filtr na bazie realnego przepĹ‚ywu.';
           } else if (!Number.isFinite(Number(flowRatio))) {
             fitsTank = false;
-            fitBadgeLabel = 'Sprawdź';
+            fitBadgeLabel = 'SprawdĹş';
             fitBadgeTone = 'neutral';
             fitMessage =
-              'Brak danych o przepływie filtra. Uzupelnij model lub wydajnosc.';
+              'Brak danych o przepĹ‚ywie filtra. Uzupelnij model lub wydajnosc.';
           } else if (Number(flowRatio) < 5) {
             fitsTank = false;
-            fitBadgeLabel = 'Za słaby';
+            fitBadgeLabel = 'Za sĹ‚aby';
             fitBadgeTone = Number(flowRatio) < 3 ? 'danger' : 'warning';
-            fitMessage = `Realny obrot ${flowRatio}x/h jest niski dla tego litrażu (cel zwykle 5-10x/h).`;
+            fitMessage = `Realny obrot ${flowRatio}x/h jest niski dla tego litraĹĽu (cel zwykle 5-10x/h).`;
           } else if (Number(flowRatio) > 10) {
             fitsTank = false;
             fitBadgeLabel = 'Za mocny';
             fitBadgeTone = Number(flowRatio) > 14 ? 'danger' : 'warning';
-            fitMessage = `Realny obrot ${flowRatio}x/h jest wysoki dla tego litrażu (cel zwykle 5-10x/h).`;
+            fitMessage = `Realny obrot ${flowRatio}x/h jest wysoki dla tego litraĹĽu (cel zwykle 5-10x/h).`;
           } else {
             fitsTank = true;
             fitBadgeLabel = 'Pasuje';
@@ -24053,40 +24541,40 @@ export default function HomeScreen() {
               : '';
           if (!Number.isFinite(selectedTankLiters) || selectedTankLiters <= 0) {
             fitsTank = false;
-            fitBadgeLabel = 'Sprawdź';
+            fitBadgeLabel = 'SprawdĹş';
             fitBadgeTone = 'neutral';
-            fitMessage = 'Ustaw litraż akwarium, aby ocenic grzalke na bazie wymaganej mocy.';
+            fitMessage = 'Ustaw litraĹĽ akwarium, aby ocenic grzalke na bazie wymaganej mocy.';
           } else if (heaterStatus === 'no_heater_needed') {
             fitsTank = true;
             fitBadgeLabel = 'Opcjonalna';
             fitBadgeTone = 'neutral';
             fitMessage =
-              "Przy obecnych zalozeniach grzałka nie jest konieczna do osiagniecia celu temperatury, ale może stabilizowac wahania.";
+              "Przy obecnych zalozeniach grzaĹ‚ka nie jest konieczna do osiagniecia celu temperatury, ale moĹĽe stabilizowac wahania.";
           } else if (!Number.isFinite(heaterRequiredPowerW) || heaterRequiredPowerW <= 0) {
             fitsTank = false;
-            fitBadgeLabel = 'Sprawdź';
+            fitBadgeLabel = 'SprawdĹş';
             fitBadgeTone = 'neutral';
             fitMessage =
-              'Brak danych o wymaganej mocy. Uzupelnij temperature docelowa i litraż, aby ocenic grzalke.';
+              'Brak danych o wymaganej mocy. Uzupelnij temperature docelowa i litraĹĽ, aby ocenic grzalke.';
           } else if (!Number.isFinite(heaterPowerW) || heaterPowerW <= 0) {
             fitsTank = false;
-            fitBadgeLabel = 'Sprawdź';
+            fitBadgeLabel = 'SprawdĹş';
             fitBadgeTone = 'neutral';
-            fitMessage = "Brak danych o mocy grzałki w katalogu.";
+            fitMessage = "Brak danych o mocy grzaĹ‚ki w katalogu.";
           } else {
             const heaterRatio = heaterPowerW / Math.max(1, heaterRequiredPowerW);
             if (heaterRatio < 0.7) {
               fitsTank = false;
-              fitBadgeLabel = "Za słaba";
+              fitBadgeLabel = "Za sĹ‚aba";
               fitBadgeTone = 'danger';
-              fitMessage = `Moc ${Math.round(heaterPowerW)} W jest za niska względem wymaganych ~${Math.round(
+              fitMessage = `Moc ${Math.round(heaterPowerW)} W jest za niska wzglÄ™dem wymaganych ~${Math.round(
                 heaterRequiredPowerW
               )} W${heaterContextLabel}.`;
             } else if (heaterRatio < 0.9) {
               fitsTank = false;
-              fitBadgeLabel = "Raczej słaba";
+              fitBadgeLabel = "Raczej sĹ‚aba";
               fitBadgeTone = 'warning';
-              fitMessage = `Moc ${Math.round(heaterPowerW)} W może byc za słaba względem wymaganych ~${Math.round(
+              fitMessage = `Moc ${Math.round(heaterPowerW)} W moĹĽe byc za sĹ‚aba wzglÄ™dem wymaganych ~${Math.round(
                 heaterRequiredPowerW
               )} W${heaterContextLabel}.`;
             } else if (heaterRatio <= 1.5) {
@@ -24100,14 +24588,14 @@ export default function HomeScreen() {
               fitsTank = true;
               fitBadgeLabel = 'Mocna';
               fitBadgeTone = 'warning';
-              fitMessage = `Moc ${Math.round(heaterPowerW)} W daje duża rezerwe względem wymaganych ~${Math.round(
+              fitMessage = `Moc ${Math.round(heaterPowerW)} W daje duĹĽa rezerwe wzglÄ™dem wymaganych ~${Math.round(
                 heaterRequiredPowerW
               )} W${heaterContextLabel}.`;
             } else {
               fitsTank = false;
               fitBadgeLabel = 'Za mocna';
               fitBadgeTone = heaterRatio > 3.5 ? 'danger' : 'warning';
-              fitMessage = `Moc ${Math.round(heaterPowerW)} W jest wysoka względem wymaganych ~${Math.round(
+              fitMessage = `Moc ${Math.round(heaterPowerW)} W jest wysoka wzglÄ™dem wymaganych ~${Math.round(
                 heaterRequiredPowerW
               )} W${heaterContextLabel}.`;
             }
@@ -24145,7 +24633,7 @@ export default function HomeScreen() {
   ]);
   const customEquipmentPrimaryFieldLabel =
     equipmentCatalogType === 'heater'
-      ? "Moc grzałki (W)"
+      ? "Moc grzaĹ‚ki (W)"
       : equipmentCatalogType === 'filter'
       ? 'Wydajnosc filtra (l/h)'
       : 'Lumeny lampy (lm)';
@@ -24630,7 +25118,7 @@ export default function HomeScreen() {
           tankId: selectedTank.id,
           acceptanceKey,
         });
-        alert('Nie udało się zapisać akceptacji problemu. Spróbuj ponownie.');
+        alert('Nie udaĹ‚o siÄ™ zapisaÄ‡ akceptacji problemu. SprĂłbuj ponownie.');
       } finally {
         setAcceptedProblemBusyKey('');
       }
@@ -24646,8 +25134,8 @@ export default function HomeScreen() {
   const handleConfirmAcceptSuggestionProblem = useCallback(
     (item) => {
       Alert.alert(
-        'Ukryć ten problem?',
-        'Ta akcja ukrywa problem tylko na tej liście. Nie rozwiązuje go i nie zmienia scoringu. Problem wróci po zmianach w tej samej sekcji, jeśli nadal występuje.',
+        'UkryÄ‡ ten problem?',
+        'Ta akcja ukrywa problem tylko na tej liĹ›cie. Nie rozwiÄ…zuje go i nie zmienia scoringu. Problem wrĂłci po zmianach w tej samej sekcji, jeĹ›li nadal wystÄ™puje.',
         [
           {
             text: 'Anuluj',
@@ -25123,7 +25611,7 @@ export default function HomeScreen() {
                     fontWeight: '700',
                     textTransform: 'uppercase',
                   }}>
-                  Premium Experience
+                  Plus Experience
                 </Text>
               </View>
               <Text
@@ -25749,7 +26237,7 @@ export default function HomeScreen() {
                   </Text>
                   {shouldShowFirstRunEntry ? (
                     <Text style={{ color: themeTextSecondary, marginTop: 8, fontSize: 12 }}>
-                      Start obejmuje tylko minimum potrzebne na poczatek: nazwa, litraż, typ
+                      Start obejmuje tylko minimum potrzebne na poczatek: nazwa, litraĹĽ, typ
                       akwarium, start i temperature.
                     </Text>
                   ) : null}
@@ -26006,7 +26494,7 @@ export default function HomeScreen() {
                     backgroundColor: themeCardBgAlt,
                   }}>
                   <Text style={{ color: themeTextPrimary, fontSize: 12 }}>
-                    W planie Free możesz aktywnie prowadzić 1 akwarium. Pozostałe akwaria są bezpiecznie zapisane i odblokują się po powrocie do Premium.
+                    W planie Free moĹĽesz aktywnie prowadziÄ‡ 1 akwarium. PozostaĹ‚e akwaria sÄ… bezpiecznie zapisane i odblokujÄ… siÄ™ po przejĹ›ciu na Plus.
                   </Text>
                 </View>
               ) : null}
@@ -26098,7 +26586,7 @@ export default function HomeScreen() {
                       lineHeight: 21,
                     }}>
                     Wybierz aktywne akwarium, a tutaj pokazemy jego profil
-                    oraz ustawieńia w bardziej czytelnym widoku.
+                    oraz ustawieĹ„ia w bardziej czytelnym widoku.
                   </Text>
                 </View>
               ) : (
@@ -26160,7 +26648,7 @@ export default function HomeScreen() {
                           fontSize: 14,
                           lineHeight: 21,
                         }}>
-                        Szybki profil zbiornika i jego ustawień w jednym miejscu.
+                        Szybki profil zbiornika i jego ustawieĹ„ w jednym miejscu.
                       </Text>
                     </View>
 
@@ -26215,7 +26703,7 @@ export default function HomeScreen() {
                     }}>
                     {[
                       {
-                        label: 'Litraż',
+                        label: 'LitraĹĽ',
                         value: formatLiters(selectedTank.liters),
                       },
                       {
@@ -26292,7 +26780,7 @@ export default function HomeScreen() {
                   </Pressable>
                   {selectedTankLockedByPlan ? (
                     <Text style={{ color: themeWarningText, marginTop: 8, fontSize: 12 }}>
-                      To akwarium jest zablokowane przez plan i jest dostępne tylko do odczytu.
+                      To akwarium jest zablokowane przez plan i jest dostÄ™pne tylko do odczytu.
                     </Text>
                   ) : null}
                 </View>
@@ -26303,9 +26791,9 @@ export default function HomeScreen() {
                   {[
                     {
                       key: 'heater',
-                      title: 'Grzałka',
+                      title: 'GrzaĹ‚ka',
                       data: tankEquipmentAssessment.heater,
-                      actionLabel: 'Dodaj grzałkę z katalogu',
+                      actionLabel: 'Dodaj grzaĹ‚kÄ™ z katalogu',
                     },
                     {
                       key: 'filter',
@@ -26381,8 +26869,8 @@ export default function HomeScreen() {
                       ? String((entry.data.actions ?? [])[0] ?? '').trim() ||
                         (assessmentStatus === 'ok'
                           ? 'Wszystko wyglada dobrze, nic nie trzeba zmieniac.'
-                          : 'Sprawdź dobor sprzetu i ustawienia dla tej sekcji.')
-                      : "W planie Free możesz dodawac sprzet. Ocena sekcji jest dostepna od planu Plus.";
+                          : 'SprawdĹş dobor sprzetu i ustawienia dla tej sekcji.')
+                      : "W planie Free moĹĽesz dodawac sprzet. Ocena sekcji jest dostepna od planu Plus.";
                     const adviceColor = hasEquipmentAssessmentAccess
                       ? assessmentStatus === 'ok'
                         ? themeSuccessText
@@ -26483,7 +26971,7 @@ export default function HomeScreen() {
                                 fontSize: 13,
                                 lineHeight: 19,
                               }}>
-                              Szczegóły: {summaryDetails || 'Brak dodatkowych szczegolow.'}
+                              SzczegĂłĹ‚y: {summaryDetails || 'Brak dodatkowych szczegolow.'}
                             </Text>
                             <Text
                               style={{
@@ -26512,7 +27000,7 @@ export default function HomeScreen() {
                                   fontSize: 13,
                                   lineHeight: 19,
                                 }}>
-                                Brak przypisanego sprzętu. Dodaj model z katalogu.
+                                Brak przypisanego sprzÄ™tu. Dodaj model z katalogu.
                               </Text>
                             </View>
                         ) : (
@@ -26596,7 +27084,7 @@ export default function HomeScreen() {
                                           fontSize: 11,
                                           fontWeight: '700',
                                         }}>
-                                        Usuń
+                                        UsuĹ„
                                       </Text>
                                     </Pressable>
                                   ) : null}
@@ -26692,7 +27180,7 @@ export default function HomeScreen() {
                             fontSize: 18,
                             lineHeight: 22,
                           }}>
-                          Oświetlenie
+                          OĹ›wietlenie
                         </Text>
                         <Text
                           style={{
@@ -26701,9 +27189,9 @@ export default function HomeScreen() {
                             fontSize: 13,
                             lineHeight: 19,
                           }}>
-                          Szczegóły:{' '}
+                          SzczegĂłĹ‚y:{' '}
                           {!hasEquipmentAssessmentAccess
-                            ? "Ocena oświetlenia dostepna od planu Plus."
+                            ? "Ocena oĹ›wietlenia dostepna od planu Plus."
                             : (() => {
                                 const preferredMinLmL = toFiniteNumber(
                                   selectedTankPlantLightingRange?.min
@@ -26746,11 +27234,11 @@ export default function HomeScreen() {
                           }}>
                           Porada:{' '}
                           {!hasEquipmentAssessmentAccess
-                            ? "W planie Free możesz dodawac oświetlenie. Ocena sekcji jest dostepna od planu Plus."
+                            ? "W planie Free moĹĽesz dodawac oĹ›wietlenie. Ocena sekcji jest dostepna od planu Plus."
                             : selectedTankLighting.isDaylightOnly
-                              ? "Dodaj lampe z katalogu, aby poprawic kontrole oświetlenia."
+                              ? "Dodaj lampe z katalogu, aby poprawic kontrole oĹ›wietlenia."
                               : !Number.isFinite(Number(selectedTank?.lightHours))
-                                ? "Ustaw liczbe godzin świecenia i zapisz."
+                                ? "Ustaw liczbe godzin Ĺ›wiecenia i zapisz."
                                 : 'Wszystko wyglada dobrze, nic nie trzeba zmieniac.'}
                         </Text>
                       </View>
@@ -26836,8 +27324,8 @@ export default function HomeScreen() {
                               fontSize: 13,
                             }}>
                             {selectedTankLighting.isDaylightOnly
-                              ? 'Dodaj lampę z katalogu'
-                              : 'Zmień lampę'}
+                              ? 'Dodaj lampÄ™ z katalogu'
+                              : 'ZmieĹ„ lampÄ™'}
                           </Text>
                         </Pressable>
                         {!selectedTankLighting.isDaylightOnly ? (
@@ -26860,7 +27348,7 @@ export default function HomeScreen() {
                                 fontWeight: '700',
                                 fontSize: 13,
                               }}>
-                              Ustaw tylko światło dzienne
+                              Ustaw tylko Ĺ›wiatĹ‚o dzienne
                             </Text>
                           </Pressable>
                         ) : null}
@@ -26919,7 +27407,7 @@ export default function HomeScreen() {
                     fontSize: 14,
                     lineHeight: 21,
                   }}>
-                  Wybierz aktywne akwarium, aby zobaczyć przypisany sprzęt.
+                  Wybierz aktywne akwarium, aby zobaczyÄ‡ przypisany sprzÄ™t.
                 </Text>
               </View>
               ))}
@@ -26998,7 +27486,7 @@ export default function HomeScreen() {
                                 source={getFishPreviewImageSource(fish, {
                                   allowRemote: true,
                                 })}
-                                onError={() => handleFishPreviewImageError(fish)}
+                                onError={(event) => handleFishPreviewImageError(fish, event)}
                                 resizeMode="cover"
                                 style={{
                                   width: 46,
@@ -27206,7 +27694,7 @@ export default function HomeScreen() {
                               {formatRange(plant.tempMin, plant.tempMax, 'C')}
                             </Text>
                             <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
-                              Minimalny litraż: {Math.max(0, Math.round(Number(plant.minLiters) || 0))} l
+                              Minimalny litraĹĽ: {Math.max(0, Math.round(Number(plant.minLiters) || 0))} l
                             </Text>
                             {!plant.notes ? null : (
                               <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 6 }}>
@@ -27362,7 +27850,7 @@ export default function HomeScreen() {
                         backgroundColor: themeCardBgAlt,
                       }}>
                       <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 14 }}>
-                        Ocena szczegółowa obsady
+                        Ocena szczegĂłĹ‚owa obsady
                       </Text>
                       <View style={{ marginTop: 8 }}>
                         {stockingCompatibilitySections.map((section) => (
@@ -27533,7 +28021,7 @@ export default function HomeScreen() {
                                         source={getFishPreviewImageSource(item, {
                                           allowRemote: true,
                                         })}
-                                        onError={() => handleFishPreviewImageError(item)}
+                                        onError={(event) => handleFishPreviewImageError(item, event)}
                                         resizeMode="cover"
                                         style={{
                                           width: 46,
@@ -27653,13 +28141,13 @@ export default function HomeScreen() {
                         backgroundColor: themeCardBgAlt,
                       }}>
                       <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 13 }}>
-                        Porady dla roślin
+                        Porady dla roĹ›lin
                       </Text>
                       {plantCareTips.length === 0 ? (
                         <Text style={{ color: themeTextSecondary, marginTop: 6, fontSize: 12 }}>
                           {hasPlantMeasurements
-                            ? "Brak pilnych wskazowek nawożenia/CO2 na podstawie aktualnych pomiarów."
-                            : 'Brak pomiarów. Dodaj pierwszy pomiar, aby uruchomić analizę składników i CO2.'}
+                            ? "Brak pilnych wskazowek nawoĹĽenia/CO2 na podstawie aktualnych pomiarĂłw."
+                            : 'Brak pomiarĂłw. Dodaj pierwszy pomiar, aby uruchomiÄ‡ analizÄ™ skĹ‚adnikĂłw i CO2.'}
                         </Text>
                       ) : (
                         plantCareTips.map((tip, tipIndex) => (
@@ -28589,7 +29077,7 @@ export default function HomeScreen() {
                                           fontWeight: '700',
                                           fontSize: 13,
                                         }}>
-                                        Usuń roślinę
+                                        UsuĹ„ roĹ›linÄ™
                                       </Text>
                                     </Pressable>
                                   </View>
@@ -28715,7 +29203,7 @@ export default function HomeScreen() {
                               </Text>
                               {String(stockFishSearch ?? '').trim().length > 0 ? (
                                 <Text style={{ color: themeTextSecondary, marginBottom: 10 }}>
-                                  Nie ma takiej ryby w katalogu. Możesz dodac wpis recznie tym samym
+                                  Nie ma takiej ryby w katalogu. MoĹĽesz dodac wpis recznie tym samym
                                   przyciskiem powyzej.
                                 </Text>
                               ) : null}
@@ -28739,8 +29227,8 @@ export default function HomeScreen() {
                                     fontSize: 12,
                                     marginBottom: 10,
                                   }}>
-                                  Dla szybszego działania na iPhonie w Expo Go pokazuje teraz
-                                  pierwsze {visibleFilteredFishCatalog.length} pozycji. Wpisz nazwę,
+                                  Dla szybszego dziaĹ‚ania na iPhonie w Expo Go pokazuje teraz
+                                  pierwsze {visibleFilteredFishCatalog.length} pozycji. Wpisz nazwÄ™,
                                   aby zawezic wyniki.
                                 </Text>
                               ) : null}
@@ -28801,7 +29289,7 @@ export default function HomeScreen() {
                                               source={getFishPreviewImageSource(fish, {
                                                 allowRemote: true,
                                               })}
-                                              onError={() => handleFishPreviewImageError(fish)}
+                                              onError={(event) => handleFishPreviewImageError(fish, event)}
                                               resizeMode="cover"
                                               style={{
                                                 width: 46,
@@ -29082,8 +29570,8 @@ export default function HomeScreen() {
                               fontSize: 12,
                               marginBottom: 10,
                             }}>
-                            Dla szybszego działania na iPhonie w Expo Go pokazuje teraz pierwsze{' '}
-                            {visibleFilteredPlantCatalog.length} pozycji. Wpisz nazwę, aby zawezic
+                            Dla szybszego dziaĹ‚ania na iPhonie w Expo Go pokazuje teraz pierwsze{' '}
+                            {visibleFilteredPlantCatalog.length} pozycji. Wpisz nazwÄ™, aby zawezic
                             wyniki.
                           </Text>
                         ) : null}
@@ -29291,12 +29779,12 @@ export default function HomeScreen() {
                   Rybie choroby i objawy
                 </Text>
                 <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
-                  Sekcja edukacyjna. Pokazuje możliwe scenariusze, ale nie daje
+                  Sekcja edukacyjna. Pokazuje moĹĽliwe scenariusze, ale nie daje
                   pewnej diagnozy.
                 </Text>
                 <Text style={{ color: themeWarningText, fontSize: 12 }}>
                   Zabezpieczenie: decyzje o leczeniu podejmujesz samodzielnie.
-                  Przy ciężkich objawach skontaktuj się ze specjalista
+                  Przy ciÄ™ĹĽkich objawach skontaktuj siÄ™ ze specjalista
                   (weterynarz/ichtiopatolog).
                 </Text>
               </View>
@@ -29319,7 +29807,7 @@ export default function HomeScreen() {
                   Nie wiesz, co dolega rybie?
                 </Text>
                 <Text style={{ color: themeAccentOnStrong, fontSize: 12, marginTop: 4 }}>
-                  Opisz objawy, dodaj zdjecie i sprawdź możliwe przyczyny z AI.
+                  Opisz objawy, dodaj zdjecie i sprawdĹş moĹĽliwe przyczyny z AI.
                 </Text>
                 <Pressable
                   onPress={handleOpenDiseaseAiAnalyzer}
@@ -29338,7 +29826,7 @@ export default function HomeScreen() {
                       fontWeight: '700',
                       fontSize: 12,
                     }}>
-                    Sprawdź objawy z AI
+                    SprawdĹş objawy z AI
                   </Text>
                 </Pressable>
               </View>
@@ -29374,7 +29862,7 @@ export default function HomeScreen() {
                       textAlign: 'center',
                       fontWeight: diseaseMode === 'catalog' ? '700' : '400',
                     }}>
-                    Katalog rybich chorób
+                    Katalog rybich chorĂłb
                   </Text>
                 </Pressable>
                 <Pressable
@@ -29439,9 +29927,15 @@ export default function HomeScreen() {
                           : '';
                     const useLocalDiseasePreviewImage =
                       previewLoadStage >= 2 || !diseasePreviewImageUri;
+                    const diseasePreviewImageCacheKey = `fish-disease:${disease.id}:${diseasePreviewImageUri}`;
                     const diseasePreviewImageSource = useLocalDiseasePreviewImage
                       ? DISEASE_IMAGE_PLACEHOLDER_SOURCE
-                      : getDiseaseRemoteImageSource(diseasePreviewImageUri);
+                      : getWikimediaCachedImageSource(
+                          diseasePreviewImageUri,
+                          diseasePreviewImageCacheKey,
+                          WIKIMEDIA_THUMBNAIL_WIDTH,
+                          getDiseaseRemoteImageSource
+                        );
                     const symptomSummary = disease.symptoms
                       .map(
                         (symptomId) =>
@@ -29522,12 +30016,23 @@ export default function HomeScreen() {
                                 onError={
                                   useLocalDiseasePreviewImage
                                     ? undefined
-                                    : ({ nativeEvent }) =>
+                                    : ({ nativeEvent }) => {
+                                        if (
+                                          requestWikimediaDataUriForKey(
+                                            diseasePreviewImageCacheKey,
+                                            diseasePreviewImageUri,
+                                            WIKIMEDIA_THUMBNAIL_WIDTH,
+                                            'fish-disease-image-debug'
+                                          )
+                                        ) {
+                                          return;
+                                        }
                                         handleDiseasePreviewImageError(
                                           disease.id,
                                           String(nativeEvent?.error ?? '').trim(),
                                           previewLoadStage
-                                        )
+                                        );
+                                      }
                                 }
                               />
                             </Pressable>
@@ -29560,7 +30065,7 @@ export default function HomeScreen() {
                                   marginTop: 4,
                                   fontSize: 11,
                                 }}>
-                                Zdjęcie poglądowe: {disease.imageSourceLabel}
+                                ZdjÄ™cie poglÄ…dowe: {disease.imageSourceLabel}
                               </Text>
                             )}
                             <Text style={{ color: themeSuccessText, marginTop: 8, fontSize: 12 }}>
@@ -29597,7 +30102,7 @@ export default function HomeScreen() {
                                     backgroundColor: themeWarningSoftBg,
                                   }}>
                                   <Text style={{ color: themeWarningText, fontSize: 12, fontWeight: '700' }}>
-                                    Ta choroba zostala wskazana przez AI jako możliwe podejrzenie w tym akwarium.
+                                    Ta choroba zostala wskazana przez AI jako moĹĽliwe podejrzenie w tym akwarium.
                                   </Text>
                                   <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
                                     <Pressable
@@ -29641,7 +30146,7 @@ export default function HomeScreen() {
                               onPress={() =>
                                 runCatalogAiChat({
                                   resultKey: diseaseCatalogAiResultKey,
-                                  question: `Przeanalizuj chorobę "${disease.name}" w kontekscie wybranego akwarium i podaj kroki działania.`,
+                                  question: `Przeanalizuj chorobÄ™ "${disease.name}" w kontekscie wybranego akwarium i podaj kroki dziaĹ‚ania.`,
                                   contextDetails: [
                                     `Objawy katalogowe: ${symptomSummary}`,
                                     `Podsumowanie: ${disease.summary ?? ''}`,
@@ -29671,14 +30176,14 @@ export default function HomeScreen() {
                                   fontWeight: '700',
                                   fontSize: 12,
                                 }}>
-                                {catalogAiBusy ? 'AI analizuje...' : 'Zapytaj AI o te chorobę'}
+                                {catalogAiBusy ? 'AI analizuje...' : 'Zapytaj AI o te chorobÄ™'}
                               </Text>
                             </Pressable>
                             <Pressable
                               onPress={() =>
                                 runCatalogAiVision({
                                   resultKey: diseaseCatalogAiResultKey,
-                                  question: `Przeanalizuj zdjęcie pod katem choroby "${disease.name}" i zaproponuj plan weryfikacji oraz działania.`,
+                                  question: `Przeanalizuj zdjÄ™cie pod katem choroby "${disease.name}" i zaproponuj plan weryfikacji oraz dziaĹ‚ania.`,
                                   contextDetails: [
                                     `Objawy katalogowe: ${symptomSummary}`,
                                     `Podsumowanie: ${disease.summary ?? ''}`,
@@ -29708,7 +30213,7 @@ export default function HomeScreen() {
                                   fontWeight: '700',
                                   fontSize: 12,
                                 }}>
-                                {catalogAiBusy ? 'AI analizuje...' : 'Analizuj zdjęcie dla tej choroby'}
+                                {catalogAiBusy ? 'AI analizuje...' : 'Analizuj zdjÄ™cie dla tej choroby'}
                               </Text>
                             </Pressable>
                             {renderCatalogAiResultCard(diseaseCatalogAiResultKey)}
@@ -29754,7 +30259,7 @@ export default function HomeScreen() {
                     Zaznacz objawy
                   </Text>
                   <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 10 }}>
-                    Im więcej trafnych objawów wybierzesz, tym sensowniejsza będzie
+                    Im wiÄ™cej trafnych objawĂłw wybierzesz, tym sensowniejsza bÄ™dzie
                     podpowiedz.
                   </Text>
 
@@ -29776,7 +30281,7 @@ export default function HomeScreen() {
                     }}>
                     <View style={{ flex: 1, paddingRight: 8 }}>
                       <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 13 }}>
-                        Lista objawów
+                        Lista objawĂłw
                       </Text>
                       <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 2 }}>
                         {selectedDiseaseSymptomIds.length === 0
@@ -29943,7 +30448,7 @@ export default function HomeScreen() {
                       </Text>
                       <Text style={{ color: themeDangerText, marginTop: 4, fontSize: 12 }}>
                         {selectedEmergencyState?.summary ||
-                          'Wykonaj natychmiastowa podmianę wody, mocne napowietrzanie i pilna konsultacje.'}
+                          'Wykonaj natychmiastowa podmianÄ™ wody, mocne napowietrzanie i pilna konsultacje.'}
                       </Text>
                       {(selectedEmergencyState?.steps ?? []).slice(0, 3).map((step, index) => (
                         <Text
@@ -29964,17 +30469,17 @@ export default function HomeScreen() {
 
                   {!diseaseSafetyConfirmed ? (
                     <Text style={{ color: themeWarningText, fontSize: 12 }}>
-                      Najpierw zaznacz potwierdzenie bezpieczenstwa, aby zobaczyć
+                      Najpierw zaznacz potwierdzenie bezpieczenstwa, aby zobaczyÄ‡
                       sugestie.
                     </Text>
                   ) : selectedDiseaseSymptomIds.length < 2 ? (
                     <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
-                      Zaznacz minimum 2 objawy, aby uruchomić analizę.
+                      Zaznacz minimum 2 objawy, aby uruchomiÄ‡ analizÄ™.
                     </Text>
                   ) : diseaseSuggestions.length === 0 ? (
                     <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
-                      Brak jednoznacznego dopasowania. Sprawdź parametry, obserwuj
-                      24h i rozważ konsultacje specjalistyczna.
+                      Brak jednoznacznego dopasowania. SprawdĹş parametry, obserwuj
+                      24h i rozwaĹĽ konsultacje specjalistyczna.
                     </Text>
                   ) : (
                     <View style={{ marginTop: 4 }}>
@@ -30054,7 +30559,7 @@ export default function HomeScreen() {
                               marginTop: 6,
                               fontSize: 12,
                             }}>
-                            Plan działań 24h:
+                            Plan dziaĹ‚aĹ„ 24h:
                           </Text>
                           {(item.timelinePlan?.h24 ?? item.treatment ?? []).slice(0, 3).map((step, index) => (
                             <Text
@@ -30174,13 +30679,13 @@ export default function HomeScreen() {
                     fontSize: 16,
                     marginBottom: 8,
                   }}>
-                  Choroby roślin i objawy
+                  Choroby roĹ›lin i objawy
                 </Text>
                 <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
-                  Sekcja edukacyjna. Pomaga rozpoznać najczestsze problemy roślin.
+                  Sekcja edukacyjna. Pomaga rozpoznaÄ‡ najczestsze problemy roĹ›lin.
                 </Text>
                 <Text style={{ color: themeWarningText, fontSize: 12 }}>
-                  Zabezpieczenie: to nie jest pewna diagnoza. Wprowadźaj zmiany
+                  Zabezpieczenie: to nie jest pewna diagnoza. WprowadĹşaj zmiany
                   stopniowo i obserwuj reakcje zbiornika.
                 </Text>
               </View>
@@ -30199,10 +30704,10 @@ export default function HomeScreen() {
                     fontWeight: '700',
                     fontSize: 14,
                   }}>
-                  Nie wiesz, co dzieje się z roślina?
+                  Nie wiesz, co dzieje siÄ™ z roĹ›lina?
                 </Text>
                 <Text style={{ color: themeAccentOnStrong, fontSize: 12, marginTop: 4 }}>
-                  Opisz objawy, dodaj zdjecie i sprawdź możliwe przyczyny z AI.
+                  Opisz objawy, dodaj zdjecie i sprawdĹş moĹĽliwe przyczyny z AI.
                 </Text>
                 <Pressable
                   onPress={handleOpenPlantDiseaseAiAnalyzer}
@@ -30221,7 +30726,7 @@ export default function HomeScreen() {
                       fontWeight: '700',
                       fontSize: 12,
                     }}>
-                    Sprawdź problem z AI
+                    SprawdĹş problem z AI
                   </Text>
                 </Pressable>
               </View>
@@ -30260,7 +30765,7 @@ export default function HomeScreen() {
                       textAlign: 'center',
                       fontWeight: plantDiseaseMode === 'catalog' ? '700' : '400',
                     }}>
-                    Katalog chorób roślin
+                    Katalog chorĂłb roĹ›lin
                   </Text>
                 </Pressable>
                 <Pressable
@@ -30329,9 +30834,15 @@ export default function HomeScreen() {
                           : '';
                     const useLocalDiseasePreviewImage =
                       previewLoadStage >= 2 || !diseasePreviewImageUri;
+                    const diseasePreviewImageCacheKey = `plant-disease:${disease.id}:${diseasePreviewImageUri}`;
                     const diseasePreviewImageSource = useLocalDiseasePreviewImage
                       ? DISEASE_IMAGE_PLACEHOLDER_SOURCE
-                      : getDiseaseRemoteImageSource(diseasePreviewImageUri);
+                      : getWikimediaCachedImageSource(
+                          diseasePreviewImageUri,
+                          diseasePreviewImageCacheKey,
+                          WIKIMEDIA_THUMBNAIL_WIDTH,
+                          getDiseaseRemoteImageSource
+                        );
                     const symptomSummary = disease.symptoms
                       .map(
                         (symptomId) =>
@@ -30413,12 +30924,23 @@ export default function HomeScreen() {
                                 onError={
                                   useLocalDiseasePreviewImage
                                     ? undefined
-                                    : ({ nativeEvent }) =>
+                                    : ({ nativeEvent }) => {
+                                        if (
+                                          requestWikimediaDataUriForKey(
+                                            diseasePreviewImageCacheKey,
+                                            diseasePreviewImageUri,
+                                            WIKIMEDIA_THUMBNAIL_WIDTH,
+                                            'plant-disease-image-debug'
+                                          )
+                                        ) {
+                                          return;
+                                        }
                                         handleDiseasePreviewImageError(
                                           disease.id,
                                           String(nativeEvent?.error ?? '').trim(),
                                           previewLoadStage
-                                        )
+                                        );
+                                      }
                                 }
                               />
                             </Pressable>
@@ -30451,7 +30973,7 @@ export default function HomeScreen() {
                                   marginTop: 4,
                                   fontSize: 11,
                                 }}>
-                                Zdjęcie poglądowe: {disease.imageSourceLabel}
+                                ZdjÄ™cie poglÄ…dowe: {disease.imageSourceLabel}
                               </Text>
                             )}
                             <Text style={{ color: themeSuccessText, marginTop: 8, fontSize: 12 }}>
@@ -30488,7 +31010,7 @@ export default function HomeScreen() {
                                     backgroundColor: themeWarningSoftBg,
                                   }}>
                                   <Text style={{ color: themeWarningText, fontSize: 12, fontWeight: '700' }}>
-                                    Ten problem zostal wskazany przez AI jako możliwe podejrzenie w tym akwarium.
+                                    Ten problem zostal wskazany przez AI jako moĹĽliwe podejrzenie w tym akwarium.
                                   </Text>
                                   <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
                                     <Pressable
@@ -30567,11 +31089,11 @@ export default function HomeScreen() {
                     backgroundColor: themeCardBgAlt,
                   }}>
                   <Text style={{ color: themeTextPrimary, fontWeight: '700', marginBottom: 6 }}>
-                    Zaznacz objawy roślin
+                    Zaznacz objawy roĹ›lin
                   </Text>
                   <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 10 }}>
                     Zaznacz to, co obserwujesz. Otrzymasz liste najbardziej
-                    prawdopodobnych problemów i sugestie.
+                    prawdopodobnych problemĂłw i sugestie.
                   </Text>
 
                   <Pressable
@@ -30592,7 +31114,7 @@ export default function HomeScreen() {
                     }}>
                     <View style={{ flex: 1, paddingRight: 8 }}>
                       <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 13 }}>
-                        Lista objawów roślin
+                        Lista objawĂłw roĹ›lin
                       </Text>
                       <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 2 }}>
                         {selectedPlantDiseaseSymptomIds.length === 0
@@ -30741,22 +31263,22 @@ export default function HomeScreen() {
                     </View>
                     <Text style={{ color: themeTextPrimary, flex: 1, fontSize: 12 }}>
                       Rozumiem, ze to nie jest pewna diagnoza i wymaga ostroznej
-                      korekty warunków.
+                      korekty warunkĂłw.
                     </Text>
                   </Pressable>
 
                   {!plantDiseaseSafetyConfirmed ? (
                     <Text style={{ color: themeWarningText, fontSize: 12 }}>
-                      Najpierw zaznacz potwierdzenie bezpieczenstwa, aby zobaczyć
+                      Najpierw zaznacz potwierdzenie bezpieczenstwa, aby zobaczyÄ‡
                       sugestie.
                     </Text>
                   ) : selectedPlantDiseaseSymptomIds.length < 2 ? (
                     <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
-                      Zaznacz minimum 2 objawy, aby uruchomić analizę.
+                      Zaznacz minimum 2 objawy, aby uruchomiÄ‡ analizÄ™.
                     </Text>
                   ) : plantDiseaseSuggestions.length === 0 ? (
                     <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
-                      Brak jednoznacznego dopasowania. Wprowadźaj zmiany etapami i
+                      Brak jednoznacznego dopasowania. WprowadĹşaj zmiany etapami i
                       obserwuj nowe przyrosty przez 7-14 dni.
                     </Text>
                   ) : (
@@ -30767,7 +31289,7 @@ export default function HomeScreen() {
                           fontWeight: '700',
                           marginBottom: 6,
                         }}>
-                        Najbardziej prawdopodobne problemy roślin
+                        Najbardziej prawdopodobne problemy roĹ›lin
                       </Text>
                       {plantDiseaseSuggestions.map((item) => (
                         <View
@@ -30837,7 +31359,7 @@ export default function HomeScreen() {
                               marginTop: 6,
                               fontSize: 12,
                             }}>
-                            Plan działań 24h:
+                            Plan dziaĹ‚aĹ„ 24h:
                           </Text>
                           {(item.timelinePlan?.h24 ?? item.treatment ?? []).slice(0, 3).map((step, index) => (
                             <Text
@@ -30960,7 +31482,7 @@ export default function HomeScreen() {
                   Glony i rozrost
                 </Text>
                 <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 8 }}>
-                  Sprawdź rodzaj glonów, przyczyne i plan: usunięcie + prewencja
+                  SprawdĹş rodzaj glonĂłw, przyczyne i plan: usuniÄ™cie + prewencja
                   nawrotu.
                 </Text>
                 <Text style={{ color: themeWarningText, fontSize: 12 }}>
@@ -30986,7 +31508,7 @@ export default function HomeScreen() {
                   Nie wiesz, jaki to glon?
                 </Text>
                 <Text style={{ color: themeAccentOnStrong, fontSize: 12, marginTop: 4 }}>
-                  Dodaj zdjecie, opisz problem i sprawdź możliwe przyczyny z AI.
+                  Dodaj zdjecie, opisz problem i sprawdĹş moĹĽliwe przyczyny z AI.
                 </Text>
                 <Pressable
                   onPress={handleOpenAlgaeAiAnalyzer}
@@ -31005,7 +31527,7 @@ export default function HomeScreen() {
                       fontWeight: '700',
                       fontSize: 12,
                     }}>
-                    Sprawdź glony z AI
+                    SprawdĹş glony z AI
                   </Text>
                 </Pressable>
               </View>
@@ -31042,7 +31564,7 @@ export default function HomeScreen() {
                       textAlign: 'center',
                       fontWeight: algaeMode === 'catalog' ? '700' : '400',
                     }}>
-                    Katalog glonów
+                    Katalog glonĂłw
                   </Text>
                 </Pressable>
                 <Pressable
@@ -31106,9 +31628,15 @@ export default function HomeScreen() {
                           : '';
                     const useLocalAlgaePreviewImage =
                       previewLoadStage >= 2 || !algaePreviewImageUri;
+                    const algaePreviewImageCacheKey = `algae:${algae.id}:${algaePreviewImageUri}`;
                     const algaePreviewImageSource = useLocalAlgaePreviewImage
                       ? DISEASE_IMAGE_PLACEHOLDER_SOURCE
-                      : getDiseaseRemoteImageSource(algaePreviewImageUri);
+                      : getWikimediaCachedImageSource(
+                          algaePreviewImageUri,
+                          algaePreviewImageCacheKey,
+                          WIKIMEDIA_THUMBNAIL_WIDTH,
+                          getDiseaseRemoteImageSource
+                        );
                     const symptomSummary = algae.symptoms
                       .map(
                         (symptomId) =>
@@ -31189,12 +31717,23 @@ export default function HomeScreen() {
                                 onError={
                                   useLocalAlgaePreviewImage
                                     ? undefined
-                                    : ({ nativeEvent }) =>
+                                    : ({ nativeEvent }) => {
+                                        if (
+                                          requestWikimediaDataUriForKey(
+                                            algaePreviewImageCacheKey,
+                                            algaePreviewImageUri,
+                                            WIKIMEDIA_THUMBNAIL_WIDTH,
+                                            'algae-image-debug'
+                                          )
+                                        ) {
+                                          return;
+                                        }
                                         handleDiseasePreviewImageError(
                                           algae.id,
                                           String(nativeEvent?.error ?? '').trim(),
                                           previewLoadStage
-                                        )
+                                        );
+                                      }
                                 }
                               />
                             </Pressable>
@@ -31227,7 +31766,7 @@ export default function HomeScreen() {
                                   marginTop: 4,
                                   fontSize: 11,
                                 }}>
-                                Zdjęcie poglądowe: {algae.imageSourceLabel}
+                                ZdjÄ™cie poglÄ…dowe: {algae.imageSourceLabel}
                               </Text>
                             )}
                             <Text style={{ color: themeSuccessText, marginTop: 8, fontSize: 12 }}>
@@ -31244,7 +31783,7 @@ export default function HomeScreen() {
                               </Text>
                             ))}
                             <Text style={{ color: themeSuccessText, marginTop: 6, fontSize: 12 }}>
-                              Usuwanie glonów:
+                              Usuwanie glonĂłw:
                             </Text>
                             {algae.removeActions.slice(0, 3).map((step, index) => (
                               <Text
@@ -31284,7 +31823,7 @@ export default function HomeScreen() {
                                     backgroundColor: themeWarningSoftBg,
                                   }}>
                                   <Text style={{ color: themeWarningText, fontSize: 12, fontWeight: '700' }}>
-                                    Ten glon zostal wskazany przez AI jako możliwe podejrzenie w tym akwarium.
+                                    Ten glon zostal wskazany przez AI jako moĹĽliwe podejrzenie w tym akwarium.
                                   </Text>
                                   <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
                                     <Pressable
@@ -31363,11 +31902,11 @@ export default function HomeScreen() {
                     backgroundColor: themeCardBgAlt,
                   }}>
                   <Text style={{ color: themeTextPrimary, fontWeight: '700', marginBottom: 6 }}>
-                    Zaznacz objawy glonów
+                    Zaznacz objawy glonĂłw
                   </Text>
                   <Text style={{ color: themeTextSecondary, fontSize: 12, marginBottom: 10 }}>
                     Zaznacz to, co widzisz w akwarium. Otrzymasz dopasowanie i plan
-                    działań.
+                    dziaĹ‚aĹ„.
                   </Text>
 
                   <Pressable
@@ -31386,7 +31925,7 @@ export default function HomeScreen() {
                     }}>
                     <View style={{ flex: 1, paddingRight: 8 }}>
                       <Text style={{ color: themeTextPrimary, fontWeight: '700', fontSize: 13 }}>
-                        Lista objawów glonów
+                        Lista objawĂłw glonĂłw
                       </Text>
                       <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 2 }}>
                         {selectedAlgaeSymptomIds.length === 0
@@ -31533,19 +32072,19 @@ export default function HomeScreen() {
                       </Text>
                     </View>
                     <Text style={{ color: themeTextPrimary, flex: 1, fontSize: 12 }}>
-                      Rozumiem, ze skutecznosc zalezy od usunięcia przyczyny i
+                      Rozumiem, ze skutecznosc zalezy od usuniÄ™cia przyczyny i
                       utrzymania profilaktyki.
                     </Text>
                   </Pressable>
 
                   {!algaeSafetyConfirmed ? (
                     <Text style={{ color: themeWarningText, fontSize: 12 }}>
-                      Najpierw zaznacz potwierdzenie bezpieczenstwa, aby zobaczyć
+                      Najpierw zaznacz potwierdzenie bezpieczenstwa, aby zobaczyÄ‡
                       sugestie.
                     </Text>
                   ) : selectedAlgaeSymptomIds.length < 2 ? (
                     <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
-                      Zaznacz minimum 2 objawy, aby uruchomić analizę.
+                      Zaznacz minimum 2 objawy, aby uruchomiÄ‡ analizÄ™.
                     </Text>
                   ) : algaeSuggestions.length === 0 ? (
                     <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
@@ -31625,7 +32164,7 @@ export default function HomeScreen() {
                               marginTop: 6,
                               fontSize: 12,
                             }}>
-                            Plan działań 24h:
+                            Plan dziaĹ‚aĹ„ 24h:
                           </Text>
                           {(item.timelinePlan?.h24 ??
                             [
@@ -31828,7 +32367,7 @@ export default function HomeScreen() {
                     backgroundColor: themeCardBgAlt,
                   }}>
                   <Text style={{ color: themeTextSecondary }}>
-                    Najpierw wybierz aktywne akwarium, aby uruchomić Asystenta AI w kontekscie
+                    Najpierw wybierz aktywne akwarium, aby uruchomiÄ‡ Asystenta AI w kontekscie
                     tego zbiornika.
                   </Text>
                 </View>
@@ -32797,7 +33336,7 @@ export default function HomeScreen() {
                   </Text>
 
                   <Text style={{ color: themeTextPrimary, marginTop: 12, fontWeight: '700' }}>
-                    Co aplikacja będzie monitorować
+                    Co aplikacja bÄ™dzie monitorowaÄ‡
                   </Text>
                   {firstRunMonitoringItems.map((item, index) => (
                     <Text
@@ -32820,7 +33359,7 @@ export default function HomeScreen() {
                     ))
                   ) : (
                     <Text style={{ color: themeTextSecondary, marginTop: 4, fontSize: 12 }}>
-                      Brak gotowych akcji. Dodaj pierwszy pomiar, a plan zadan pojawi się
+                      Brak gotowych akcji. Dodaj pierwszy pomiar, a plan zadan pojawi siÄ™
                       automatycznie.
                     </Text>
                   )}
@@ -32837,7 +33376,7 @@ export default function HomeScreen() {
                       backgroundColor: themeAccentStrongBg,
                     }}>
                     <Text style={{ color: themeTextPrimary, fontWeight: '700' }}>
-                      Przejdź dalej
+                      PrzejdĹş dalej
                     </Text>
                   </Pressable>
                 </View>
@@ -32887,10 +33426,10 @@ export default function HomeScreen() {
                           marginTop: 4,
                         }}>
                         {equipmentCatalogType === 'heater'
-                          ? 'Porownaj modele po mocy i zalecanym litrażu.'
+                          ? 'Porownaj modele po mocy i zalecanym litraĹĽu.'
                           : equipmentCatalogType === 'filter'
-                            ? 'Porownaj modele po wydajnosci, litrażu i sile przepływu.'
-                            : 'Porownaj modele po lumenach i dopasowaniu lm/l do litrażu.'}
+                            ? 'Porownaj modele po wydajnosci, litraĹĽu i sile przepĹ‚ywu.'
+                            : 'Porownaj modele po lumenach i dopasowaniu lm/l do litraĹĽu.'}
                       </Text>
                     </View>
                     <Pressable
@@ -32935,7 +33474,7 @@ export default function HomeScreen() {
                           fontWeight: '700',
                           marginBottom: 4,
                         }}>
-                        Wybierz model sprzętu
+                        Wybierz model sprzÄ™tu
                       </Text>
                       <Text style={{ color: themeTextSecondary, fontSize: 12 }}>
                         Karty pokazuja najwazniejsze parametry i szybkie dopasowanie do Twojego
@@ -32987,7 +33526,7 @@ export default function HomeScreen() {
                           }}>
                           {isCustomEquipmentFormVisible
                             ? 'Ukryj formularz "Inne"'
-                            : 'Nie ma na liście Dodaj "Inne"'}
+                            : 'Nie ma na liĹ›cie Dodaj "Inne"'}
                         </Text>
                       </Pressable>
 
@@ -33000,7 +33539,7 @@ export default function HomeScreen() {
                               marginBottom: 8,
                               lineHeight: 17,
                             }}>
-                            Podaj podstawowe dane sprzętu, a zapisze go bezposrednio do
+                            Podaj podstawowe dane sprzÄ™tu, a zapisze go bezposrednio do
                             aktywnego akwarium.
                           </Text>
                           <TextInput
@@ -33110,7 +33649,7 @@ export default function HomeScreen() {
                                 marginBottom: 10,
                               }}>
                               <TextInput
-                                placeholder="Min litraż (opcjonalnie)"
+                                placeholder="Min litraĹĽ (opcjonalnie)"
                                 placeholderTextColor={themePlaceholder}
                                 value={customEquipmentTankMinLiters}
                                 onChangeText={setCustomEquipmentTankMinLiters}
@@ -33127,7 +33666,7 @@ export default function HomeScreen() {
                                 }}
                               />
                               <TextInput
-                                placeholder="Max litraż (opcjonalnie)"
+                                placeholder="Max litraĹĽ (opcjonalnie)"
                                 placeholderTextColor={themePlaceholder}
                                 value={customEquipmentTankMaxLiters}
                                 onChangeText={setCustomEquipmentTankMaxLiters}
@@ -33164,7 +33703,7 @@ export default function HomeScreen() {
                                 fontWeight: '700',
                                 fontSize: 13,
                               }}>
-                              Dodaj inny sprzęt
+                              Dodaj inny sprzÄ™t
                             </Text>
                           </Pressable>
                         </View>
@@ -33327,8 +33866,8 @@ export default function HomeScreen() {
                                     fontWeight: '700',
                                   }}>
                                   {item.type === 'light'
-                                    ? item.lightFitLabel || 'Sprawdź'
-                                    : item.fitBadgeLabel || 'Sprawdź'}
+                                    ? item.lightFitLabel || 'SprawdĹş'
+                                    : item.fitBadgeLabel || 'SprawdĹş'}
                                 </Text>
                               </View>
                             </View>
@@ -34007,7 +34546,7 @@ export default function HomeScreen() {
             <BottomSheetModal
               visible
               onClose={handleCloseMeasurementTileDetails}
-              title={`${selectedMeasurementTileDetails.label} - szczegóły`}
+              title={`${selectedMeasurementTileDetails.label} - szczegĂłĹ‚y`}
               themeCardBg={themeCardBg}
               themeBorder={themeBorder}
               themeTextPrimary={themeTextPrimary}
@@ -34082,7 +34621,7 @@ export default function HomeScreen() {
                     marginTop: 10,
                   }}>
                   <Text style={{ color: themeTextSecondary, fontWeight: '700', fontSize: 12 }}>
-                    Co zróbic teraz
+                    Co zrĂłbic teraz
                   </Text>
                   <Text style={{ color: themeTextPrimary, marginTop: 6 }}>
                     {selectedMeasurementTileDetails.action}
@@ -34099,7 +34638,7 @@ export default function HomeScreen() {
                     marginTop: 10,
                   }}>
                   <Text style={{ color: themeTextSecondary, fontWeight: '700', fontSize: 12 }}>
-                    Możliwe skutki bez korekty
+                    MoĹĽliwe skutki bez korekty
                   </Text>
                   <Text style={{ color: themeTextPrimary, marginTop: 6 }}>
                     {selectedMeasurementTileDetails.impact}
@@ -34167,7 +34706,7 @@ export default function HomeScreen() {
                         marginBottom: 12,
                         fontSize: 12,
                       }}>
-                      Widoczne pola z ustawień (zalecane):{' '}
+                      Widoczne pola z ustawieĹ„ (zalecane):{' '}
                       {visibleMeasurementOptionLabels.join(', ') || t('noData')}
                     </Text>
                     <Text
@@ -34176,7 +34715,7 @@ export default function HomeScreen() {
                         marginBottom: 12,
                         fontSize: 12,
                       }}>
-                      Pola są opcjonalne. Uzupelnij tylko te parametry, które masz pod reka.
+                      Pola sÄ… opcjonalne. Uzupelnij tylko te parametry, ktĂłre masz pod reka.
                     </Text>
                     {lockedMeasurementFields.length > 0 ? (
                       <Text
@@ -34186,7 +34725,7 @@ export default function HomeScreen() {
                           fontSize: 12,
                         }}>
                         {fullMeasurementFeatureLockMessage ||
-                          `Pełne parametry od planu ${getPlanLabel(fullMeasurementFeatureTargetPlan)}.`}{' '}
+                          `PeĹ‚ne parametry od planu ${getPlanLabel(fullMeasurementFeatureTargetPlan)}.`}{' '}
                         Zablokowane: {lockedMeasurementFields.join(', ')}.
                       </Text>
                     ) : null}
@@ -34198,7 +34737,7 @@ export default function HomeScreen() {
                           marginBottom: 10,
                           fontSize: 12,
                         }}>
-                        W ustawieniach wybierz pola, które chcesz widziec w formularzu pomiarów.
+                        W ustawieniach wybierz pola, ktĂłre chcesz widziec w formularzu pomiarĂłw.
                       </Text>
                     ) : null}
 
@@ -34769,16 +35308,16 @@ export default function HomeScreen() {
               )}
 
               <Text style={{ color: themeTextSecondary, marginBottom: 8, fontSize: 12 }}>
-                Widoczne pola z ustawień (zalecane):{' '}
+                Widoczne pola z ustawieĹ„ (zalecane):{' '}
                 {visibleMeasurementOptionLabels.join(', ') || t('noData')}
               </Text>
               <Text style={{ color: themeTextSecondary, marginBottom: 10, fontSize: 12 }}>
-                Pola pozostaja opcjonalne. Wpisz tylko te wartości, które chcesz teraz zapisać.
+                Pola pozostaja opcjonalne. Wpisz tylko te wartoĹ›ci, ktĂłre chcesz teraz zapisaÄ‡.
               </Text>
               {lockedMeasurementFields.length > 0 ? (
                 <Text style={{ color: themeTextSecondary, marginBottom: 10, fontSize: 12 }}>
                   {fullMeasurementFeatureLockMessage ||
-                    `Pełne parametry od planu ${getPlanLabel(fullMeasurementFeatureTargetPlan)}.`}{' '}
+                    `PeĹ‚ne parametry od planu ${getPlanLabel(fullMeasurementFeatureTargetPlan)}.`}{' '}
                   Zablokowane: {lockedMeasurementFields.join(', ')}.
                 </Text>
               ) : null}
@@ -34816,7 +35355,7 @@ export default function HomeScreen() {
 
               {measurementInputRows.length === 0 ? (
                 <Text style={{ color: themeWarningText, marginBottom: 10, fontSize: 12 }}>
-                  W ustawieniach wybierz pola, które chcesz widziec w formularzu pomiarów.
+                  W ustawieniach wybierz pola, ktĂłre chcesz widziec w formularzu pomiarĂłw.
                 </Text>
               ) : (
                 measurementInputRows.map((field) => (
@@ -35803,53 +36342,51 @@ export default function HomeScreen() {
                         </Text>
                       ) : null}
 
-                      <Pressable
-                        onPress={handleToggleAiConsentDataProcessing}
-                        style={{
-                          marginTop: 10,
-                          borderWidth: 1,
-                          borderColor: appSettings.aiConsentDataProcessing
-                            ? themeAccent
-                            : themeBorderStrong,
-                          borderRadius: 8,
-                          paddingVertical: 8,
-                          paddingHorizontal: 10,
-                          backgroundColor: appSettings.aiConsentDataProcessing
-                            ? themeAccentSoftBg
-                            : themeCardBgAlt,
-                        }}>
-                        <Text style={{ color: themeTextPrimary, fontSize: 12 }}>
-                          [{appSettings.aiConsentDataProcessing ? 'X' : ' '}] {t('historyAiConsentDataProcessing')}
-                        </Text>
-                      </Pressable>
+                      {hasAiAssistantAccess ? (
+                        <>
+                          <Pressable
+                            onPress={handleToggleAiConsentDataProcessing}
+                            style={{
+                              marginTop: 10,
+                              borderWidth: 1,
+                              borderColor: appSettings.aiConsentDataProcessing
+                                ? themeAccent
+                                : themeBorderStrong,
+                              borderRadius: 8,
+                              paddingVertical: 8,
+                              paddingHorizontal: 10,
+                              backgroundColor: appSettings.aiConsentDataProcessing
+                                ? themeAccentSoftBg
+                                : themeCardBgAlt,
+                            }}>
+                            <Text style={{ color: themeTextPrimary, fontSize: 12 }}>
+                              [{appSettings.aiConsentDataProcessing ? 'X' : ' '}] {t('historyAiConsentDataProcessing')}
+                            </Text>
+                          </Pressable>
 
-                      <Pressable
-                        onPress={handleAnalyzeWaterHistoryWithAi}
-                        disabled={
-                          historyAiBusy ||
-                          !hasAiAssistantAccess ||
-                          !Boolean(appSettings.aiConsentDataProcessing)
-                        }
-                        style={{
-                          marginTop: 10,
-                          borderWidth: 1,
-                          borderColor: themeAccent,
-                          borderRadius: 8,
-                          paddingVertical: 8,
-                          paddingHorizontal: 10,
-                          backgroundColor: themeAccentSoftBg,
-                          alignItems: 'center',
-                          opacity:
-                            historyAiBusy ||
-                            !hasAiAssistantAccess ||
-                            !Boolean(appSettings.aiConsentDataProcessing)
-                              ? 0.7
-                              : 1,
-                        }}>
-                        <Text style={{ color: themeAccentOnStrong, fontWeight: '700', fontSize: 12 }}>
-                          {historyAiBusy ? t('historyAiLoading') : t('historyAiExplainButton')}
-                        </Text>
-                      </Pressable>
+                          <Pressable
+                            onPress={handleAnalyzeWaterHistoryWithAi}
+                            disabled={historyAiBusy || !Boolean(appSettings.aiConsentDataProcessing)}
+                            style={{
+                              marginTop: 10,
+                              borderWidth: 1,
+                              borderColor: themeAccent,
+                              borderRadius: 8,
+                              paddingVertical: 8,
+                              paddingHorizontal: 10,
+                              backgroundColor: themeAccentSoftBg,
+                              alignItems: 'center',
+                              opacity:
+                                historyAiBusy || !Boolean(appSettings.aiConsentDataProcessing)
+                                  ? 0.7
+                                  : 1,
+                            }}>
+                            <Text style={{ color: themeAccentOnStrong, fontWeight: '700', fontSize: 12 }}>
+                              {historyAiBusy ? t('historyAiLoading') : t('historyAiExplainButton')}
+                            </Text>
+                          </Pressable>
+                        </>
+                      ) : null}
 
                       {historyAiError ? (
                         <Text style={{ color: themeWarningText, marginTop: 10, fontSize: 12 }}>
@@ -36070,7 +36607,7 @@ export default function HomeScreen() {
           <BottomSheetModal
             visible
             onClose={() => setIsDiseaseAiAnalyzerVisible(false)}
-            title="Analiza objawów ryby"
+            title="Analiza objawĂłw ryby"
             themeCardBg={themeCardBg}
             themeBorder={themeBorder}
             themeTextPrimary={themeTextPrimary}
@@ -36189,7 +36726,7 @@ export default function HomeScreen() {
                 Opisz objawy
               </Text>
               <TextInput
-                placeholder="Np. białe kropki, ocieranie, szybki oddech..."
+                placeholder="Np. biaĹ‚e kropki, ocieranie, szybki oddech..."
                 placeholderTextColor={themePlaceholder}
                 value={diseaseAiDescription}
                 onChangeText={(value) => setDiseaseAiDescription(String(value ?? '').slice(0, 1000))}
@@ -36343,7 +36880,7 @@ export default function HomeScreen() {
                       backgroundColor: themeCardBg,
                     }}>
                     <Text style={{ color: themeTextSecondary, textAlign: 'center', fontSize: 12 }}>
-                      Usuń zdjecie
+                      UsuĹ„ zdjecie
                     </Text>
                   </Pressable>
                 </View>
@@ -36404,7 +36941,7 @@ export default function HomeScreen() {
                     fontWeight: '700',
                     fontSize: 13,
                   }}>
-                  {diseaseAiBusy ? 'AI analizuje...' : 'Sprawdź z AI'}
+                  {diseaseAiBusy ? 'AI analizuje...' : 'SprawdĹş z AI'}
                 </Text>
               </Pressable>
 
@@ -36419,7 +36956,7 @@ export default function HomeScreen() {
                     backgroundColor: themeCardBg,
                   }}>
                   <Text style={{ color: themeTextPrimary, fontWeight: '700' }}>
-                    Możliwe podejrzenia
+                    MoĹĽliwe podejrzenia
                   </Text>
                   <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 6 }}>
                     {String(diseaseAiResult?.summary ?? '').trim()}
@@ -36536,7 +37073,7 @@ export default function HomeScreen() {
                   {normalizeArray(diseaseAiResult?.verificationSteps).length > 0 ? (
                     <>
                       <Text style={{ color: themeTextPrimary, fontWeight: '700', marginTop: 10, fontSize: 12 }}>
-                        Co sprawdzić teraz
+                        Co sprawdziÄ‡ teraz
                       </Text>
                       {normalizeArray(diseaseAiResult?.verificationSteps).slice(0, 6).map((step, index) => (
                         <Text
@@ -36587,7 +37124,7 @@ export default function HomeScreen() {
           <BottomSheetModal
             visible
             onClose={() => setIsPlantDiseaseAiAnalyzerVisible(false)}
-            title="Analiza problemu rośliny"
+            title="Analiza problemu roĹ›liny"
             themeCardBg={themeCardBg}
             themeBorder={themeBorder}
             themeTextPrimary={themeTextPrimary}
@@ -36644,7 +37181,7 @@ export default function HomeScreen() {
                   fontSize: 13,
                   marginTop: 12,
                 }}>
-                Ktorej rośliny dotyczy problem?
+                Ktorej roĹ›liny dotyczy problem?
               </Text>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
                 <Pressable
@@ -36671,7 +37208,7 @@ export default function HomeScreen() {
                           : themeTextPrimary,
                       fontSize: 12,
                     }}>
-                    Nie wiem / kilka roślin
+                    Nie wiem / kilka roĹ›lin
                   </Text>
                 </Pressable>
                 {plantDiseaseAiPlantOptions.map((item) => {
@@ -36706,7 +37243,7 @@ export default function HomeScreen() {
                 Opisz problem
               </Text>
               <TextInput
-                placeholder="Np. zolknace liście, dziury, czarne koncowki, słaby wzrost..."
+                placeholder="Np. zolknace liĹ›cie, dziury, czarne koncowki, sĹ‚aby wzrost..."
                 placeholderTextColor={themePlaceholder}
                 value={plantDiseaseAiDescription}
                 onChangeText={(value) =>
@@ -36769,7 +37306,7 @@ export default function HomeScreen() {
                   fontSize: 13,
                   marginTop: 12,
                 }}>
-                Czy problem dotyczy wielu roślin?
+                Czy problem dotyczy wielu roĹ›lin?
               </Text>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
                 {PLANT_AI_MULTIPLE_OPTIONS.map((option) => {
@@ -36862,7 +37399,7 @@ export default function HomeScreen() {
                       backgroundColor: themeCardBg,
                     }}>
                     <Text style={{ color: themeTextSecondary, textAlign: 'center', fontSize: 12 }}>
-                      Usuń zdjecie
+                      UsuĹ„ zdjecie
                     </Text>
                   </Pressable>
                 </View>
@@ -36890,13 +37427,13 @@ export default function HomeScreen() {
                   </Text>
                 )}
                 <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
-                  Oświetlenie: {plantDiseaseAiTankProfile?.lightModelName ?? '-'} | czas świecenia {plantDiseaseAiTankProfile?.lightHours ?? '-'} h | lm/l {plantDiseaseAiTankProfile?.lumensPerLiter ?? '-'}
+                  OĹ›wietlenie: {plantDiseaseAiTankProfile?.lightModelName ?? '-'} | czas Ĺ›wiecenia {plantDiseaseAiTankProfile?.lightHours ?? '-'} h | lm/l {plantDiseaseAiTankProfile?.lumensPerLiter ?? '-'}
                 </Text>
                 <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
-                  Podłoże: {getSubstrateLabels(normalizeSubstrateTypes(plantDiseaseAiSelectedTank?.substrateTypes ?? plantDiseaseAiSelectedTank?.substrateType)) || '-'}
+                  PodĹ‚oĹĽe: {getSubstrateLabels(normalizeSubstrateTypes(plantDiseaseAiSelectedTank?.substrateTypes ?? plantDiseaseAiSelectedTank?.substrateType)) || '-'}
                 </Text>
                 <Text style={{ color: themeWarningText, fontSize: 12, marginTop: 6 }}>
-                  Do dokladniejszej oceny warto uzupelnic NO3, PO4, czas świecenia i informacje o nawożeniu.
+                  Do dokladniejszej oceny warto uzupelnic NO3, PO4, czas Ĺ›wiecenia i informacje o nawoĹĽeniu.
                 </Text>
               </View>
 
@@ -36925,7 +37462,7 @@ export default function HomeScreen() {
                     fontWeight: '700',
                     fontSize: 13,
                   }}>
-                  {plantDiseaseAiBusy ? 'AI analizuje...' : 'Sprawdź z AI'}
+                  {plantDiseaseAiBusy ? 'AI analizuje...' : 'SprawdĹş z AI'}
                 </Text>
               </Pressable>
 
@@ -36940,7 +37477,7 @@ export default function HomeScreen() {
                     backgroundColor: themeCardBg,
                   }}>
                   <Text style={{ color: themeTextPrimary, fontWeight: '700' }}>
-                    Możliwe przyczyny
+                    MoĹĽliwe przyczyny
                   </Text>
                   <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 6 }}>
                     {String(plantDiseaseAiResult?.summary ?? '').trim()}
@@ -37036,7 +37573,7 @@ export default function HomeScreen() {
                                             confidence: 0.32,
                                             confidenceLabel: 'low',
                                             reason:
-                                              "Brak jednoznacznego dopasowania do katalogu problemów roślin.",
+                                              "Brak jednoznacznego dopasowania do katalogu problemĂłw roĹ›lin.",
                                           },
                                         ],
                                 };
@@ -37061,7 +37598,7 @@ export default function HomeScreen() {
                   {normalizeArray(plantDiseaseAiResult?.verificationSteps).length > 0 ? (
                     <>
                       <Text style={{ color: themeTextPrimary, fontWeight: '700', marginTop: 10, fontSize: 12 }}>
-                        Co sprawdzić teraz
+                        Co sprawdziÄ‡ teraz
                       </Text>
                       {normalizeArray(plantDiseaseAiResult?.verificationSteps)
                         .slice(0, 6)
@@ -37116,7 +37653,7 @@ export default function HomeScreen() {
           <BottomSheetModal
             visible
             onClose={() => setIsAlgaeAiAnalyzerVisible(false)}
-            title="Analiza glonów"
+            title="Analiza glonĂłw"
             themeCardBg={themeCardBg}
             themeBorder={themeBorder}
             themeTextPrimary={themeTextPrimary}
@@ -37202,7 +37739,7 @@ export default function HomeScreen() {
                   fontSize: 13,
                   marginTop: 12,
                 }}>
-                Wyglad glonów
+                Wyglad glonĂłw
               </Text>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
                 {ALGAE_AI_APPEARANCE_OPTIONS.map((option) => {
@@ -37237,7 +37774,7 @@ export default function HomeScreen() {
                 Opisz problem
               </Text>
               <TextInput
-                placeholder="Np. zielony nalot na szybach, czarne pedzelki, nitki na liściach..."
+                placeholder="Np. zielony nalot na szybach, czarne pedzelki, nitki na liĹ›ciach..."
                 placeholderTextColor={themePlaceholder}
                 value={algaeAiDescription}
                 onChangeText={(value) => setAlgaeAiDescription(String(value ?? '').slice(0, 1000))}
@@ -37360,7 +37897,7 @@ export default function HomeScreen() {
                       backgroundColor: themeCardBg,
                     }}>
                     <Text style={{ color: themeTextSecondary, textAlign: 'center', fontSize: 12 }}>
-                      Usuń zdjecie
+                      UsuĹ„ zdjecie
                     </Text>
                   </Pressable>
                 </View>
@@ -37388,10 +37925,10 @@ export default function HomeScreen() {
                   </Text>
                 )}
                 <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
-                  Oświetlenie: {algaeAiTankProfile?.lightModelName ?? '-'} | czas świecenia {algaeAiTankProfile?.lightHours ?? '-'} h | lm/l {algaeAiTankProfile?.lumensPerLiter ?? '-'}
+                  OĹ›wietlenie: {algaeAiTankProfile?.lightModelName ?? '-'} | czas Ĺ›wiecenia {algaeAiTankProfile?.lightHours ?? '-'} h | lm/l {algaeAiTankProfile?.lumensPerLiter ?? '-'}
                 </Text>
                 <Text style={{ color: themeWarningText, fontSize: 12, marginTop: 6 }}>
-                  Do dokladniejszej oceny warto uzupelnic NO3, PO4, czas świecenia i informacje o nawożeniu.
+                  Do dokladniejszej oceny warto uzupelnic NO3, PO4, czas Ĺ›wiecenia i informacje o nawoĹĽeniu.
                 </Text>
               </View>
 
@@ -37420,7 +37957,7 @@ export default function HomeScreen() {
                     fontWeight: '700',
                     fontSize: 13,
                   }}>
-                  {algaeAiBusy ? 'AI analizuje...' : 'Sprawdź z AI'}
+                  {algaeAiBusy ? 'AI analizuje...' : 'SprawdĹş z AI'}
                 </Text>
               </Pressable>
 
@@ -37435,7 +37972,7 @@ export default function HomeScreen() {
                     backgroundColor: themeCardBg,
                   }}>
                   <Text style={{ color: themeTextPrimary, fontWeight: '700' }}>
-                    Możliwe typy glonów
+                    MoĹĽliwe typy glonĂłw
                   </Text>
                   <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 6 }}>
                     {String(algaeAiResult?.summary ?? '').trim()}
@@ -37527,7 +38064,7 @@ export default function HomeScreen() {
                                           label: 'Niepewny typ glonu',
                                           confidence: 0.32,
                                           confidenceLabel: 'low',
-                                          reason: "Brak jednoznacznego dopasowania do katalogu glonów.",
+                                          reason: "Brak jednoznacznego dopasowania do katalogu glonĂłw.",
                                         },
                                       ],
                               };
@@ -37552,7 +38089,7 @@ export default function HomeScreen() {
                   {normalizeArray(algaeAiResult?.verificationSteps).length > 0 ? (
                     <>
                       <Text style={{ color: themeTextPrimary, fontWeight: '700', marginTop: 10, fontSize: 12 }}>
-                        Co sprawdzić teraz
+                        Co sprawdziÄ‡ teraz
                       </Text>
                       {normalizeArray(algaeAiResult?.verificationSteps).slice(0, 6).map((step, index) => (
                         <Text
@@ -37999,7 +38536,7 @@ export default function HomeScreen() {
                   marginTop: 12,
                   lineHeight: 18,
                 }}>
-                Subskrypcja jest zarzadzana przez Google Play. Możesz anulowac w dowolnym momencie.
+                Subskrypcja jest zarzadzana przez Google Play. MoĹĽesz anulowac w dowolnym momencie.
               </Text>
 
               <View style={{ flexDirection: 'row', marginTop: 10 }}>
@@ -38007,7 +38544,7 @@ export default function HomeScreen() {
                   onPress={() => {
                     void handleOpenExternalUrl(
                       TERMS_URL,
-                      'Nie udało się otworzyć Regulaminu.'
+                      'Nie udaĹ‚o siÄ™ otworzyÄ‡ Regulaminu.'
                     );
                   }}
                   style={{ marginRight: 14 }}>
@@ -38019,7 +38556,7 @@ export default function HomeScreen() {
                   onPress={() => {
                     void handleOpenExternalUrl(
                       PRIVACY_POLICY_URL,
-                      'Nie udało się otworzyć Polityki prywatnosci.'
+                      'Nie udaĹ‚o siÄ™ otworzyÄ‡ Polityki prywatnosci.'
                     );
                   }}>
                   <Text style={{ color: themeActionText, fontWeight: '700', fontSize: 12 }}>
@@ -38185,7 +38722,7 @@ export default function HomeScreen() {
                   flex: 1,
                   paddingRight: 10,
                 }}>
-                {diseaseImageModalTitle || 'Zdjęcie choroby'}
+                {diseaseImageModalTitle || 'ZdjÄ™cie choroby'}
               </Text>
               <Pressable
                 onPress={handleCloseDiseaseImageModal}
@@ -38219,11 +38756,11 @@ export default function HomeScreen() {
                   source={
                     diseaseImageModalLoadStage >= 2
                       ? DISEASE_IMAGE_PLACEHOLDER_SOURCE
-                      : getDiseaseRemoteImageSource(
-                          diseaseImageModalLoadStage >= 1 &&
-                            diseaseImageModalFallbackUri
-                            ? diseaseImageModalFallbackUri
-                            : diseaseImageModalUri
+                      : getWikimediaCachedImageSource(
+                          diseaseImageModalCurrentUri,
+                          diseaseImageModalCacheKey,
+                          WIKIMEDIA_MODAL_IMAGE_WIDTH,
+                          getDiseaseRemoteImageSource
                         )
                   }
                   style={{
@@ -38237,10 +38774,21 @@ export default function HomeScreen() {
                   onError={
                     diseaseImageModalLoadStage >= 2
                       ? undefined
-                      : ({ nativeEvent }) =>
+                      : ({ nativeEvent }) => {
+                          if (
+                            requestWikimediaDataUriForKey(
+                              diseaseImageModalCacheKey,
+                              diseaseImageModalCurrentUri,
+                              WIKIMEDIA_MODAL_IMAGE_WIDTH,
+                              'modal-image-debug'
+                            )
+                          ) {
+                            return;
+                          }
                           handleDiseaseModalImageError(
                             String(nativeEvent?.error ?? '').trim()
-                          )
+                          );
+                        }
                   }
                 />
               ) : null}
@@ -38312,3 +38860,4 @@ export default function HomeScreen() {
     </SafeAreaView>
   );
 }
+

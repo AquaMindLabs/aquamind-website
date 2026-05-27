@@ -1,3 +1,4 @@
+/* eslint-disable import/no-unresolved */
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.12.1/firebase-app.js';
 import {
   getAuth,
@@ -6,7 +7,6 @@ import {
   signOut,
 } from 'https://www.gstatic.com/firebasejs/12.12.1/firebase-auth.js';
 import {
-  addDoc,
   collection,
   deleteDoc,
   doc,
@@ -119,6 +119,8 @@ const ui = {
   requestsResultMeta: byId('requestsResultMeta'),
 
   addFishBtn: byId('addFishBtn'),
+  syncFishSeedBtn: byId('syncFishSeedBtn'),
+  recoverFishBtn: byId('recoverFishBtn'),
   addPlantBtn: byId('addPlantBtn'),
   addEquipmentBtn: byId('addEquipmentBtn'),
   addAlgaeBtn: byId('addAlgaeBtn'),
@@ -293,6 +295,8 @@ function bindUiEvents() {
   ui.refreshRequestsBtn.addEventListener('click', loadRequests);
 
   ui.addFishBtn.addEventListener('click', () => openEditor('fish'));
+  ui.syncFishSeedBtn?.addEventListener('click', syncMissingFishFromSeed);
+  ui.recoverFishBtn?.addEventListener('click', recoverFishCatalogFromData);
   ui.addPlantBtn.addEventListener('click', () => openEditor('plant'));
   ui.addEquipmentBtn.addEventListener('click', () => openEditor('equipment'));
   ui.addAlgaeBtn.addEventListener('click', () => openEditor('algae'));
@@ -554,6 +558,279 @@ async function safeLoadCollection(collectionName, sorter) {
   } catch (error) {
     setStatus(formatError(`Blad pobierania ${collectionName}`, error), 'error');
     return [];
+  }
+}
+
+function buildCatalogId(prefix, latinName) {
+  const slug = normalizeText(latinName)
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return `${prefix}_${slug || 'unknown'}`;
+}
+
+async function loadSeedFishCatalogEntries() {
+  const starterUrl = new URL('../data/fishCatalogStarter.js', import.meta.url).href;
+  const expandedUrl = new URL('../data/fishCatalogExpanded.js', import.meta.url).href;
+  const [starterModule, expandedModule] = await Promise.all([
+    import(starterUrl),
+    import(expandedUrl),
+  ]);
+
+  const starter = Array.isArray(starterModule?.FISH_CATALOG_STARTER)
+    ? starterModule.FISH_CATALOG_STARTER
+    : [];
+  const expanded = Array.isArray(expandedModule?.FISH_CATALOG_EXPANDED)
+    ? expandedModule.FISH_CATALOG_EXPANDED
+    : [];
+  const byLatin = new Map();
+
+  [...starter, ...expanded].forEach((item) => {
+    const latinName = String(item?.latinName ?? '').trim();
+    const key = normalizeText(latinName);
+    if (!key || byLatin.has(key)) {
+      return;
+    }
+    byLatin.set(key, item);
+  });
+
+  return [...byLatin.values()];
+}
+
+async function syncMissingFishFromSeed() {
+  if (!state.db || !state.isAdmin) {
+    setStatus('Brak uprawnien admina.', 'error');
+    return;
+  }
+
+  const confirmed = confirm(
+    'Uzupelnic brakujace ryby z lokalnego seedu? Operacja niczego nie usuwa.'
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  if (ui.syncFishSeedBtn) {
+    ui.syncFishSeedBtn.disabled = true;
+  }
+  setStatus('Uzupelniam brakujace ryby z seedu...', 'info');
+
+  try {
+    const seedEntries = await loadSeedFishCatalogEntries();
+    const existingLatin = new Set(
+      state.fish
+        .map((item) => normalizeText(item?.latinName))
+        .filter(Boolean)
+    );
+    const missingEntries = seedEntries.filter(
+      (item) => !existingLatin.has(normalizeText(item?.latinName))
+    );
+
+    if (missingEntries.length === 0) {
+      setStatus('Brakujace ryby nie zostaly wykryte.', 'ok');
+      return;
+    }
+
+    await Promise.all(
+      missingEntries.map((item) => {
+        const commonName = String(item?.commonName ?? '').trim();
+        const latinName = String(item?.latinName ?? '').trim();
+        const docId = String(item?.id ?? '').trim() || buildCatalogId('fish', latinName);
+
+        const payload = {
+          commonName,
+          commonNameNormalized: normalizeText(commonName),
+          latinName,
+          latinNameNormalized: normalizeText(latinName),
+          phMin: Number(item?.phMin),
+          phMax: Number(item?.phMax),
+          ghMin: Number(item?.ghMin),
+          ghMax: Number(item?.ghMax),
+          tempMin: Number(item?.tempMin),
+          tempMax: Number(item?.tempMax),
+          minLiters: Number(item?.minLiters),
+          source: 'starter',
+          imagePreviewUrl: String(item?.imagePreviewUrl ?? '').trim(),
+          imageUrl: String(item?.imageUrl ?? '').trim(),
+          imageLink: String(item?.imageLink ?? '').trim(),
+          notes: String(item?.notes ?? '').trim(),
+          isSchooling: Boolean(item?.isSchooling),
+          minGroupSize: Number(item?.minGroupSize ?? 0),
+          aggressionLevel: normalizeAggressionLevel(item?.aggressionLevel),
+          wasteProductionLevel:
+            item?.wasteProductionLevel === null || item?.wasteProductionLevel === undefined
+              ? null
+              : Number(item?.wasteProductionLevel),
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        };
+
+        return setDoc(doc(state.db, COLLECTIONS.fish, docId), payload, {
+          merge: true,
+        });
+      })
+    );
+
+    await loadCatalogs();
+    renderFishTable();
+    setStatus(
+      `Uzupelniono brakujace ryby: ${missingEntries.length}.`,
+      'ok'
+    );
+  } catch (error) {
+    setStatus(formatError('Nie udalo sie uzupelnic katalogu ryb', error), 'error');
+  } finally {
+    if (ui.syncFishSeedBtn) {
+      ui.syncFishSeedBtn.disabled = false;
+    }
+  }
+}
+
+function buildRecoveredFishPayload(input = {}) {
+  const commonName = String(input?.commonName ?? input?.name ?? '').trim();
+  const latinName = String(input?.latinName ?? '').trim();
+  const phMin = Number.isFinite(Number(input?.phMin)) ? Number(input.phMin) : 6.0;
+  const phMax = Number.isFinite(Number(input?.phMax)) ? Number(input.phMax) : 8.0;
+  const ghMin = Number.isFinite(Number(input?.ghMin)) ? Number(input.ghMin) : 3;
+  const ghMax = Number.isFinite(Number(input?.ghMax)) ? Number(input.ghMax) : 18;
+  const tempMin = Number.isFinite(Number(input?.tempMin)) ? Number(input.tempMin) : 23;
+  const tempMax = Number.isFinite(Number(input?.tempMax)) ? Number(input.tempMax) : 28;
+  const minLiters = Number.isFinite(Number(input?.minLiters))
+    ? Math.max(1, Number(input.minLiters))
+    : 60;
+  const minGroupSize = Number.isFinite(Number(input?.minGroupSize))
+    ? Math.max(0, Number(input.minGroupSize))
+    : 0;
+  const wasteProductionLevel = Number.isFinite(Number(input?.wasteProductionLevel))
+    ? Number(input.wasteProductionLevel)
+    : null;
+
+  return {
+    commonName,
+    commonNameNormalized: normalizeText(commonName),
+    latinName,
+    latinNameNormalized: normalizeText(latinName),
+    phMin,
+    phMax,
+    ghMin,
+    ghMax,
+    tempMin,
+    tempMax,
+    minLiters,
+    source: 'recovered',
+    imagePreviewUrl: String(input?.imagePreviewUrl ?? '').trim(),
+    imageUrl: String(input?.imageUrl ?? '').trim(),
+    imageLink: String(input?.imageLink ?? '').trim(),
+    notes:
+      String(input?.notes ?? '').trim() ||
+      'Wpis odzyskany automatycznie z danych aplikacji.',
+    isSchooling: Boolean(input?.isSchooling),
+    minGroupSize,
+    aggressionLevel: normalizeAggressionLevel(input?.aggressionLevel),
+    wasteProductionLevel:
+      wasteProductionLevel !== null && wasteProductionLevel >= 0
+        ? Math.min(10, wasteProductionLevel)
+        : null,
+    updatedAt: serverTimestamp(),
+  };
+}
+
+async function recoverFishCatalogFromData() {
+  if (!state.db || !state.isAdmin) {
+    setStatus('Brak uprawnien admina.', 'error');
+    return;
+  }
+
+  const confirmed = confirm(
+    'Odzyskac brakujace ryby z obsady (stockItems) i sugestii (fishCatalogRequests)? Operacja niczego nie usuwa.'
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  if (ui.recoverFishBtn) {
+    ui.recoverFishBtn.disabled = true;
+  }
+  setStatus('Odzyskuje brakujace ryby z danych aplikacji...', 'info');
+
+  try {
+    const [stockSnapshot, requestsSnapshot] = await Promise.all([
+      getDocs(collection(state.db, 'stockItems')),
+      getDocs(collection(state.db, COLLECTIONS.fishRequests)),
+    ]);
+
+    const existingLatin = new Set(
+      state.fish.map((item) => normalizeText(item?.latinName)).filter(Boolean)
+    );
+    const recoveredByLatin = new Map();
+
+    stockSnapshot.docs.forEach((entry) => {
+      const data = entry.data() || {};
+      if (String(data?.type ?? '').trim().toLowerCase() !== 'fish') {
+        return;
+      }
+      const latinName = String(data?.latinName ?? '').trim();
+      const latinKey = normalizeText(latinName);
+      const commonName = String(data?.commonName ?? data?.name ?? '').trim();
+      if (!latinKey || !commonName || existingLatin.has(latinKey) || recoveredByLatin.has(latinKey)) {
+        return;
+      }
+      recoveredByLatin.set(latinKey, {
+        commonName,
+        latinName,
+        phMin: data?.phMin,
+        phMax: data?.phMax,
+        ghMin: data?.ghMin,
+        ghMax: data?.ghMax,
+        tempMin: data?.tempMin,
+        tempMax: data?.tempMax,
+        minLiters: data?.minLiters,
+        notes: data?.notes,
+        imagePreviewUrl: data?.imagePreviewUrl,
+        imageUrl: data?.imageUrl,
+        imageLink: data?.imageLink,
+        isSchooling: data?.isSchooling,
+        minGroupSize: data?.minGroupSize,
+        aggressionLevel: data?.aggressionLevel,
+        wasteProductionLevel: data?.wasteProductionLevel,
+      });
+    });
+
+    requestsSnapshot.docs.forEach((entry) => {
+      const data = entry.data() || {};
+      const latinName = String(data?.latinName ?? '').trim();
+      const commonName = String(data?.commonName ?? '').trim();
+      const latinKey = normalizeText(latinName);
+      if (!latinKey || !commonName || existingLatin.has(latinKey) || recoveredByLatin.has(latinKey)) {
+        return;
+      }
+      recoveredByLatin.set(latinKey, { commonName, latinName });
+    });
+
+    const recoveredEntries = [...recoveredByLatin.values()];
+    if (recoveredEntries.length === 0) {
+      setStatus('Nie znaleziono dodatkowych ryb do odzyskania.', 'ok');
+      return;
+    }
+
+    await Promise.all(
+      recoveredEntries.map((item) => {
+        const docId = buildCatalogId('fish', item.latinName);
+        const payload = buildRecoveredFishPayload(item);
+        return setDoc(doc(state.db, COLLECTIONS.fish, docId), payload, {
+          merge: true,
+        });
+      })
+    );
+
+    await loadCatalogs();
+    renderFishTable();
+    setStatus(`Odzyskano wpisy ryb: ${recoveredEntries.length}.`, 'ok');
+  } catch (error) {
+    setStatus(formatError('Nie udalo sie odzyskac ryb', error), 'error');
+  } finally {
+    if (ui.recoverFishBtn) {
+      ui.recoverFishBtn.disabled = false;
+    }
   }
 }
 
@@ -1213,14 +1490,18 @@ async function handleEditorSave(event) {
   try {
     if (section === 'fish' || section === 'plant') {
       const payload = buildStockPayload(section);
+      const itemRef =
+        state.editor.mode === 'create'
+          ? doc(collection(state.db, COLLECTIONS[section]))
+          : doc(state.db, COLLECTIONS[section], state.editor.id);
 
       if (state.editor.mode === 'create') {
-        await addDoc(collection(state.db, COLLECTIONS[section]), {
+        await setDoc(itemRef, {
           ...payload,
           createdAt: serverTimestamp(),
         });
       } else {
-        await updateDoc(doc(state.db, COLLECTIONS[section], state.editor.id), {
+        await updateDoc(itemRef, {
           ...payload,
           updatedAt: serverTimestamp(),
         });
@@ -1325,6 +1606,18 @@ async function deleteCatalogItem(section, item) {
   const ok = confirm(`Usunac wpis \"${item.commonName || item.name || item.id}\" z kolekcji ${collectionName}?`);
   if (!ok) {
     return;
+  }
+
+  if (section === 'fish' || section === 'plant') {
+    const typed = String(
+      prompt('Wpisz USUN, aby potwierdzic kasowanie wpisu katalogu:') ?? ''
+    )
+      .trim()
+      .toUpperCase();
+    if (typed !== 'USUN') {
+      setStatus('Kasowanie anulowane - brak poprawnego potwierdzenia.', 'info');
+      return;
+    }
   }
 
   try {
@@ -1703,7 +1996,7 @@ function byId(id) {
 
 function resolveBestImageUrl(item) {
   return String(
-    item?.imageUrl ?? item?.imagePreviewUrl ?? item?.imageLink ?? ''
+    item?.imageUrl || item?.imagePreviewUrl || item?.imageLink || ''
   ).trim();
 }
 
