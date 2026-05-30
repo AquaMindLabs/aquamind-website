@@ -550,14 +550,25 @@ function buildPlantCommonsFallbackImageUrl(latinName, width = 420) {
   }
 
   const latinSpecies = `${words[0]} ${words[1]}`;
-  const encodedTitle = encodeURIComponent(latinSpecies.replace(/\s+/g, '_'));
+  return buildCommonsFileThumbnailUrl(`${latinSpecies}.jpg`, width);
+}
+
+function buildWikimediaRedirectImageUrl(fileName, width = 420) {
+  const normalizedFileName = String(fileName ?? '')
+    .trim()
+    .replace(/\s+/g, '_');
+  if (!normalizedFileName) {
+    return '';
+  }
+
+  const encodedFileName = encodeURIComponent(normalizedFileName);
   const normalizedWidth = Number(width);
   const widthQuery =
     Number.isFinite(normalizedWidth) && normalizedWidth > 0
       ? `?width=${Math.round(normalizedWidth)}`
       : '';
 
-  return `https://commons.wikimedia.org/wiki/Special:FilePath/${encodedTitle}.jpg${widthQuery}`;
+  return `https://commons.wikimedia.org/wiki/Special:Redirect/file/${encodedFileName}${widthQuery}`;
 }
 
 function buildCommonsFileThumbnailUrl(fileName, width = 420) {
@@ -566,14 +577,7 @@ function buildCommonsFileThumbnailUrl(fileName, width = 420) {
     return '';
   }
 
-  const encodedFileName = encodeURIComponent(normalizedFileName.replace(/\s+/g, '_'));
-  const normalizedWidth = Number(width);
-  const widthQuery =
-    Number.isFinite(normalizedWidth) && normalizedWidth > 0
-      ? `?width=${Math.round(normalizedWidth)}`
-      : '';
-
-  return `https://commons.wikimedia.org/wiki/Special:FilePath/${encodedFileName}${widthQuery}`;
+  return buildWikimediaRedirectImageUrl(normalizedFileName, width);
 }
 
 function decodeURIComponentSafe(value) {
@@ -635,15 +639,21 @@ function buildWikimediaUploadThumbnailUrl(url, width) {
     const thumbMatch = parsed.pathname.match(
       /^(\/wikipedia\/commons\/thumb\/[^/]+\/[^/]+\/([^/]+)\/)[^/]+$/i
     );
-    if (thumbMatch?.[1] && thumbMatch?.[2]) {
-      return `${parsed.origin}${thumbMatch[1]}${normalizedWidth}px-${thumbMatch[2]}`;
+    if (thumbMatch?.[2]) {
+      return buildWikimediaRedirectImageUrl(
+        decodeURIComponentSafe(thumbMatch[2]),
+        normalizedWidth
+      );
     }
 
     const originalMatch = parsed.pathname.match(
       /^\/wikipedia\/commons\/([^/]+)\/([^/]+)\/([^/]+)$/i
     );
     if (originalMatch?.[1] && originalMatch?.[2] && originalMatch?.[3]) {
-      return `${parsed.origin}/wikipedia/commons/thumb/${originalMatch[1]}/${originalMatch[2]}/${originalMatch[3]}/${normalizedWidth}px-${originalMatch[3]}`;
+      return buildWikimediaRedirectImageUrl(
+        decodeURIComponentSafe(originalMatch[3]),
+        normalizedWidth
+      );
     }
   } catch {
     return '';
@@ -676,10 +686,10 @@ function normalizeCatalogImageUrl(url, width = null) {
   }
 
   if (Number.isFinite(Number(width)) && Number(width) > 0) {
-    return buildCommonsFileThumbnailUrl(fileName, Number(width));
+    return buildWikimediaRedirectImageUrl(fileName, Number(width));
   }
 
-  return buildCommonsFileThumbnailUrl(fileName);
+  return buildWikimediaRedirectImageUrl(fileName);
 }
 
 function normalizeFishSearchPhrase(value) {
@@ -10395,7 +10405,7 @@ function buildDiagnosisTimelinePlan(kind, candidate, context) {
     h24.push('Oddziel osobniki najslabsze do obserwacji (jesli to bezpieczne).');
     d7.push('Prowadz codzieńna obserwacje zachowania i apetytu; zapisuj zmiany.');
     d7.push("Wykonaj 2-3 kontrolę parametrów i utrzymuj regularne podmiany.");
-    d30.push('Po ustabilizowaniu zbiornika zweryfikuj obsade i ogranicz dlugoterminowy stres.');
+    d30.push('Po ustabilizowaniu zbiornika zweryfikuj obsadę i ogranicz długoterminowy stres.');
   } else if (kind === 'plant_disease') {
     h24.push("Sprawdź światło (czas/moc), CO2 i podstawowe makro/mikro; nie zmieniaj wszystkiego naraz.");
     h24.push("Usuń najmocniej uszkodzone liście.");
@@ -11138,6 +11148,7 @@ export default function HomeScreen() {
   const [fishImageDirectFallbackByKey, setFishImageDirectFallbackByKey] = useState({});
   const [fishImageDataUriByKey, setFishImageDataUriByKey] = useState({});
   const [fishImageDataUriFailedByKey, setFishImageDataUriFailedByKey] = useState({});
+  const [fishResolvedImageUriByKey, setFishResolvedImageUriByKey] = useState({});
   const [wikimediaImageDataUriByKey, setWikimediaImageDataUriByKey] = useState({});
   const [wikimediaImageDataUriFailedByKey, setWikimediaImageDataUriFailedByKey] =
     useState({});
@@ -11351,6 +11362,8 @@ export default function HomeScreen() {
   const firstRunStatusTrackedTankIdRef = useRef('');
   const firstRunRecommendationTrackedTankIdRef = useRef('');
   const deleteAccountConfirmedRef = useRef(null);
+  const fishImageLookupInFlightRef = useRef(new Set());
+  const fishImageLookupAttemptedRef = useRef(new Set());
   const plantImageLookupInFlightRef = useRef(new Set());
   const plantImageLookupAttemptedRef = useRef(new Set());
 
@@ -13147,7 +13160,7 @@ export default function HomeScreen() {
       setAuthBusy(false);
     }
     alert(
-      "Logowanie Google wróilo do aplikacji, ale Google nie przekazal tokenu. Spróbuj ponownie za chwile."
+      "Logowanie Google wróciło do aplikacji, ale Google nie przekazał tokenu. Spróbuj ponownie za chwilę."
     );
   }, [
     completeGoogleAuthWithTokens,
@@ -13226,7 +13239,7 @@ export default function HomeScreen() {
           setAuthBusy(false);
         }
         alert(
-          "Logowanie Google nie zwróilo tokenu. Sprawdź konfiguracje OAuth i spróbuj ponownie."
+          "Logowanie Google nie zwróciło tokenu. Sprawdź konfigurację OAuth i spróbuj ponownie."
         );
         return;
       }
@@ -16511,7 +16524,7 @@ export default function HomeScreen() {
       return;
     }
     if (stockBusy) {
-      alert("Trwa zapisywanie poprzedniej zmiany. Spróbuj ponownie za chwile.");
+      alert("Trwa zapisywanie poprzedniej zmiany. Spróbuj ponownie za chwilę.");
       return;
     }
 
@@ -17647,7 +17660,7 @@ export default function HomeScreen() {
       return;
     }
     if (stockBusy) {
-      alert("Trwa zapisywanie poprzedniej zmiany. Spróbuj ponownie za chwile.");
+      alert("Trwa zapisywanie poprzedniej zmiany. Spróbuj ponownie za chwilę.");
       return;
     }
 
@@ -17920,7 +17933,7 @@ export default function HomeScreen() {
       return;
     }
     if (stockBusy) {
-      alert("Trwa zapisywanie poprzedniej zmiany. Spróbuj ponownie za chwile.");
+      alert("Trwa zapisywanie poprzedniej zmiany. Spróbuj ponownie za chwilę.");
       return;
     }
 
@@ -20160,7 +20173,7 @@ export default function HomeScreen() {
 
   const handleRestoreSubscriptionPurchases = async () => {
     if (!billingEnabled) {
-      alert('Przywracanie zakupow nie jest skonfigurowane dla tej platformy.');
+      alert('Przywracanie zakupów nie jest skonfigurowane dla tej platformy.');
       return;
     }
 
@@ -21492,6 +21505,86 @@ export default function HomeScreen() {
 
     return '';
   }, []);
+  const requestFishImageLookup = useCallback(
+    (fish) => {
+      if (!ENABLE_FISH_IMAGES) {
+        return;
+      }
+
+      const cacheKey = getFishImageCacheKey(fish);
+      if (!cacheKey) {
+        return;
+      }
+
+      if (IS_IOS_EXPO_GO) {
+        return;
+      }
+
+      if (
+        fishImageLookupAttemptedRef.current.has(cacheKey) ||
+        fishImageLookupInFlightRef.current.has(cacheKey)
+      ) {
+        return;
+      }
+
+      if (fishImageLookupInFlightRef.current.size >= 2) {
+        return;
+      }
+
+      fishImageLookupAttemptedRef.current.add(cacheKey);
+      fishImageLookupInFlightRef.current.add(cacheKey);
+
+      const catalogEntry =
+        (fish?.catalogFishId && fishCatalogById.get(fish.catalogFishId)) ||
+        fishCatalogByLatinName.get(normalizeLatinCatalogKey(fish?.latinName));
+      const latinName = String(fish?.latinName ?? catalogEntry?.latinName ?? '').trim();
+      const commonName = String(
+        fish?.commonName ?? fish?.name ?? catalogEntry?.commonName ?? ''
+      ).trim();
+      const searchPhrases = [
+        ...buildFishSearchPhrases(latinName),
+        ...buildFishSearchPhrases(commonName),
+      ].filter(Boolean);
+      const wikiPageTitleCandidates = searchPhrases
+        .map((item) => item.replace(/\s+/g, '_'))
+        .filter(Boolean);
+
+      (async () => {
+        let bestImageUri = await fetchFishImageFromWikiPageTitles(
+          wikiPageTitleCandidates
+        );
+
+        if (!bestImageUri) {
+          bestImageUri = await fetchFishImageFromWikiPageTitles(searchPhrases);
+        }
+
+        for (const phrase of searchPhrases) {
+          if (bestImageUri) {
+            break;
+          }
+          bestImageUri = await fetchFishImageFromSearchPhrase(phrase);
+        }
+
+        if (bestImageUri) {
+          setFishResolvedImageUriByKey((prev) => ({
+            ...prev,
+            [cacheKey]: bestImageUri,
+          }));
+        }
+      })()
+        .catch(() => null)
+        .finally(() => {
+          fishImageLookupInFlightRef.current.delete(cacheKey);
+        });
+    },
+    [
+      fetchFishImageFromSearchPhrase,
+      fetchFishImageFromWikiPageTitles,
+      fishCatalogById,
+      fishCatalogByLatinName,
+      getFishImageCacheKey,
+    ]
+  );
   const getFishPreviewImageUri = useCallback(
     (fish, options = {}) => {
       if (!fish) {
@@ -21505,6 +21598,14 @@ export default function HomeScreen() {
       const allowRemote = options.allowRemote ?? !IS_IOS_EXPO_GO;
       if (!allowRemote) {
         return '';
+      }
+
+      const cacheKey = getFishImageCacheKey(fish);
+      const resolvedPreview = cacheKey
+        ? String(fishResolvedImageUriByKey[cacheKey] ?? '').trim()
+        : '';
+      if (resolvedPreview) {
+        return normalizeCatalogImageUrl(resolvedPreview, 420);
       }
 
       const directPreview = normalizeCatalogImageUrl(
@@ -21531,6 +21632,8 @@ export default function HomeScreen() {
     [
       fishCatalogById,
       fishCatalogByLatinName,
+      fishResolvedImageUriByKey,
+      getFishImageCacheKey,
     ]
   );
   const getFishPreviewImageSource = useCallback(
@@ -21674,6 +21777,7 @@ export default function HomeScreen() {
                 ...prev,
                 [cacheKey]: true,
               }));
+              requestFishImageLookup(fish);
               if (ENABLE_IMAGE_DEBUG_LOGS) {
                 console.warn('[fish-image-debug] js fetch failed', {
                   id: String(fish?.id ?? ''),
@@ -21688,6 +21792,7 @@ export default function HomeScreen() {
         }
 
         if (!fishImageDirectFallbackByKey[cacheKey]) {
+          requestFishImageLookup(fish);
           setFishImageDirectFallbackByKey((prev) => ({
             ...prev,
             [cacheKey]: true,
@@ -21695,11 +21800,13 @@ export default function HomeScreen() {
           return;
         }
 
+        requestFishImageLookup(fish);
         logFishPreviewImageError(fish, event);
         return;
       }
 
       if (configuredUri) {
+        requestFishImageLookup(fish);
         logFishPreviewImageError(fish, event);
       }
     },
@@ -21710,6 +21817,7 @@ export default function HomeScreen() {
       getFishImageCacheKey,
       getFishPreviewImageUri,
       logFishPreviewImageError,
+      requestFishImageLookup,
     ]
   );
   const handleOpenFishImageModal = useCallback(
@@ -21996,6 +22104,14 @@ export default function HomeScreen() {
   void handlePlantPreviewImageError;
   void handleOpenPlantImageModal;
   useEffect(() => {
+    if (!isEditingFish) {
+      return;
+    }
+
+    fishImageLookupAttemptedRef.current = new Set();
+    fishImageLookupInFlightRef.current = new Set();
+  }, [isEditingFish]);
+  useEffect(() => {
     if (isEditingFish) {
       return undefined;
     }
@@ -22004,6 +22120,7 @@ export default function HomeScreen() {
       setStockFishSearch('');
       setSelectedCatalogFishId(null);
       setFishQuantity('1');
+      setFishResolvedImageUriByKey({});
     }, 0);
 
     return () => {
@@ -22060,6 +22177,7 @@ export default function HomeScreen() {
               ...prev,
               [cacheKey]: true,
             }));
+            requestFishImageLookup(fish);
             if (ENABLE_IMAGE_DEBUG_LOGS) {
               console.warn('[fish-image-debug] js fetch failed', {
                 id: String(fish?.id ?? ''),
@@ -22094,6 +22212,7 @@ export default function HomeScreen() {
     getFishImageCacheKey,
     getFishPreviewImageUri,
     isEditingFish,
+    requestFishImageLookup,
     visibleFilteredFishCatalog,
   ]);
   useEffect(() => {
@@ -26812,7 +26931,7 @@ export default function HomeScreen() {
                       : 'upgrade_required';
                     let summaryDetails = hasEquipmentAssessmentAccess
                       ? ''
-                      : 'Ocena sprzetu dostepna od planu Plus.';
+                      : 'Ocena sprzętu dostępna od planu Plus.';
                     if (hasEquipmentAssessmentAccess) {
                       if (entry.key === 'heater') {
                         const requiredPowerW = toFiniteNumber(entry.data?.analysis?.requiredHeaterPowerW);
@@ -26870,7 +26989,7 @@ export default function HomeScreen() {
                         (assessmentStatus === 'ok'
                           ? 'Wszystko wyglada dobrze, nic nie trzeba zmieniac.'
                           : "Sprawdź dobor sprzetu i ustawienia dla tej sekcji.")
-                      : "W planie Free możesz dodawac sprzet. Ocena sekcji jest dostepna od planu Plus.";
+                      : "W planie Free możesz dodawać sprzęt. Ocena sekcji jest dostępna od planu Plus.";
                     const adviceColor = hasEquipmentAssessmentAccess
                       ? assessmentStatus === 'ok'
                         ? themeSuccessText
@@ -27191,7 +27310,7 @@ export default function HomeScreen() {
                           }}>
                           Szczegóły:{' '}
                           {!hasEquipmentAssessmentAccess
-                            ? "Ocena oświetlenia dostepna od planu Plus."
+                            ? "Ocena oświetlenia dostępna od planu Plus."
                             : (() => {
                                 const preferredMinLmL = toFiniteNumber(
                                   selectedTankPlantLightingRange?.min
@@ -27234,7 +27353,7 @@ export default function HomeScreen() {
                           }}>
                           Porada:{' '}
                           {!hasEquipmentAssessmentAccess
-                            ? "W planie Free możesz dodawac oświetlenie. Ocena sekcji jest dostepna od planu Plus."
+                            ? "W planie Free możesz dodawać oświetlenie. Ocena sekcji jest dostępna od planu Plus."
                             : selectedTankLighting.isDaylightOnly
                               ? "Dodaj lampe z katalogu, aby poprawic kontrole oświetlenia."
                               : !Number.isFinite(Number(selectedTank?.lightHours))
@@ -29807,7 +29926,7 @@ export default function HomeScreen() {
                   Nie wiesz, co dolega rybie?
                 </Text>
                 <Text style={{ color: themeAccentOnStrong, fontSize: 12, marginTop: 4 }}>
-                  Opisz objawy, dodaj zdjecie i sprawdź możliwe przyczyny z AI.
+                  Opisz objawy, dodaj zdjęcie i sprawdź możliwe przyczyny z AI.
                 </Text>
                 <Pressable
                   onPress={handleOpenDiseaseAiAnalyzer}
@@ -30707,7 +30826,7 @@ export default function HomeScreen() {
                   Nie wiesz, co dzieje się z roślina?
                 </Text>
                 <Text style={{ color: themeAccentOnStrong, fontSize: 12, marginTop: 4 }}>
-                  Opisz objawy, dodaj zdjecie i sprawdź możliwe przyczyny z AI.
+                  Opisz objawy, dodaj zdjęcie i sprawdź możliwe przyczyny z AI.
                 </Text>
                 <Pressable
                   onPress={handleOpenPlantDiseaseAiAnalyzer}
@@ -31508,7 +31627,7 @@ export default function HomeScreen() {
                   Nie wiesz, jaki to glon?
                 </Text>
                 <Text style={{ color: themeAccentOnStrong, fontSize: 12, marginTop: 4 }}>
-                  Dodaj zdjecie, opisz problem i sprawdź możliwe przyczyny z AI.
+                  Dodaj zdjęcie, opisz problem i sprawdź możliwe przyczyny z AI.
                 </Text>
                 <Pressable
                   onPress={handleOpenAlgaeAiAnalyzer}
@@ -36851,7 +36970,7 @@ export default function HomeScreen() {
                     opacity: diseaseAiBusy ? 0.7 : 1,
                   }}>
                   <Text style={{ color: themeTextPrimary, textAlign: 'center', fontWeight: '700', fontSize: 12 }}>
-                    Zrob zdjecie
+                    Zrób zdjęcie
                   </Text>
                 </Pressable>
               </View>
@@ -36880,7 +36999,7 @@ export default function HomeScreen() {
                       backgroundColor: themeCardBg,
                     }}>
                     <Text style={{ color: themeTextSecondary, textAlign: 'center', fontSize: 12 }}>
-                      Usuń zdjecie
+                      Usuń zdjęcie
                     </Text>
                   </Pressable>
                 </View>
@@ -37370,7 +37489,7 @@ export default function HomeScreen() {
                     opacity: plantDiseaseAiBusy ? 0.7 : 1,
                   }}>
                   <Text style={{ color: themeTextPrimary, textAlign: 'center', fontWeight: '700', fontSize: 12 }}>
-                    Zrob zdjecie
+                    Zrób zdjęcie
                   </Text>
                 </Pressable>
               </View>
@@ -37399,7 +37518,7 @@ export default function HomeScreen() {
                       backgroundColor: themeCardBg,
                     }}>
                     <Text style={{ color: themeTextSecondary, textAlign: 'center', fontSize: 12 }}>
-                      Usuń zdjecie
+                      Usuń zdjęcie
                     </Text>
                   </Pressable>
                 </View>
@@ -37868,7 +37987,7 @@ export default function HomeScreen() {
                     opacity: algaeAiBusy ? 0.7 : 1,
                   }}>
                   <Text style={{ color: themeTextPrimary, textAlign: 'center', fontWeight: '700', fontSize: 12 }}>
-                    Zrob zdjecie
+                    Zrób zdjęcie
                   </Text>
                 </Pressable>
               </View>
@@ -37897,7 +38016,7 @@ export default function HomeScreen() {
                       backgroundColor: themeCardBg,
                     }}>
                     <Text style={{ color: themeTextSecondary, textAlign: 'center', fontSize: 12 }}>
-                      Usuń zdjecie
+                      Usuń zdjęcie
                     </Text>
                   </Pressable>
                 </View>
@@ -38524,7 +38643,7 @@ export default function HomeScreen() {
                       textAlign: 'center',
                       fontSize: 13,
                     }}>
-                    {billingRestoreBusy ? 'Przywracanie zakupow...' : 'Przywroc zakupy'}
+                    {billingRestoreBusy ? 'Przywracanie zakupów...' : 'Przywróć zakupy'}
                   </Text>
                 </Pressable>
               ) : null}
@@ -38860,4 +38979,3 @@ export default function HomeScreen() {
     </SafeAreaView>
   );
 }
-

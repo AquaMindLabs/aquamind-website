@@ -62,18 +62,18 @@ function mapDiagnosticCodeToUserMessage(code: string): string {
     return 'Sesja wygasla. Zaloguj się ponownie i spróbuj jeszcze raz.';
   }
   if (code === AI_DIAGNOSTIC_CODES.TIMEOUT) {
-    return 'Analiza obrazu trwa zbyt dlugo. Spróbuj ponownie za chwile.';
+    return 'Analiza obrazu trwa zbyt długo. Spróbuj ponownie za chwilę.';
   }
   if (code === AI_DIAGNOSTIC_CODES.VALIDATION) {
-    return 'Nie udało się odczytac zdjęcia. Wybierz wyrazniejsze ujecie.';
+    return 'Nie udało się odczytać zdjęcia. Wybierz wyraźniejsze ujęcie.';
   }
   if (code === AI_DIAGNOSTIC_CODES.PROVIDER_ERROR) {
-    return 'Analiza obrazu jest chwilowo niedostepna. Spróbuj ponownie za moment.';
+    return 'Analiza obrazu jest chwilowo niedostępna. Spróbuj ponownie za moment.';
   }
   if (code === AI_DIAGNOSTIC_CODES.UNAVAILABLE) {
     return 'Asystent AI nie jest jeszcze skonfigurowany dla tego builda.';
   }
-  return 'Wystapil błąd analizy obrazu. Spróbuj ponownie.';
+  return 'Wystąpił błąd analizy obrazu. Spróbuj ponownie.';
 }
 
 function isAbortError(error: unknown): boolean {
@@ -125,6 +125,7 @@ type PickedImage = {
   width: number;
   height: number;
   mimeType: string;
+  base64?: string | null;
 };
 
 type ImageSourceKind = 'camera' | 'gallery';
@@ -134,7 +135,7 @@ async function loadImagePickerModule() {
     return await import('expo-image-picker');
   } catch {
     throw new AiChatRequestError(
-      'Modul wyboru zdjęć nie jest dostępny w tym buildzie.',
+      'Moduł wyboru zdjęć nie jest dostępny w tym buildzie.',
       AI_DIAGNOSTIC_CODES.UNAVAILABLE,
       false
     );
@@ -155,6 +156,39 @@ function resolveAssetMimeType(uri: string, fallback = 'image/jpeg'): string {
   return fallback;
 }
 
+function base64ToUint8Array(base64: string): Uint8Array {
+  const cleanBase64 = toSafeString(base64, Number.MAX_SAFE_INTEGER).replace(/\s/g, '');
+  if (typeof atob === 'function') {
+    const binary = atob(cleanBase64);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return bytes;
+  }
+
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const normalized = cleanBase64.replace(/=+$/, '');
+  const output: number[] = [];
+  let buffer = 0;
+  let bits = 0;
+
+  for (let index = 0; index < normalized.length; index += 1) {
+    const value = alphabet.indexOf(normalized[index]);
+    if (value < 0) {
+      continue;
+    }
+    buffer = (buffer << 6) | value;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      output.push((buffer >> bits) & 0xff);
+    }
+  }
+
+  return new Uint8Array(output);
+}
+
 export async function pickVisionImage(
   source: ImageSourceKind
 ): Promise<PickedImage | null> {
@@ -167,8 +201,8 @@ export async function pickVisionImage(
   if (!permissionResult?.granted) {
     throw new AiChatRequestError(
       isCamera
-        ? 'Brak zgody na aparat. Zezwol na dostep w ustawieńiach.'
-        : 'Brak zgody na galerie. Zezwol na dostep do zdjęć w ustawieńiach.',
+        ? 'Brak zgody na aparat. Zezwól na dostęp w ustawieniach.'
+        : 'Brak zgody na galerie. Zezwól na dostęp do zdjęć w ustawieniach.',
       AI_DIAGNOSTIC_CODES.VALIDATION,
       false
     );
@@ -177,11 +211,13 @@ export async function pickVisionImage(
   const pickerResult = isCamera
     ? await ImagePicker.launchCameraAsync({
         allowsEditing: false,
+        base64: true,
         quality: 0.75,
         mediaTypes: ['images'],
       })
     : await ImagePicker.launchImageLibraryAsync({
         allowsEditing: false,
+        base64: true,
         quality: 0.75,
         mediaTypes: ['images'],
       });
@@ -199,6 +235,7 @@ export async function pickVisionImage(
     width: Number(asset.width) || 0,
     height: Number(asset.height) || 0,
     mimeType: toSafeString(asset.mimeType, 80) || resolveAssetMimeType(asset.uri),
+    base64: toSafeString(asset.base64, Number.MAX_SAFE_INTEGER) || null,
   };
 }
 
@@ -225,8 +262,9 @@ export async function uploadVisionImageForUser(
     );
   }
 
-  const fetched = await fetch(uri);
-  const blob = await fetched.blob();
+  const uploadData = image.base64
+    ? base64ToUint8Array(image.base64)
+    : await fetch(uri).then((response) => response.blob());
   const fileExt = image.mimeType.includes('png')
     ? 'png'
     : image.mimeType.includes('webp')
@@ -237,7 +275,7 @@ export async function uploadVisionImageForUser(
   )}.${fileExt}`;
   const storageRef = ref(storage, storagePath);
 
-  await uploadBytes(storageRef, blob, {
+  await uploadBytes(storageRef, uploadData, {
     contentType: image.mimeType || 'image/jpeg',
     customMetadata: {
       userId: safeUid,
