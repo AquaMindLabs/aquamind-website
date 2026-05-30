@@ -751,6 +751,12 @@ function isWikimediaImageUri(uri) {
   );
 }
 
+function isWikimediaRedirectFileUri(uri) {
+  return /commons\.wikimedia\.org\/wiki\/Special:Redirect\/file\//i.test(
+    String(uri ?? '').trim()
+  );
+}
+
 function getAndroidWikimediaProxyUri(uri, width = null) {
   const normalizedUri = normalizeCatalogImageUrl(uri, width);
   if (!normalizedUri) {
@@ -758,6 +764,10 @@ function getAndroidWikimediaProxyUri(uri, width = null) {
   }
 
   if (Platform.OS !== 'android' || !isWikimediaImageUri(normalizedUri)) {
+    return normalizedUri;
+  }
+
+  if (isWikimediaRedirectFileUri(normalizedUri)) {
     return normalizedUri;
   }
 
@@ -11243,7 +11253,7 @@ export default function HomeScreen() {
         normalizedCacheKey &&
         !wikimediaImageDataUriFailedByKey[normalizedCacheKey]
       ) {
-        return getRemoteImageSource(normalizedUri);
+        return getCatalogRemoteImageSource(normalizedUri, width);
       }
 
       return getDefaultSource(normalizedUri);
@@ -21666,14 +21676,14 @@ export default function HomeScreen() {
         cacheKey &&
         !fishImageDataUriFailedByKey[cacheKey]
       ) {
-        return getRemoteImageSource(previewUri);
+        return getCatalogRemoteImageSource(previewUri, WIKIMEDIA_THUMBNAIL_WIDTH);
       }
 
       const useDirectWikimedia =
         cacheKey && fishImageDirectFallbackByKey[cacheKey] && isWikimediaPreview;
 
       return useDirectWikimedia
-        ? getRemoteImageSource(previewUri)
+        ? getCatalogRemoteImageSource(previewUri, WIKIMEDIA_THUMBNAIL_WIDTH)
         : getCatalogRemoteImageSource(previewUri, WIKIMEDIA_THUMBNAIL_WIDTH);
     },
     [
@@ -21696,7 +21706,7 @@ export default function HomeScreen() {
         cacheKey && fishImageDirectFallbackByKey[cacheKey]
       );
       const renderedUri = usesDirectFallback
-        ? previewUri
+        ? getCatalogRemoteImageUri(previewUri, WIKIMEDIA_THUMBNAIL_WIDTH)
         : getCatalogRemoteImageUri(previewUri, WIKIMEDIA_THUMBNAIL_WIDTH);
       const catalogEntry =
         (fish?.catalogFishId && fishCatalogById.get(fish.catalogFishId)) ||
