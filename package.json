@@ -39,7 +39,6 @@
     "test:ai:backend": "node --test tests/aiContextBuilder.test.cjs tests/aiBackendEndpoints.test.cjs"
   },
   "dependencies": {
-    "@expo/app-integrity": "^56.0.3",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-navigation/drawer": "^7.9.9",
     "@react-navigation/elements": "^2.6.3",
