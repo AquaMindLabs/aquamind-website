@@ -48,8 +48,8 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Aplikacja potrzebuje dostepu do galerii, aby analizowac zdjecia akwarium.",
-          "cameraPermission": "Aplikacja potrzebuje dostepu do aparatu, aby wykonac zdjecie do analizy AI."
+          "photosPermission": "Aplikacja potrzebuje dostępu do galerii, aby analizować zdjęcia akwarium.",
+          "cameraPermission": "Aplikacja potrzebuje dostępu do aparatu, aby wykonać zdjęcie do analizy AI."
         }
       ],
       "expo-web-browser"

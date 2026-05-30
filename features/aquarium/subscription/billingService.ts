@@ -1,8 +1,10 @@
 import { Platform } from 'react-native';
 import {
+  getSubscriptionStoreProductId,
   getSubscriptionTierByStoreProductId,
   normalizePlanId,
   type SubscriptionSource,
+  type SubscriptionStorePlatform,
   type SubscriptionState,
   type SubscriptionTier,
 } from '@/features/aquarium/subscription/subscriptionModel';
@@ -98,6 +100,10 @@ const RETRYABLE_PURCHASE_CODES = new Set([
   'customer_info_error',
 ]);
 
+type BillingError = Error & {
+  code?: string;
+};
+
 let initializedApiKey: string | null = null;
 let initializedUserId: string | null = null;
 let initialized = false;
@@ -131,6 +137,12 @@ type PurchasesModuleLike = {
     listener: (customerInfo: CustomerInfoLike) => void
   ) => void;
 };
+
+function createBillingError(code: string, message = code): BillingError {
+  const error = new Error(message) as BillingError;
+  error.code = code;
+  return error;
+}
 
 function getPurchasesModule(): PurchasesModuleLike | null {
   if (purchasesModuleCache !== undefined) {
@@ -226,6 +238,22 @@ function getErrorMessage(error: unknown): string {
   return String((error as { message?: unknown })?.message ?? '')
     .trim()
     .toLowerCase();
+}
+
+function isOfferingsConfigurationError(error: unknown): boolean {
+  const code = getErrorCode(error);
+  const message = getErrorMessage(error);
+  return (
+    code === 'billing_offerings_unavailable' ||
+    code === 'configuration_error' ||
+    message.includes('billing_offerings_unavailable') ||
+    message.includes('configuration') ||
+    message.includes('offering') ||
+    message.includes('offerings') ||
+    message.includes('could not be fetched from the play store') ||
+    message.includes('none of the products registered') ||
+    message.includes('no products found')
+  );
 }
 
 function isUserCancelledError(error: unknown): boolean {
@@ -350,6 +378,17 @@ function getBaseProductId(value: unknown): string {
   return normalizeProductId(value).split(':')[0] ?? '';
 }
 
+function getCurrentStorePlatform(): SubscriptionStorePlatform | null {
+  if (Platform.OS === 'ios' || Platform.OS === 'android') {
+    return Platform.OS;
+  }
+  return null;
+}
+
+function isConfiguredSubscriptionProductId(productId: string): boolean {
+  return Boolean(getSubscriptionTierByStoreProductId(productId));
+}
+
 function productIdsMatch(left: unknown, right: unknown): boolean {
   const normalizedLeft = normalizeProductId(left);
   const normalizedRight = normalizeProductId(right);
@@ -454,19 +493,22 @@ export function mapBillingErrorToUserMessage(
   const code = getErrorCode(error);
   const message = getErrorMessage(error);
   if (message.includes('billing_sdk_unavailable')) {
-    return 'Modul zakupow nie jest jeszcze zainstalowany w tej wersji aplikacji.';
+    return 'Moduł zakupów nie jest jeszcze zainstalowany w tej wersji aplikacji.';
   }
   if (message.includes('billing_not_configured')) {
-    return 'Zakupy nie sa jeszcze skonfigurowane dla tej platformy.';
+    return 'Zakupy nie są jeszcze skonfigurowane dla tej platformy.';
+  }
+  if (isOfferingsConfigurationError(error)) {
+    return 'Nie znaleziono aktywnej oferty subskrypcji w Google Play/RevenueCat. Sprawdź, czy produkt, base plan i offering są aktywne oraz przypięte do tej wersji aplikacji.';
   }
   if (code === 'payment_pending_error') {
-    return 'Platnosc oczekuje na potwierdzenie. Sprawdź status za chwile.';
+    return 'Płatność oczekuje na potwierdzenie. Sprawdź status za chwilę.';
   }
   if (code === 'purchase_not_allowed_error' || code === 'insufficient_permissions_error') {
-    return 'Zakupy sa niedostępne dla tego konta. Sprawdź ustawieńia sklepu.';
+    return 'Zakupy są niedostępne dla tego konta. Sprawdź ustawienia sklepu.';
   }
   if (code === 'product_not_available_for_purchase_error') {
-    return 'Ten plan nie jest aktualnie dostępny w sklepie dla tej wersji aplikacji.';
+    return 'Ten plan nie jest aktualnie dostępny w sklepie dla tej wersji aplikacji. Sprawdź ID produktu i base plan w Google Play oraz RevenueCat.';
   }
   if (code === 'network_error' || code === 'offline_connection_error') {
     return 'Brak połączenia z internetem. Spróbuj ponownie.';
@@ -475,12 +517,12 @@ export function mapBillingErrorToUserMessage(
     return 'Sklep chwilowo nie odpowiada. Spróbuj ponownie za kilka minut.';
   }
   if (action === 'restore') {
-    return 'Nie udało się przywrócić zakupow. Spróbuj ponownie za chwile.';
+    return 'Nie udało się przywrócić zakupów. Spróbuj ponownie za chwilę.';
   }
   if (action === 'refresh') {
     return 'Nie udało się odświeżyć statusu subskrypcji.';
   }
-  return 'Nie udało się dokonac zakupu. Spróbuj ponownie za chwile.';
+  return 'Nie udało się dokonać zakupu. Spróbuj ponownie za chwilę.';
 }
 
 export async function ensureBillingConfigured(
@@ -612,6 +654,14 @@ export async function getBillingOfferingsSnapshot(
     if (productId && priceLabel && !acc[productId]) {
       acc[productId] = priceLabel;
     }
+    const platform = getCurrentStorePlatform();
+    const configuredProductId =
+      entry?.tier && platform
+        ? String(getSubscriptionStoreProductId(entry.tier, platform) ?? '').trim()
+        : '';
+    if (configuredProductId && priceLabel && !acc[configuredProductId]) {
+      acc[configuredProductId] = priceLabel;
+    }
     return acc;
   }, {});
 
@@ -665,6 +715,10 @@ export async function purchaseSubscriptionByProductId(
       : null;
 
   let matchingPackage: OfferingPackageLike | null = null;
+  const requiresOfferingPackage =
+    isConfiguredSubscriptionProductId(normalizedProductId) ||
+    (Platform.OS === 'android' && normalizedProductId.includes(':'));
+
   if (getOfferings) {
     const offerings = await withRetry(
       () => getOfferings() as Promise<OfferingsLike>,
@@ -675,10 +729,20 @@ export async function purchaseSubscriptionByProductId(
     const productIsOffered = entries.some((entry) =>
       productIdsMatch(entry?.productId, normalizedProductId)
     );
+    if (!offeringHasProducts && requiresOfferingPackage) {
+      throw createBillingError('billing_offerings_unavailable');
+    }
     if (offeringHasProducts && !productIsOffered) {
-      throw new Error('product_not_available_for_purchase_error');
+      throw createBillingError('product_not_available_for_purchase_error');
     }
     matchingPackage = findOfferingPackageByProductId(offerings, normalizedProductId);
+  }
+
+  if (requiresOfferingPackage && !matchingPackage) {
+    throw createBillingError('billing_offerings_unavailable');
+  }
+  if (requiresOfferingPackage && !purchasePackage) {
+    throw createBillingError('billing_sdk_unavailable');
   }
 
   const purchaseResult = matchingPackage && purchasePackage

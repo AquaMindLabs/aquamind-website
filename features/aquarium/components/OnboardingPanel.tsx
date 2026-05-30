@@ -80,7 +80,7 @@ export function OnboardingPanel({
   const [isCompletedOnboardingVisible, setIsCompletedOnboardingVisible] =
     useState(false);
   const { appSettings } = useTank();
-  const alertTitle = translateInlineText('Wy??czyc onboarding?', appSettings.language);
+  const alertTitle = translateInlineText('Wyłączyć onboarding?', appSettings.language);
   const alertMessage = translateInlineText(
     'Ta opcja jest nieodwracalna. Po potwierdzeniu sekcja onboardingu zniknie dla tego akwarium.',
     appSettings.language

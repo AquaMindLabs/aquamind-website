@@ -1285,7 +1285,7 @@ export const TRANSLATIONS = {
     subscriptionTankLimitReached:
       'Das Aquarien-Limit im Plan {plan} wurde erreicht ({limit}).',
     subscriptionTankLimitOver:
-      'Du hast {current} Aquarien bei einem Limit von {limit} im Plan {plan}. Du kannst sie weiter ansehen und bearbeiten, aber keine weiteren hinzufugen.',
+      "Du hast {current} Aquarien bei einem Limit von {limit} im Plan {plan}. Du kannst się weiter ansehen und bearbeiten, aber keine weiteren hinzufugen.",
     subscriptionTankLimitUpgradeHint:
       'Um ein weiteres Aquarium hinzuzufugen, wechsle auf einen hoheren Plan.',
     settingsAtLeastOneTest: 'Mindestens 1 aktiver Testparameter ist erforderlich.',
