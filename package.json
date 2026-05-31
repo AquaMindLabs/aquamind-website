@@ -2,6 +2,9 @@
   "name": "aquarium-mobile",
   "main": "expo-router/entry",
   "version": "1.0.0",
+  "engines": {
+    "node": "20.x"
+  },
   "scripts": {
     "start": "expo start --clear",
     "android": "expo start --android",

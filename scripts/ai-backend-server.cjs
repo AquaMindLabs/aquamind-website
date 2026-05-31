@@ -6,6 +6,7 @@ const { getAuth } = require('firebase-admin/auth');
 const { getFirestore } = require('firebase-admin/firestore');
 const {
   AI_DIAGNOSTIC_CODES,
+  createAiBackendError,
   createAiRequestHandlers,
   createFirestoreAiDataStore,
   createOpenAiResponsesProvider,
@@ -53,6 +54,10 @@ function resolveProjectId() {
   ).trim();
 }
 
+function toErrorMessage(error) {
+  return error instanceof Error ? error.message : String(error ?? 'unknown_error');
+}
+
 function ensureAdminServices() {
   if (getApps().length === 0) {
     const projectId = resolveProjectId();
@@ -65,6 +70,26 @@ function ensureAdminServices() {
   return {
     auth: getAuth(),
     db: getFirestore(),
+  };
+}
+
+function createUnavailableAiProvider(error) {
+  const errorMessage = toErrorMessage(error);
+  async function throwProviderConfigError() {
+    throw createAiBackendError(
+      AI_DIAGNOSTIC_CODES.PROVIDER_ERROR,
+      'Provider AI jest chwilowo niedostepny.',
+      502,
+      {
+        providerErrorType: 'ProviderConfigError',
+        providerErrorMessage: errorMessage,
+      }
+    );
+  }
+
+  return {
+    generateChat: throwProviderConfigError,
+    analyzeVision: throwProviderConfigError,
   };
 }
 
@@ -123,15 +148,26 @@ function resolveAiProviderConfig() {
     .trim()
     .toLowerCase();
   if (providerName === 'openai') {
-    return {
-      providerName: 'openai',
-      provider: createOpenAiResponsesProvider({
-        apiKey: process.env.OPENAI_API_KEY,
-        model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
-        baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
-        maxOutputTokens: Number(process.env.OPENAI_MAX_OUTPUT_TOKENS || 2400),
-      }),
-    };
+    try {
+      return {
+        providerName: 'openai',
+        provider: createOpenAiResponsesProvider({
+          apiKey: process.env.OPENAI_API_KEY,
+          model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
+          baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
+          maxOutputTokens: Number(process.env.OPENAI_MAX_OUTPUT_TOKENS || 2400),
+        }),
+      };
+    } catch (error) {
+      console.error('ai_provider_config_failed', {
+        providerName: 'openai',
+        errorMessage: toErrorMessage(error),
+      });
+      return {
+        providerName: 'openai_config_error',
+        provider: createUnavailableAiProvider(error),
+      };
+    }
   }
 
   return {
@@ -238,7 +274,11 @@ function createAiHttpServer({
 }
 
 async function startServer() {
-  const port = Number(process.env.PORT || process.env.AI_BACKEND_PORT || 8790);
+  const requestedPort = Number.parseInt(
+    String(process.env.PORT || process.env.AI_BACKEND_PORT || '8790'),
+    10
+  );
+  const port = Number.isFinite(requestedPort) && requestedPort > 0 ? requestedPort : 8790;
   const { auth, db } = ensureAdminServices();
 
   const authVerifier = {
