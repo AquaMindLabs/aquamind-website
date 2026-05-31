@@ -12,7 +12,7 @@ const AI_DIAGNOSTIC_CODES = Object.freeze({
 
 const DEFAULT_TIMEOUT_MS = 45000;
 const MAX_TEXT_LENGTH = 4000;
-const MAX_IMAGE_BASE64_LENGTH = 2_000_000;
+const MAX_IMAGE_BASE64_LENGTH = 8_000_000;
 const MAX_ITEMS_PER_COLLECTION = 80;
 const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
 const DEFAULT_OPENAI_MODEL = 'gpt-4.1-mini';
@@ -1568,9 +1568,9 @@ function createOpenAiResponsesProvider({
     async analyzeVision({ request, contextSummary }) {
       const resolvedLanguage = resolveResponseLanguage(request, contextSummary);
       const contextJson = stringifyAiContext(contextSummary, MAX_AI_CONTEXT_CHARS);
-      const imageInput =
-        request.imageUrl ||
-        (request.imageBase64 ? `data:image/jpeg;base64,${request.imageBase64}` : '');
+      const imageInput = request.imageBase64
+        ? `data:image/jpeg;base64,${request.imageBase64}`
+        : request.imageUrl || '';
       const visionMode = toSafeString(request?.mode, 64) || 'photo_analysis';
 
       const textPrompt = [

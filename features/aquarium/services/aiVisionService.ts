@@ -7,6 +7,7 @@ import { logAiDiagnosticEvent } from '@/shared/services/observability';
 
 const DEFAULT_AI_TIMEOUT_MS = 90000;
 const AI_VISION_ANALYZE_PATH = '/ai/vision/analyze';
+const MAX_VISION_IMAGE_BASE64_CHARS = 7_000_000;
 
 const AI_DIAGNOSTIC_CODES = Object.freeze({
   OK: 'AIW_OK',
@@ -149,6 +150,7 @@ export type AiVisionResponse = {
 type AiVisionAnalyzePayload = {
   idToken: string;
   imageUrl: string;
+  imageBase64?: string | null;
   question?: string;
   additionalInfo?: string;
   tankId?: string | null;
@@ -284,6 +286,22 @@ function base64ToUint8Array(base64: string): Uint8Array {
   return new Uint8Array(output);
 }
 
+function normalizeImageBase64(value: unknown): string {
+  const raw = toSafeString(value, Number.MAX_SAFE_INTEGER);
+  if (!raw) {
+    return '';
+  }
+  return raw.replace(/^data:image\/[a-z0-9.+-]+;base64,/i, '').replace(/\s/g, '');
+}
+
+function pickRequestImageBase64(value: unknown): string {
+  const normalized = normalizeImageBase64(value);
+  if (!normalized || normalized.length > MAX_VISION_IMAGE_BASE64_CHARS) {
+    return '';
+  }
+  return normalized;
+}
+
 export async function pickVisionImage(
   source: ImageSourceKind
 ): Promise<PickedImage | null> {
@@ -397,6 +415,7 @@ export async function uploadVisionImageForUser(
 export async function requestAiVisionAnalyze({
   idToken,
   imageUrl,
+  imageBase64 = null,
   question = '',
   additionalInfo = '',
   tankId = null,
@@ -408,6 +427,7 @@ export async function requestAiVisionAnalyze({
 }: AiVisionAnalyzePayload): Promise<AiVisionResponse> {
   const token = toSafeString(idToken, 4096);
   const safeImageUrl = toSafeString(imageUrl, 4000);
+  const safeImageBase64 = pickRequestImageBase64(imageBase64);
   const safeQuestion = sanitizeTextForAi(question, 4000);
   const safeTankId = toSafeString(tankId, 128);
   const safeAdditionalInfo = sanitizeTextForAi(additionalInfo, 4000);
@@ -424,7 +444,7 @@ export async function requestAiVisionAnalyze({
       401
     );
   }
-  if (!safeImageUrl) {
+  if (!safeImageUrl && !safeImageBase64) {
     throw new AiChatRequestError(
       mapDiagnosticCodeToUserMessage(AI_DIAGNOSTIC_CODES.VALIDATION),
       AI_DIAGNOSTIC_CODES.VALIDATION,
@@ -464,6 +484,7 @@ export async function requestAiVisionAnalyze({
         additionalInfo: safeAdditionalInfo,
         tankId: safeTankId || undefined,
         imageUrl: safeImageUrl,
+        imageBase64: safeImageBase64 || undefined,
         mode: safeMode || undefined,
         locale: safeLocale || undefined,
         userLanguage: safeUserLanguage || undefined,
@@ -485,9 +506,10 @@ export async function requestAiVisionAnalyze({
       logAiDiagnosticEvent({
         operation: 'vision',
         diagnosticCode,
-        payloadKeys: ['question', 'additionalInfo', 'tankId', 'imageUrl'],
+        payloadKeys: ['question', 'additionalInfo', 'tankId', 'imageUrl', 'imageBase64'],
         hasTankId: Boolean(safeTankId),
         hasImageUrl: Boolean(safeImageUrl),
+        hasImageBase64: Boolean(safeImageBase64),
         questionLength: safeQuestion.length,
         additionalInfoLength: safeAdditionalInfo.length,
         httpStatus: response.status,
@@ -553,9 +575,10 @@ export async function requestAiVisionAnalyze({
     logAiDiagnosticEvent({
       operation: 'vision',
       diagnosticCode,
-      payloadKeys: ['question', 'additionalInfo', 'tankId', 'imageUrl'],
+      payloadKeys: ['question', 'additionalInfo', 'tankId', 'imageUrl', 'imageBase64'],
       hasTankId: Boolean(safeTankId),
       hasImageUrl: Boolean(safeImageUrl),
+        hasImageBase64: Boolean(safeImageBase64),
       questionLength: safeQuestion.length,
       additionalInfoLength: safeAdditionalInfo.length,
       httpStatus: response.status,
@@ -580,9 +603,10 @@ export async function requestAiVisionAnalyze({
       logAiDiagnosticEvent({
         operation: 'vision',
         diagnosticCode: error.code,
-        payloadKeys: ['question', 'additionalInfo', 'tankId', 'imageUrl'],
+        payloadKeys: ['question', 'additionalInfo', 'tankId', 'imageUrl', 'imageBase64'],
         hasTankId: Boolean(safeTankId),
         hasImageUrl: Boolean(safeImageUrl),
+        hasImageBase64: Boolean(safeImageBase64),
         questionLength: safeQuestion.length,
         additionalInfoLength: safeAdditionalInfo.length,
         httpStatus: error.status ?? 0,
@@ -593,9 +617,10 @@ export async function requestAiVisionAnalyze({
       logAiDiagnosticEvent({
         operation: 'vision',
         diagnosticCode: AI_DIAGNOSTIC_CODES.TIMEOUT,
-        payloadKeys: ['question', 'additionalInfo', 'tankId', 'imageUrl'],
+        payloadKeys: ['question', 'additionalInfo', 'tankId', 'imageUrl', 'imageBase64'],
         hasTankId: Boolean(safeTankId),
         hasImageUrl: Boolean(safeImageUrl),
+        hasImageBase64: Boolean(safeImageBase64),
         questionLength: safeQuestion.length,
         additionalInfoLength: safeAdditionalInfo.length,
         httpStatus: 504,
@@ -609,9 +634,10 @@ export async function requestAiVisionAnalyze({
     logAiDiagnosticEvent({
       operation: 'vision',
       diagnosticCode: AI_DIAGNOSTIC_CODES.INTERNAL,
-      payloadKeys: ['question', 'additionalInfo', 'tankId', 'imageUrl'],
+      payloadKeys: ['question', 'additionalInfo', 'tankId', 'imageUrl', 'imageBase64'],
       hasTankId: Boolean(safeTankId),
       hasImageUrl: Boolean(safeImageUrl),
+        hasImageBase64: Boolean(safeImageBase64),
       questionLength: safeQuestion.length,
       additionalInfoLength: safeAdditionalInfo.length,
       httpStatus: 0,

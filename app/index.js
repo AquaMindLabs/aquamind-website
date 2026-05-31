@@ -18385,6 +18385,7 @@ export default function HomeScreen() {
         {
           idToken: String(idToken ?? ''),
           imageUrl: uploaded.downloadUrl,
+          imageBase64: catalogAiSelectedImage.base64,
           question: effectiveQuestion,
           additionalInfo,
           tankId: String(tankId || contextTank?.id || '').trim() || null,
@@ -18805,6 +18806,7 @@ export default function HomeScreen() {
           {
             idToken: String(idToken ?? ''),
             imageUrl: uploaded.downloadUrl,
+            imageBase64: diseaseAiSelectedImage.base64,
             question:
               description ||
               "Przeanalizuj objawy ryby i podaj maksymalnie 3 możliwe podejrzenia chorob z katalogu.",
@@ -19181,6 +19183,7 @@ export default function HomeScreen() {
           {
             idToken: String(idToken ?? ''),
             imageUrl: uploaded.downloadUrl,
+            imageBase64: plantDiseaseAiSelectedImage.base64,
             question:
               description ||
               "Przeanalizuj problem rośliny i podaj maksymalnie 3 możliwe przyczyny z katalogu problemów roślin.",
@@ -19561,6 +19564,7 @@ export default function HomeScreen() {
           {
             idToken: String(idToken ?? ''),
             imageUrl: uploaded.downloadUrl,
+            imageBase64: algaeAiSelectedImage.base64,
             question:
               description ||
               "Przeanalizuj glony i podaj maksymalnie 3 możliwe typy glonów z katalogu.",

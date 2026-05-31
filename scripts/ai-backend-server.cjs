@@ -93,7 +93,7 @@ function createUnavailableAiProvider(error) {
   };
 }
 
-function readJsonBody(req, maxBytes = 4 * 1024 * 1024) {
+function readJsonBody(req, maxBytes = 12 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;

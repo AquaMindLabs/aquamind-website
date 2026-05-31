@@ -101,6 +101,7 @@ type PickedVisionImage = {
   width: number;
   height: number;
   mimeType: string;
+  base64?: string | null;
 };
 
 const MAX_HISTORY_ITEMS = 8;
@@ -648,6 +649,7 @@ export function AiAssistantPanel({
           width: picked.width,
           height: picked.height,
           mimeType: picked.mimeType,
+          base64: picked.base64,
         });
       } catch (rawError) {
         const mappedError =
@@ -730,6 +732,7 @@ export function AiAssistantPanel({
           {
             idToken: toSafeString(idToken, 4096),
             imageUrl: uploaded.downloadUrl,
+            imageBase64: nextRequest.image.base64,
             question: nextRequest.question,
             additionalInfo: nextRequest.additionalInfo,
             tankId: nextRequest.tankId,

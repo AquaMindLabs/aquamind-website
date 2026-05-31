@@ -655,3 +655,27 @@ test('POST /ai/vision/analyze returns analysis for authorized user', async () =>
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test('POST /ai/vision/analyze accepts image base64 payload', async () => {
+  const { server, baseUrl } = await startServerForTest();
+  try {
+    const response = await fetch(`${baseUrl}/ai/vision/analyze`, {
+      method: 'POST',
+      headers: buildHeaders('token-user-a'),
+      body: JSON.stringify({
+        question: 'Czy widac problem na zdjeciu?',
+        imageBase64: 'aW1hZ2UtYnl0ZXM=',
+        tankId: 'tank_a',
+      }),
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.diagnosticCode, 'AIW_OK');
+    assert.equal(payload.data.contextSummary.selectedTank.id, 'tank_a');
+    assert.ok(Array.isArray(payload.data.hypotheses));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
