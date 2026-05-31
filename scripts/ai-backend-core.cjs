@@ -161,7 +161,7 @@ function getLocalizedTexts(language) {
     chatFallbackAnswer:
       'Nie udalo sie poprawnie przetworzyc odpowiedzi AI. Sprobuj ponownie albo doprecyzuj pytanie.',
     chatFallbackRecommendation:
-      'Sprawdz, czy w akwarium sa uzupelnione podstawowe dane: litraz, obsada, sprzet i parametry wody.',
+      'Na podstawie dostepnych danych wykonaj bezpieczny krok kontrolny i dodaj kolejne pomiary tylko dla doprecyzowania oceny.',
     visionFallbackSummary:
       'Nie udalo sie poprawnie przeanalizowac zdjecia. Sprobuj dodac wyrazniejsze zdjecie albo dopisz, co dokladnie chcesz sprawdzic.',
     visionFallbackSteps: [
@@ -1052,9 +1052,9 @@ function buildRuleBasedChatAnswer(request, summary) {
   } else {
     lines.push(
       pickByLanguage(language, {
-        pl: 'Brak aktualnego pomiaru - najpierw wykonaj podstawowy test wody.',
-        en: 'No recent measurement - run a basic water test first.',
-        de: 'Keine aktuelle Messung - zuerst einen grundlegenden Wassertest machen.',
+        pl: 'Brak aktualnego pomiaru; wnioski oprzyj na dostepnych danych i potraktuj test wody jako krok doprecyzowujacy.',
+        en: 'No recent measurement; base conclusions on available data and treat a water test as a precision step.',
+        de: 'Keine aktuelle Messung; Schlussfolgerungen auf verfuegbare Daten stuetzen und den Wassertest als Praezisierung nutzen.',
       })
     );
   }
@@ -1455,8 +1455,10 @@ function createOpenAiResponsesProvider({
         '- Klucze JSON zostaw bez zmian.',
         '- Tresc pol answer, recommendations i warnings przetlumacz na jezyk odpowiedzi.',
         '- Odpowiedz oprzyj wylacznie o dane z kontekstu i pytanie uzytkownika.',
-        '- Nie wymyslaj brakujacych parametrow, pomiarow, faktow, obsady, sprzetu ani dat.',
-        '- Jesli brakuje waznych danych, w answer napisz tylko co ogranicza ocene, a praktyczne kroki daj w recommendations.',
+        '- Zawsze najpierw sformuluj praktyczny wniosek z dostepnych informacji; nie zaczynaj odpowiedzi od komunikatu, ze brakuje danych.',
+        '- Nie wymyslaj niepodanych parametrow, pomiarow, faktow, obsady, sprzetu ani dat.',
+        '- Jesli dane sa niepelne, nie odmawiaj oceny; zaznacz ostroznosc krotko i traktuj dodatkowe dane jako sposob doprecyzowania, najlepiej w jednym punkcie recommendations.',
+        '- Unikaj fraz typu "brakuje danych", "za malo danych" i "nie da sie ocenic", chyba ze nie ma zadnego pytania ani zadnego kontekstu.',
         '- Jesli problemow jest kilka, w answer wskaz maksymalnie 3 najwazniejsze obserwacje, bez planu dzialania ciagiem.',
         '- W recommendations umieszczaj najpierw dzialania najpilniejsze, potem kroki kontrolne, chyba ze tryb dotyczy samej interpretacji parametrow.',
         '- Nie opisuj planu dzialania w answer jako ciaglego akapitu; kazdy krok planu musi byc osobnym elementem recommendations.',
@@ -1469,7 +1471,7 @@ function createOpenAiResponsesProvider({
         '',
         'Zasady dla problemow z woda:',
         '- Dla problemow awaryjnych priorytetyzuj bezpieczne kroki: testy, czesciowa podmiana wody, napowietrzanie, ograniczenie karmienia, sprawdzenie filtra.',
-        '- Jesli brakuje NO2, NO3, pH, GH, KH lub temperatury, wskaz, ktore dane warto uzupelnic.',
+        '- Jesli nie ma NO2, NO3, pH, GH, KH lub temperatury, wyciagnij wnioski z pozostalych danych i w jednym punkcie zaproponuj pomiar doprecyzowujacy.',
         '- Nie zgaduj wartosci parametrow.',
         '',
         'Zasady dla chorob, leczenia i objawow ryb:',
@@ -1502,9 +1504,9 @@ function createOpenAiResponsesProvider({
         '',
         'Jesli tryb to water_history_analysis:',
         '- Ocen trend na podstawie serii pomiarow, nie tylko ostatniego wpisu.',
-        '- Jesli sa mniej niz 2 pomiary, napisz wprost, ze trendu nie da sie wiarygodnie ocenic i zinterpretuj tylko aktualny pomiar.',
-        '- Jesli pomiary sa stare, ostrzez, ze analiza moze byc nieaktualna.',
-        '- W answer podaj krotko: ocena trendu + maksymalnie 3 najwazniejsze obserwacje + brakujace dane.',
+        '- Jesli sa mniej niz 2 pomiary, nie pisz, ze nie da sie ocenic; napisz "na podstawie dostepnego pomiaru..." i zinterpretuj aktualny stan.',
+        '- Jesli pomiary sa stare, napisz, ze wniosek jest orientacyjny, ale nadal sformuluj najbezpieczniejsza interpretacje.',
+        '- W answer podaj krotko: wniosek z dostepnych danych + maksymalnie 3 najwazniejsze obserwacje.',
         '- W recommendations podaj osobnymi punktami: co zrobic teraz i co zmierzyc przy kolejnym pomiarze.',
         '- W warnings dodaj pilne ostrzezenia i ostroznosc przy gwaltownych zmianach pH/KH/GH.',
         '- Przy wysokim NO2 lub NH3/NH4 traktuj sytuacje jako pilna: test, czesciowa podmiana, napowietrzanie, ograniczenie karmienia, sprawdzenie filtra.',
@@ -1516,7 +1518,7 @@ function createOpenAiResponsesProvider({
         '- Wskaz maksymalnie 3 mozliwe typy glonow lub przyczyny, nigdy jako pewna diagnoza.',
         '- Priorytetowo podaj bezpieczne kroki: testy NO3/PO4, kontrola swiatla, cyrkulacji, karmienia i podmian.',
         '- Nie zalecaj chemii ani restartu akwarium jako pierwszego kroku.',
-        '- Jesli brakuje danych lub zdjecie jest slabej jakosci, napisz to jasno i zaproponuj plan weryfikacji.',
+        '- Jesli dane sa niepelne lub zdjecie jest slabej jakosci, najpierw podaj ostrozny wniosek z tego, co widac, potem plan weryfikacji.',
         '',
         'Pytanie uzytkownika:',
         request.question,
@@ -1547,7 +1549,8 @@ function createOpenAiResponsesProvider({
                 'Nie stawiaj pewnych diagnoz.',
                 'Mozesz wskazywac mozliwe przyczyny, jesli jasno oznaczysz je jako hipotezy lub mozliwosci.',
                 'Odpowiadaj praktycznie, zwiezle i bez lania wody.',
-                'Priorytetyzuj bezpieczne dzialania.',
+        'Zawsze wyciagaj wnioski z dostepnych informacji, bez wymyslania brakujacych danych.',
+        'Priorytetyzuj bezpieczne dzialania.',
                 'Nie strasz uzytkownika bez podstaw.',
               ].join(' '),
             },
@@ -1611,7 +1614,7 @@ function createOpenAiResponsesProvider({
         '- Uzywaj ostroznych sformulowan: "moze przypominac", "warto wykluczyc", "mozliwa przyczyna".',
         '- confidence oznacza pewnosc hipotezy na podstawie zdjecia i kontekstu, nie pewnosc diagnozy.',
         '- summary ma najpierw opisac widoczne elementy, a dopiero potem ostrozna ocene.',
-        '- Jesli obraz jest nieczytelny, ciemny, rozmazany, zle skadrowany albo nie pokazuje problemu, napisz to jasno i dodaj bezpieczny plan weryfikacji.',
+        '- Jesli obraz jest nieczytelny, ciemny, rozmazany, zle skadrowany albo nie pokazuje problemu, opisz co mimo wszystko widac i dodaj bezpieczny plan weryfikacji.',
         '- Nie zalecaj lekow jako pierwszego kroku bez wystarczajacych danych.',
         '- Nie zalecaj restartu akwarium jako pierwszej opcji.',
         '- Nie strasz uzytkownika bez podstaw.',
@@ -1623,7 +1626,7 @@ function createOpenAiResponsesProvider({
         '',
         'Zasady dla glonow i roslin:',
         '- Jesli zdjecie pokazuje glony lub problemy z roslinami, w verificationSteps uwzglednij swiatlo, czas swiecenia, NO3/PO4, nawozenie i CO2, jesli dostepne.',
-        '- Jesli brakuje danych o swietle, nawozeniu albo parametrach, wskaz to.',
+        '- Jesli nie ma danych o swietle, nawozeniu albo parametrach, wyciagnij wniosek ze zdjecia i kontekstu, a pomiary potraktuj jako doprecyzowanie.',
         '',
         'Zasady dla wody i wygladu zbiornika:',
         '- Jesli zdjecie pokazuje metna wode, osad, kozuch, brudne szyby albo problem z klarownoscia, zaproponuj testy wody, ocene filtracji, ostatnia podmiane, karmienie i obsade.',
@@ -1662,6 +1665,7 @@ function createOpenAiResponsesProvider({
                 'Nie uzywaj markdownu.',
                 'Nie dodawaj pol spoza schematu.',
                 'Opisuj tylko to, co widac na zdjeciu oraz wynika z kontekstu.',
+                'Zawsze najpierw podaj ostrozny wniosek z dostepnych informacji; nie zaczynaj od braku danych.',
                 'Nie stawiaj pewnej diagnozy na podstawie samego zdjecia.',
                 'Mozesz wskazywac hipotezy, ale musza byc ostrozne i mozliwe do zweryfikowania.',
                 'Nie oceniaj dokladnych parametrow wody na podstawie zdjecia.',

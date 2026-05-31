@@ -481,17 +481,17 @@ export function AiAssistantPanel({
     );
 
     if (!Number.isFinite(tankCount) || tankCount <= 0) {
-      hints.push('Dodaj pierwsze akwarium lub wybierz aktywne akwarium do analizy.');
+      hints.push('Dla trafniejszej oceny wybierz aktywne akwarium lub dodaj pierwsze akwarium.');
       return hints;
     }
     if (!Number.isFinite(measurementCount) || measurementCount <= 0) {
-      hints.push('Dodaj pomiar: pH, NO2, NO3 i temperatura.');
+      hints.push('Dla doprecyzowania dodaj pomiar: pH, NO2, NO3 i temperatura.');
     }
     if (!Number.isFinite(stockCount) || stockCount <= 0) {
-      hints.push('Uzupełnij obsadę (ryby/rośliny), aby AI mogło ocenić zgodność.');
+      hints.push('Dla lepszej oceny zgodnosci dodaj obsade: ryby i rosliny.');
     }
     if (!Number.isFinite(equipmentTotal) || equipmentTotal <= 0) {
-      hints.push('Uzupełnij sprzęt (filtr, grzałka, oświetlenie) dla trafniejszych zaleceń.');
+      hints.push('Dla trafniejszych zalecen dodaj sprzet: filtr, grzalka i oswietlenie.');
     }
     return hints;
   }, []);
@@ -1278,7 +1278,7 @@ export function AiAssistantPanel({
                 backgroundColor: theme.themeCardBgAlt,
               }}>
               <Text style={{ color: theme.themeWarningText, fontSize: 12, fontWeight: '700' }}>
-                Odpowiedz AI ma ograniczony kontekst.
+                Wniosek oparty na dostepnych informacjach.
               </Text>
               {missingDataHints.length > 0 ? (
                 missingDataHints.map((hint, index) => (
@@ -1290,8 +1290,7 @@ export function AiAssistantPanel({
                 ))
               ) : (
                 <Text style={{ color: theme.themeTextSecondary, fontSize: 12, marginTop: 4 }}>
-                  Brakuje danych historycznych lub obraz jest nieczytelny. Dodaj pomiary i wykonaj
-                  wyrazniejsze zdjęcie, aby uzyskac bardziej precyzyjna analizę.
+                  AI wyciagnelo wnioski z obecnego kontekstu. Dodatkowe pomiary lub wyrazniejsze zdjecie moga tylko doprecyzowac analize.
                 </Text>
               )}
             </View>

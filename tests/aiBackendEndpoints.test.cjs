@@ -101,7 +101,7 @@ function createAiProvider() {
           additionalInfo.match(/"latestMeasurementAgeDays":\s*([3-9]\d|[1-9]\d{2,})/);
         return {
           answer: hasLimitedTrendData
-            ? 'Za malo pomiarow do oceny trendu. Mozliwa jest jedynie ostrozna interpretacja aktualnego pomiaru.'
+            ? 'Na podstawie dostepnego pomiaru stan wyglada orientacyjnie stabilnie, ale warto potwierdzic to kolejnym pomiarem.'
             : `Trend pomiarow: ${request.question}`,
           recommendations: [
             'Zrob kontrolny pomiar NO2, NO3 i temperatury.',
@@ -603,7 +603,7 @@ test('POST /ai/chat supports water_history_analysis mode', async () => {
     assert.equal(response.status, 200);
     assert.equal(payload.ok, true);
     assert.equal(payload.diagnosticCode, 'AIW_OK');
-    assert.match(payload.data.answer, /za malo pomiarow/i);
+    assert.match(payload.data.answer, /na podstawie dostepnego pomiaru/i);
     assert.ok(Array.isArray(payload.data.recommendations));
   } finally {
     await new Promise((resolve) => server.close(resolve));
