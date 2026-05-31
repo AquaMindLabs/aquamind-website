@@ -1,7 +1,8 @@
 import { Platform } from 'react-native';
+import Constants from 'expo-constants';
 import { logAiDiagnosticEvent } from '@/shared/services/observability';
 
-const DEFAULT_AI_TIMEOUT_MS = 15000;
+const DEFAULT_AI_TIMEOUT_MS = 60000;
 const AI_CHAT_PATH = '/ai/chat';
 
 const AI_DIAGNOSTIC_CODES = Object.freeze({
@@ -53,10 +54,48 @@ function sanitizeTextForAi(value: unknown, maxLength = 4000): string {
     .trim();
 }
 
+function isLocalOrPrivateAiBackendUrl(value: string): boolean {
+  const normalized = toSafeString(value, 512).toLowerCase();
+  const match = normalized.match(/^https?:\/\/([^/:?#]+)/);
+  const host = match?.[1] ?? '';
+  if (!host) {
+    return false;
+  }
+  return (
+    host === 'localhost' ||
+    host === '0.0.0.0' ||
+    host.startsWith('127.') ||
+    host.startsWith('10.') ||
+    host.startsWith('192.168.') ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(host)
+  );
+}
+
+function normalizeConfiguredAiBackendUrl(value: unknown): string {
+  const url = toSafeString(value, 512).replace(/\/+$/, '');
+  if (!url) {
+    return '';
+  }
+  if (!__DEV__ && (!url.startsWith('https://') || isLocalOrPrivateAiBackendUrl(url))) {
+    return '';
+  }
+  return url;
+}
+
+function resolveConfiguredAiBackendUrl(): string {
+  const envUrl = normalizeConfiguredAiBackendUrl(process.env.EXPO_PUBLIC_AI_BACKEND_URL);
+  if (envUrl) {
+    return envUrl;
+  }
+
+  const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, unknown>;
+  return __DEV__ ? normalizeConfiguredAiBackendUrl(extra.aiBackendUrl) : '';
+}
+
 function resolveAiBackendBaseUrl(): string {
-  const configured = toSafeString(process.env.EXPO_PUBLIC_AI_BACKEND_URL, 512);
+  const configured = resolveConfiguredAiBackendUrl();
   if (configured) {
-    return configured.replace(/\/+$/, '');
+    return configured;
   }
   if (!__DEV__) {
     return '';
@@ -69,21 +108,21 @@ function resolveAiBackendBaseUrl(): string {
 
 function mapDiagnosticCodeToUserMessage(code: string): string {
   if (code === AI_DIAGNOSTIC_CODES.UNAUTHORIZED) {
-    return 'Sesja wygasla. Zaloguj się ponownie i spróbuj jeszcze raz.';
+    return 'Sesja wygasła. Zaloguj się ponownie i spróbuj jeszcze raz.';
   }
   if (code === AI_DIAGNOSTIC_CODES.TIMEOUT) {
-    return 'Asystent odpowiada zbyt dlugo. Spróbuj ponownie za chwile.';
+    return 'Asystent odpowiada zbyt długo. Spróbuj ponownie za chwilę.';
   }
   if (code === AI_DIAGNOSTIC_CODES.VALIDATION) {
-    return 'Sprawdź pytanie i uzupelnij je bardziej szczegółowo.';
+    return 'Sprawdź pytanie i uzupełnij je bardziej szczegółowo.';
   }
   if (code === AI_DIAGNOSTIC_CODES.PROVIDER_ERROR) {
     return 'Asystent jest chwilowo niedostępny. Spróbuj ponownie za moment.';
   }
   if (code === AI_DIAGNOSTIC_CODES.UNAVAILABLE) {
-    return 'Asystent AI nie jest jeszcze skonfigurowany dla tego builda.';
+    return 'Asystent AI nie ma skonfigurowanego adresu backendu w tym buildzie.';
   }
-  return 'Wystapil błąd Asystenta AI. Spróbuj ponownie.';
+  return 'Wystąpił błąd Asystenta AI. Spróbuj ponownie.';
 }
 
 function isAbortError(error: unknown): boolean {

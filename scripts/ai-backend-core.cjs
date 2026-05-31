@@ -10,7 +10,7 @@ const AI_DIAGNOSTIC_CODES = Object.freeze({
   INTERNAL: 'AIW_INTERNAL',
 });
 
-const DEFAULT_TIMEOUT_MS = 15000;
+const DEFAULT_TIMEOUT_MS = 45000;
 const MAX_TEXT_LENGTH = 4000;
 const MAX_IMAGE_BASE64_LENGTH = 2_000_000;
 const MAX_ITEMS_PER_COLLECTION = 80;
@@ -20,16 +20,19 @@ const MAX_AI_CONTEXT_CHARS = 7000;
 const DEFAULT_RESPONSE_LANGUAGE = 'pl';
 
 class AiBackendError extends Error {
-  constructor(code, message, httpStatus = 500) {
+  constructor(code, message, httpStatus = 500, details = {}) {
     super(message);
     this.name = 'AiBackendError';
     this.code = code;
     this.httpStatus = httpStatus;
+    if (isObjectRecord(details)) {
+      Object.assign(this, details);
+    }
   }
 }
 
-function createAiBackendError(code, message, httpStatus = 500) {
-  return new AiBackendError(code, message, httpStatus);
+function createAiBackendError(code, message, httpStatus = 500, details = {}) {
+  return new AiBackendError(code, message, httpStatus, details);
 }
 
 function toSafeString(value, maxLength = MAX_TEXT_LENGTH) {
@@ -232,18 +235,61 @@ function normalizeEquipmentItems(value) {
   return [];
 }
 
+const MEASUREMENT_VALUE_KEYS = [
+  'ph',
+  'gh',
+  'kh',
+  'no2',
+  'no3',
+  'nh3nh4',
+  'nh3',
+  'nh4',
+  'po4',
+  'fe',
+  'temperature',
+  'ca',
+  'mg',
+  'k',
+  'tds',
+  'co2',
+];
+
+function hasUsefulMeasurementData(item) {
+  return MEASUREMENT_VALUE_KEYS.some((key) => toFiniteNumber(item?.[key]) !== null);
+}
+
 function mapMeasurement(item) {
-  return {
+  const mapped = {
     measuredAt: toIso(item?.measuredAt ?? item?.createdAt),
-    ph: toFiniteNumber(item?.ph),
-    no2: toFiniteNumber(item?.no2),
-    no3: toFiniteNumber(item?.no3),
-    nh3: toFiniteNumber(item?.nh3),
-    nh4: toFiniteNumber(item?.nh4),
-    gh: toFiniteNumber(item?.gh),
-    kh: toFiniteNumber(item?.kh),
-    temperature: toFiniteNumber(item?.temperature),
   };
+  MEASUREMENT_VALUE_KEYS.forEach((key) => {
+    mapped[key] = toFiniteNumber(item?.[key]);
+  });
+  return mapped;
+}
+
+function buildLatestMeasurementSnapshot(measurements) {
+  const snapshot = { measuredAt: null };
+  const valueSources = {};
+
+  MEASUREMENT_VALUE_KEYS.forEach((key) => {
+    const source = measurements.find((measurement) => toFiniteNumber(measurement?.[key]) !== null);
+    snapshot[key] = source ? toFiniteNumber(source?.[key]) : null;
+    if (source) {
+      const measuredAt = toIso(source?.measuredAt ?? source?.createdAt);
+      valueSources[key] = measuredAt;
+      if (!snapshot.measuredAt) {
+        snapshot.measuredAt = measuredAt;
+      }
+    }
+  });
+
+  return Object.keys(valueSources).length > 0
+    ? {
+        ...snapshot,
+        valueSources,
+      }
+    : null;
 }
 
 function mapEquipmentEntry(item) {
@@ -314,9 +360,10 @@ function buildAquariumAiContext({ request, userData, contextSummary }) {
   const selectedTank =
     tanks.find((tank) => toSafeString(tank?.id, 128) === selectedTankId) ?? tanks[0] ?? null;
 
-  const scopedMeasurements = selectedTankId
+  const scopedRawMeasurements = selectedTankId
     ? measurements.filter((item) => toSafeString(item?.tankId, 128) === selectedTankId)
     : measurements;
+  const scopedMeasurements = scopedRawMeasurements.filter(hasUsefulMeasurementData);
   const scopedStockItems = selectedTankId
     ? stockItems.filter((item) => toSafeString(item?.tankId, 128) === selectedTankId)
     : stockItems;
@@ -324,17 +371,25 @@ function buildAquariumAiContext({ request, userData, contextSummary }) {
     ? issueCases.filter((item) => toSafeString(item?.tankId, 128) === selectedTankId)
     : issueCases;
 
-  const latestMeasurements = scopedMeasurements.slice(0, 5).map(mapMeasurement);
-  const currentWater = latestMeasurements[0] ?? {
+  const latestMeasurements = scopedMeasurements.slice(0, 8).map(mapMeasurement);
+  const currentWater = buildLatestMeasurementSnapshot(scopedMeasurements) ?? {
     measuredAt: null,
     ph: null,
-    no2: null,
-    no3: null,
-    nh3: null,
-    nh4: null,
     gh: null,
     kh: null,
+    no2: null,
+    no3: null,
+    nh3nh4: null,
+    nh3: null,
+    nh4: null,
+    po4: null,
+    fe: null,
     temperature: null,
+    ca: null,
+    mg: null,
+    k: null,
+    tds: null,
+    co2: null,
   };
 
   const stockNormalized = scopedStockItems.slice(0, 30).map((item) => ({
@@ -472,7 +527,8 @@ function buildAquariumAiContext({ request, userData, contextSummary }) {
     appAnalysis: {
       activeIssueCount: Number(contextSummary?.activeIssueCount) || 0,
       stockCount: Number(contextSummary?.stockCount) || 0,
-      measurementCount: Number(contextSummary?.measurementCount) || 0,
+      measurementCount: scopedMeasurements.length || Number(contextSummary?.measurementCount) || 0,
+      rawMeasurementCount: scopedRawMeasurements.length,
       overdueActions:
         Number(contextSummary?.actionCalendarHighlights?.overdueCount) || 0,
     },
@@ -687,27 +743,197 @@ function sortByTimestampDesc(items, getDateCandidate) {
   });
 }
 
-function createFirestoreAiDataStore(db = getFirestore()) {
-  async function readCollectionByUser(collectionName, uid) {
-    const snapshot = await db
-      .collection(collectionName)
-      .where('userId', '==', uid)
-      .limit(MAX_ITEMS_PER_COLLECTION)
-      .get();
+function decodeFirestoreRestValue(value) {
+  if (!isObjectRecord(value)) {
+    return null;
+  }
+  if (Object.prototype.hasOwnProperty.call(value, 'nullValue')) {
+    return null;
+  }
+  if (Object.prototype.hasOwnProperty.call(value, 'booleanValue')) {
+    return Boolean(value.booleanValue);
+  }
+  if (Object.prototype.hasOwnProperty.call(value, 'integerValue')) {
+    return Number(value.integerValue);
+  }
+  if (Object.prototype.hasOwnProperty.call(value, 'doubleValue')) {
+    return Number(value.doubleValue);
+  }
+  if (Object.prototype.hasOwnProperty.call(value, 'timestampValue')) {
+    return toSafeString(value.timestampValue, 80);
+  }
+  if (Object.prototype.hasOwnProperty.call(value, 'stringValue')) {
+    return toSafeString(value.stringValue, 4000);
+  }
+  if (Object.prototype.hasOwnProperty.call(value, 'referenceValue')) {
+    return toSafeString(value.referenceValue, 512);
+  }
+  if (Object.prototype.hasOwnProperty.call(value, 'arrayValue')) {
+    const values = Array.isArray(value.arrayValue?.values) ? value.arrayValue.values : [];
+    return values.map(decodeFirestoreRestValue);
+  }
+  if (Object.prototype.hasOwnProperty.call(value, 'mapValue')) {
+    const fields = isObjectRecord(value.mapValue?.fields) ? value.mapValue.fields : {};
+    return decodeFirestoreRestFields(fields);
+  }
+  return null;
+}
 
-    return snapshot.docs.map((item) => ({
-      id: item.id,
-      ...item.data(),
-    }));
+function decodeFirestoreRestFields(fields) {
+  const result = {};
+  Object.entries(isObjectRecord(fields) ? fields : {}).forEach(([key, value]) => {
+    result[key] = decodeFirestoreRestValue(value);
+  });
+  return result;
+}
+
+function decodeFirestoreRestDocument(document) {
+  const name = toSafeString(document?.name, 2048);
+  const id = name.split('/').filter(Boolean).pop() || '';
+  return {
+    id,
+    ...decodeFirestoreRestFields(document?.fields),
+  };
+}
+
+function getFirestoreRestProjectId(options = {}) {
+  return toSafeString(
+    options.projectId ||
+      process.env.FIREBASE_PROJECT_ID ||
+      process.env.GCLOUD_PROJECT ||
+      process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID,
+    120
+  );
+}
+
+function shouldFallbackToFirestoreRest(error) {
+  const message = toSafeString(error?.message, 600).toLowerCase();
+  return (
+    message.includes('could not load the default credentials') ||
+    message.includes('application default credentials') ||
+    message.includes('default credentials')
+  );
+}
+
+function buildFirestoreRestError(error, collectionName) {
+  const wrapped = createAiBackendError(
+    AI_DIAGNOSTIC_CODES.INTERNAL,
+    'Nie udalo sie odczytac danych Firestore.',
+    500
+  );
+  wrapped.contextCollection = toSafeString(collectionName, 80) || null;
+  wrapped.contextErrorType = toSafeString(error?.name, 120) || null;
+  wrapped.contextErrorCode = toSafeString(error?.code, 120) || null;
+  wrapped.contextErrorMessage = toSafeString(error?.message, 300) || null;
+  return wrapped;
+}
+
+async function readCollectionByUserViaFirestoreRest({
+  collectionName,
+  uid,
+  idToken,
+  projectId,
+}) {
+  const safeProjectId = toSafeString(projectId, 120);
+  const safeToken = toSafeString(idToken, 4096);
+  if (!safeProjectId || !safeToken || typeof fetch !== 'function') {
+    throw createAiBackendError(
+      AI_DIAGNOSTIC_CODES.INTERNAL,
+      'Brak konfiguracji do odczytu Firestore REST.',
+      500
+    );
+  }
+
+  const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
+    safeProjectId
+  )}/databases/(default)/documents:runQuery`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${safeToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      structuredQuery: {
+        from: [{ collectionId: collectionName }],
+        where: {
+          fieldFilter: {
+            field: { fieldPath: 'userId' },
+            op: 'EQUAL',
+            value: { stringValue: uid },
+          },
+        },
+        limit: MAX_ITEMS_PER_COLLECTION,
+      },
+    }),
+  });
+
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+
+  if (!response.ok) {
+    const errorPayload = isObjectRecord(payload?.error) ? payload.error : {};
+    const error = createAiBackendError(
+      AI_DIAGNOSTIC_CODES.INTERNAL,
+      'Nie udalo sie odczytac danych Firestore REST.',
+      500
+    );
+    error.contextCollection = toSafeString(collectionName, 80) || null;
+    error.contextErrorType = 'FirestoreRestError';
+    error.contextErrorCode =
+      toSafeString(errorPayload.status, 120) ||
+      toSafeString(errorPayload.code, 120) ||
+      String(response.status);
+    error.contextErrorMessage =
+      toSafeString(errorPayload.message, 300) ||
+      `Firestore REST HTTP ${response.status}`;
+    throw error;
+  }
+
+  const rows = Array.isArray(payload) ? payload : [];
+  return rows
+    .map((row) => (isObjectRecord(row?.document) ? decodeFirestoreRestDocument(row.document) : null))
+    .filter(Boolean);
+}
+
+function createFirestoreAiDataStore(db = getFirestore(), options = {}) {
+  async function readCollectionByUser(collectionName, uid, authContext = {}) {
+    try {
+      const snapshot = await db
+        .collection(collectionName)
+        .where('userId', '==', uid)
+        .limit(MAX_ITEMS_PER_COLLECTION)
+        .get();
+
+      return snapshot.docs.map((item) => ({
+        id: item.id,
+        ...item.data(),
+      }));
+    } catch (error) {
+      if (!shouldFallbackToFirestoreRest(error)) {
+        throw buildFirestoreRestError(error, collectionName);
+      }
+
+      return readCollectionByUserViaFirestoreRest({
+        collectionName,
+        uid,
+        idToken: authContext.idToken,
+        projectId: getFirestoreRestProjectId(options),
+      });
+    }
   }
 
   return {
-    async getUserData(uid, requestedTankId = null) {
+    async getUserData(uid, requestedTankId = null, authContext = {}) {
       const [tanks, measurements, stockItems, issueCases] = await Promise.all([
-        readCollectionByUser('tanks', uid),
-        readCollectionByUser('measurements', uid),
-        readCollectionByUser('stockItems', uid),
-        readCollectionByUser('tankDiseaseCases', uid),
+        readCollectionByUser('tanks', uid, authContext),
+        readCollectionByUser('measurements', uid, authContext),
+        readCollectionByUser('stockItems', uid, authContext),
+        readCollectionByUser('tankDiseaseCases', uid, authContext),
       ]);
 
       const normalizedTankId = validateOptionalTankId(requestedTankId);
@@ -1089,11 +1315,42 @@ function parseJsonObjectFromText(textValue) {
   }
 }
 
+function buildProviderErrorDetails(response, responsePayload) {
+  const errorPayload = isObjectRecord(responsePayload?.error) ? responsePayload.error : {};
+  const incompleteDetails = isObjectRecord(responsePayload?.incomplete_details)
+    ? responsePayload.incomplete_details
+    : {};
+
+  return {
+    providerHttpStatus: Number(response?.status) || 0,
+    providerErrorType: toSafeString(errorPayload.type, 120) || null,
+    providerErrorCode: toSafeString(errorPayload.code, 120) || null,
+    providerErrorParam: toSafeString(errorPayload.param, 120) || null,
+    providerErrorMessage: toSafeString(errorPayload.message, 300) || null,
+    providerResponseStatus: toSafeString(responsePayload?.status, 80) || null,
+    providerIncompleteReason: toSafeString(incompleteDetails.reason, 120) || null,
+  };
+}
+
+function buildProviderFetchErrorDetails(error) {
+  const cause = isObjectRecord(error?.cause) ? error.cause : {};
+  return {
+    providerHttpStatus: 0,
+    providerErrorType: toSafeString(error?.name, 120) || 'FetchError',
+    providerErrorCode:
+      toSafeString(error?.code, 120) || toSafeString(cause.code, 120) || null,
+    providerErrorParam: null,
+    providerErrorMessage: toSafeString(error?.message, 300) || null,
+    providerResponseStatus: null,
+    providerIncompleteReason: null,
+  };
+}
+
 function createOpenAiResponsesProvider({
   apiKey,
   model = DEFAULT_OPENAI_MODEL,
   baseUrl = DEFAULT_OPENAI_BASE_URL,
-  maxOutputTokens = 900,
+  maxOutputTokens = 2400,
 } = {}) {
   const safeApiKey = toSafeString(apiKey, 4096);
   if (!safeApiKey) {
@@ -1106,7 +1363,8 @@ function createOpenAiResponsesProvider({
   const safeMaxOutputTokens =
     Number.isFinite(Number(maxOutputTokens)) && Number(maxOutputTokens) > 100
       ? Math.round(Number(maxOutputTokens))
-      : 900;
+      : 2400;
+  const shouldUseLowReasoning = /^gpt-5(?:-|$)/i.test(safeModel);
 
   async function requestJsonOutput(inputItems) {
     if (typeof fetch !== 'function') {
@@ -1117,23 +1375,34 @@ function createOpenAiResponsesProvider({
       );
     }
 
-    const response = await fetch(`${normalizedBaseUrl}/responses`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${safeApiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: safeModel,
-        input: inputItems,
-        max_output_tokens: safeMaxOutputTokens,
-        text: {
-          format: {
-            type: 'json_object',
-          },
+    let response = null;
+    try {
+      response = await fetch(`${normalizedBaseUrl}/responses`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${safeApiKey}`,
+          'Content-Type': 'application/json',
         },
-      }),
-    });
+        body: JSON.stringify({
+          model: safeModel,
+          input: inputItems,
+          max_output_tokens: safeMaxOutputTokens,
+          ...(shouldUseLowReasoning ? { reasoning: { effort: 'minimal' } } : {}),
+          text: {
+            format: {
+              type: 'json_object',
+            },
+          },
+        }),
+      });
+    } catch (error) {
+      throw createAiBackendError(
+        AI_DIAGNOSTIC_CODES.PROVIDER_ERROR,
+        'Provider AI jest chwilowo niedostepny.',
+        502,
+        buildProviderFetchErrorDetails(error)
+      );
+    }
 
     let responsePayload = null;
     try {
@@ -1146,7 +1415,8 @@ function createOpenAiResponsesProvider({
       throw createAiBackendError(
         AI_DIAGNOSTIC_CODES.PROVIDER_ERROR,
         'Provider AI jest chwilowo niedostepny.',
-        502
+        502,
+        buildProviderErrorDetails(response, responsePayload)
       );
     }
 
@@ -1176,8 +1446,8 @@ function createOpenAiResponsesProvider({
         '}',
         '',
         'Limity:',
-        '- answer: string, max 1200 znakow,',
-        '- recommendations: string[], 0-6 krotkich punktow, bez dublowania,',
+        '- answer: string, max 600 znakow, tylko krotkie podsumowanie w 1-3 zdaniach,',
+        '- recommendations: string[], 2-6 krotkich punktow dzialania, bez dublowania,',
         '- warnings: string[], 0-4 krotkie ostrzezenia.',
         '',
         'Zasady ogolne:',
@@ -1186,9 +1456,10 @@ function createOpenAiResponsesProvider({
         '- Tresc pol answer, recommendations i warnings przetlumacz na jezyk odpowiedzi.',
         '- Odpowiedz oprzyj wylacznie o dane z kontekstu i pytanie uzytkownika.',
         '- Nie wymyslaj brakujacych parametrow, pomiarow, faktow, obsady, sprzetu ani dat.',
-        '- Jesli brakuje waznych danych, napisz to w answer i dodaj praktyczne kroki jak te dane uzupelnic.',
-        '- Jesli problemow jest kilka, wskaz maksymalnie 3 najwazniejsze i ustaw je wedlug pilnosci.',
-        '- W recommendations umieszczaj najpierw dzialania najpilniejsze, potem kroki kontrolne.',
+        '- Jesli brakuje waznych danych, w answer napisz tylko co ogranicza ocene, a praktyczne kroki daj w recommendations.',
+        '- Jesli problemow jest kilka, w answer wskaz maksymalnie 3 najwazniejsze obserwacje, bez planu dzialania ciagiem.',
+        '- W recommendations umieszczaj najpierw dzialania najpilniejsze, potem kroki kontrolne, chyba ze tryb dotyczy samej interpretacji parametrow.',
+        '- Nie opisuj planu dzialania w answer jako ciaglego akapitu; kazdy krok planu musi byc osobnym elementem recommendations.',
         '- Nie strasz uzytkownika bez podstaw.',
         '- Nie obiecuj pewnego efektu.',
         '- Nie zalecaj pelnego restartu akwarium jako pierwszej opcji.',
@@ -1197,7 +1468,7 @@ function createOpenAiResponsesProvider({
         '- Jesli zalecasz podmiane wody, domyslnie sugeruj czesciowa podmiane, chyba ze kontekst wskazuje na sytuacje krytyczna.',
         '',
         'Zasady dla problemow z woda:',
-        '- Priorytetyzuj bezpieczne kroki: testy, czesciowa podmiana wody, napowietrzanie, ograniczenie karmienia, sprawdzenie filtra.',
+        '- Dla problemow awaryjnych priorytetyzuj bezpieczne kroki: testy, czesciowa podmiana wody, napowietrzanie, ograniczenie karmienia, sprawdzenie filtra.',
         '- Jesli brakuje NO2, NO3, pH, GH, KH lub temperatury, wskaz, ktore dane warto uzupelnic.',
         '- Nie zgaduj wartosci parametrow.',
         '',
@@ -1223,7 +1494,7 @@ function createOpenAiResponsesProvider({
         'Jesli tryb rozmowy istnieje, zastosuj dodatkowo:',
         '- what_now / improvement_plan: najpierw co zrobic teraz, potem co sprawdzic pozniej.',
         '- stock_check: skup sie na obsadzie.',
-        '- interpret_parameters / water_parameters: skup sie na parametrach wody i brakach danych.',
+        '- interpret_parameters / water_parameters: przeanalizuj aktualne parametry wody i zwroc sugestie; nie ukladaj priorytetow ani planu dzialania wedlug pilnosci.',
         '- water_history_analysis: skup sie na historii pomiarow, trendach i kontekscie zdarzen w akwarium.',
         '- sick_fish: bez pewnej diagnozy, najpierw jakosc wody, tlen, temperatura, filtracja i zachowanie ryb; dodaj ostrzezenie weterynaryjne.',
         '- algae_problem / algae_analysis: skup sie na swietle, czasie swiecenia, NO3/PO4, nawozeniu, CO2, karmieniu, filtracji i stabilnosci.',
@@ -1234,7 +1505,7 @@ function createOpenAiResponsesProvider({
         '- Jesli sa mniej niz 2 pomiary, napisz wprost, ze trendu nie da sie wiarygodnie ocenic i zinterpretuj tylko aktualny pomiar.',
         '- Jesli pomiary sa stare, ostrzez, ze analiza moze byc nieaktualna.',
         '- W answer podaj krotko: ocena trendu + maksymalnie 3 najwazniejsze obserwacje + brakujace dane.',
-        '- W recommendations podaj: co zrobic teraz i co zmierzyc przy kolejnym pomiarze.',
+        '- W recommendations podaj osobnymi punktami: co zrobic teraz i co zmierzyc przy kolejnym pomiarze.',
         '- W warnings dodaj pilne ostrzezenia i ostroznosc przy gwaltownych zmianach pH/KH/GH.',
         '- Przy wysokim NO2 lub NH3/NH4 traktuj sytuacje jako pilna: test, czesciowa podmiana, napowietrzanie, ograniczenie karmienia, sprawdzenie filtra.',
         '- Przy rosnacym NO3 zasugeruj sprawdzenie karmienia, obsady, podmian i filtracji.',
@@ -1555,6 +1826,15 @@ function mapUnknownErrorToAiError(error) {
     return authMapped;
   }
 
+  const explicitCode = toSafeString(error?.code, 80);
+  if (explicitCode === AI_DIAGNOSTIC_CODES.VALIDATION) {
+    return createAiBackendError(
+      AI_DIAGNOSTIC_CODES.VALIDATION,
+      'Nieprawidlowe dane requestu.',
+      400
+    );
+  }
+
   return createAiBackendError(
     AI_DIAGNOSTIC_CODES.INTERNAL,
     'Wystapil nieoczekiwany blad backendu AI.',
@@ -1566,6 +1846,7 @@ function createSafeLogContext(base) {
   return {
     endpoint: toSafeString(base.endpoint, 80),
     operation: toSafeString(base.operation, 80),
+    aiStage: toSafeString(base.aiStage, 80) || null,
     diagnosticCode: toSafeString(base.diagnosticCode, 80),
     uid: toSafeString(base.uid, 128) || null,
     tankId: toSafeString(base.tankId, 128) || null,
@@ -1577,7 +1858,85 @@ function createSafeLogContext(base) {
     durationMs: Number(base.durationMs) || 0,
     provider: toSafeString(base.provider, 64) || 'unknown',
     httpStatus: Number(base.httpStatus) || 0,
+    providerHttpStatus: Number(base.providerHttpStatus) || 0,
+    providerErrorType: toSafeString(base.providerErrorType, 120) || null,
+    providerErrorCode: toSafeString(base.providerErrorCode, 120) || null,
+    providerErrorParam: toSafeString(base.providerErrorParam, 120) || null,
+    providerErrorMessage: toSafeString(base.providerErrorMessage, 300) || null,
+    providerResponseStatus: toSafeString(base.providerResponseStatus, 80) || null,
+    providerIncompleteReason:
+      toSafeString(base.providerIncompleteReason, 120) || null,
+    contextCollection: toSafeString(base.contextCollection, 80) || null,
+    contextErrorType: toSafeString(base.contextErrorType, 120) || null,
+    contextErrorCode: toSafeString(base.contextErrorCode, 120) || null,
+    contextErrorMessage: toSafeString(base.contextErrorMessage, 300) || null,
   };
+}
+
+function pickContextErrorLogDetails(error) {
+  const cause = isObjectRecord(error?.cause) ? error.cause : {};
+  return {
+    contextCollection: toSafeString(error?.contextCollection, 80) || null,
+    contextErrorType: toSafeString(error?.name, 120) || null,
+    contextErrorCode:
+      toSafeString(error?.contextErrorCode, 120) ||
+      toSafeString(error?.code, 120) ||
+      toSafeString(cause.code, 120) ||
+      null,
+    contextErrorMessage:
+      toSafeString(error?.contextErrorMessage, 300) ||
+      toSafeString(error?.message, 300) ||
+      null,
+  };
+}
+
+function createMinimalUserData(uid) {
+  return {
+    uid: toSafeString(uid, 128),
+    tanks: [],
+    measurements: [],
+    stockItems: [],
+    issueCases: [],
+    actionCalendar: [],
+    equipment: [],
+  };
+}
+
+function buildFallbackAiContext(uid, tankId, request) {
+  const userData = createMinimalUserData(uid);
+  const contextSummary = buildUserAquariumContext(uid, tankId, userData);
+  const aiContext = limitAiContext(
+    buildAquariumAiContext({ request, userData, contextSummary }),
+    MAX_AI_CONTEXT_CHARS
+  );
+  return { contextSummary, aiContext };
+}
+
+function pickProviderErrorLogDetails(error) {
+  return {
+    providerHttpStatus: Number(error?.providerHttpStatus) || 0,
+    providerErrorType: toSafeString(error?.providerErrorType, 120) || null,
+    providerErrorCode: toSafeString(error?.providerErrorCode, 120) || null,
+    providerErrorParam: toSafeString(error?.providerErrorParam, 120) || null,
+    providerErrorMessage: toSafeString(error?.providerErrorMessage, 300) || null,
+    providerResponseStatus: toSafeString(error?.providerResponseStatus, 80) || null,
+    providerIncompleteReason:
+      toSafeString(error?.providerIncompleteReason, 120) || null,
+  };
+}
+
+function shouldReturnProviderFallback({
+  providerName,
+  mappedError,
+  requestForProvider,
+  contextSummary,
+}) {
+  return (
+    toSafeString(providerName, 64).toLowerCase() === 'openai' &&
+    mappedError?.code === AI_DIAGNOSTIC_CODES.PROVIDER_ERROR &&
+    Boolean(requestForProvider) &&
+    Boolean(contextSummary)
+  );
 }
 
 function logOperation(logger, level, message, context) {
@@ -1638,7 +1997,7 @@ function createAiRequestHandlers(deps) {
         401
       );
     }
-    return uid;
+    return { uid, idToken: token };
   }
 
   async function handleChat({ headers, payload }) {
@@ -1647,18 +2006,56 @@ function createAiRequestHandlers(deps) {
 
     let uid = null;
     let request = null;
+    let contextSummary = null;
+    let aiContext = null;
+    let requestForProvider = null;
+    let resolvedLanguage = DEFAULT_RESPONSE_LANGUAGE;
+    let aiStage = 'validate';
     try {
       request = validateChatRequest(payload);
-      uid = await resolveUidFromHeaders(headers);
-      const userData = await dataStore.getUserData(uid, request.tankId);
-      const contextSummary = buildUserAquariumContext(uid, request.tankId, userData);
-      const aiContext = limitAiContext(
-        buildAquariumAiContext({ request, userData, contextSummary }),
-        MAX_AI_CONTEXT_CHARS
-      );
-      const resolvedLanguage = resolveResponseLanguage(request, aiContext);
-      const requestForProvider = { ...request, resolvedLanguage };
+      aiStage = 'auth';
+      const authContext = await resolveUidFromHeaders(headers);
+      uid = authContext.uid;
+      try {
+        aiStage = 'context';
+        const userData = await dataStore.getUserData(uid, request.tankId, authContext);
+        contextSummary = buildUserAquariumContext(uid, request.tankId, userData);
+        aiContext = limitAiContext(
+          buildAquariumAiContext({ request, userData, contextSummary }),
+          MAX_AI_CONTEXT_CHARS
+        );
+      } catch (contextError) {
+        const mappedContextError = mapUnknownErrorToAiError(contextError);
+        if (
+          mappedContextError.code === AI_DIAGNOSTIC_CODES.UNAUTHORIZED ||
+          mappedContextError.code === AI_DIAGNOSTIC_CODES.VALIDATION
+        ) {
+          throw contextError;
+        }
 
+        const fallbackContext = buildFallbackAiContext(uid, request.tankId, request);
+        contextSummary = fallbackContext.contextSummary;
+        aiContext = fallbackContext.aiContext;
+        logOperation(logger, 'warn', 'ai_chat_context_fallback_used', {
+          endpoint: '/ai/chat',
+          operation: 'chat',
+          aiStage,
+          diagnosticCode: AI_DIAGNOSTIC_CODES.OK,
+          uid,
+          tankId: request.tankId,
+          payloadKeys,
+          questionLength: request.question.length,
+          additionalInfoLength: request.additionalInfo.length,
+          provider: providerName,
+          durationMs: now() - startedAt,
+          httpStatus: 200,
+          ...pickContextErrorLogDetails(contextError),
+        });
+      }
+      resolvedLanguage = resolveResponseLanguage(request, aiContext);
+      requestForProvider = { ...request, resolvedLanguage };
+
+      aiStage = 'provider';
       const providerResult = await withTimeout(
         aiProvider.generateChat({
           uid,
@@ -1678,6 +2075,7 @@ function createAiRequestHandlers(deps) {
       logOperation(logger, 'info', 'ai_chat_request_processed', {
         endpoint: '/ai/chat',
         operation: 'chat',
+        aiStage: 'done',
         diagnosticCode: AI_DIAGNOSTIC_CODES.OK,
         uid,
         tankId: request.tankId,
@@ -1717,6 +2115,62 @@ function createAiRequestHandlers(deps) {
         );
       }
 
+      if (
+        shouldReturnProviderFallback({
+          providerName,
+          mappedError: mapped,
+          requestForProvider,
+          contextSummary,
+        })
+      ) {
+        const fallbackResult = await createRuleBasedAiProvider().generateChat({
+          request: requestForProvider,
+          contextSummary: aiContext || contextSummary,
+        });
+        const normalizedFallback = normalizeChatProviderResponse(
+          fallbackResult,
+          requestForProvider,
+          resolvedLanguage
+        );
+        const durationMs = now() - startedAt;
+        logOperation(logger, 'warn', 'ai_chat_provider_fallback_used', {
+          endpoint: '/ai/chat',
+          operation: 'chat',
+          aiStage,
+          diagnosticCode: AI_DIAGNOSTIC_CODES.OK,
+          uid,
+          tankId: request?.tankId ?? null,
+          payloadKeys,
+          questionLength: request?.question?.length ?? 0,
+          additionalInfoLength: request?.additionalInfo?.length ?? 0,
+          provider: providerName,
+          durationMs,
+          httpStatus: 200,
+          ...pickProviderErrorLogDetails(mapped),
+        });
+
+        return {
+          httpStatus: 200,
+          body: {
+            ok: true,
+            diagnosticCode: AI_DIAGNOSTIC_CODES.OK,
+            data: {
+              answer: normalizedFallback.answer,
+              recommendations: normalizedFallback.recommendations,
+              warnings: normalizeStringArray(
+                [
+                  'OpenAI chwilowo nie zwrocil odpowiedzi, wiec pokazuje awaryjna odpowiedz lokalna.',
+                  ...normalizedFallback.warnings,
+                ],
+                4,
+                250
+              ),
+              contextSummary,
+            },
+          },
+        };
+      }
+
       const durationMs = now() - startedAt;
       logOperation(
         logger,
@@ -1725,6 +2179,7 @@ function createAiRequestHandlers(deps) {
         {
           endpoint: '/ai/chat',
           operation: 'chat',
+          aiStage,
           diagnosticCode: mapped.code,
           uid,
           tankId: request?.tankId ?? null,
@@ -1734,6 +2189,7 @@ function createAiRequestHandlers(deps) {
           provider: providerName,
           durationMs,
           httpStatus: mapped.httpStatus,
+          ...pickProviderErrorLogDetails(mapped),
         }
       );
 
@@ -1754,18 +2210,58 @@ function createAiRequestHandlers(deps) {
 
     let uid = null;
     let request = null;
+    let contextSummary = null;
+    let aiContext = null;
+    let requestForProvider = null;
+    let resolvedLanguage = DEFAULT_RESPONSE_LANGUAGE;
+    let aiStage = 'validate';
     try {
       request = validateVisionRequest(payload);
-      uid = await resolveUidFromHeaders(headers);
-      const userData = await dataStore.getUserData(uid, request.tankId);
-      const contextSummary = buildUserAquariumContext(uid, request.tankId, userData);
-      const aiContext = limitAiContext(
-        buildAquariumAiContext({ request, userData, contextSummary }),
-        MAX_AI_CONTEXT_CHARS
-      );
-      const resolvedLanguage = resolveResponseLanguage(request, aiContext);
-      const requestForProvider = { ...request, resolvedLanguage };
+      aiStage = 'auth';
+      const authContext = await resolveUidFromHeaders(headers);
+      uid = authContext.uid;
+      try {
+        aiStage = 'context';
+        const userData = await dataStore.getUserData(uid, request.tankId, authContext);
+        contextSummary = buildUserAquariumContext(uid, request.tankId, userData);
+        aiContext = limitAiContext(
+          buildAquariumAiContext({ request, userData, contextSummary }),
+          MAX_AI_CONTEXT_CHARS
+        );
+      } catch (contextError) {
+        const mappedContextError = mapUnknownErrorToAiError(contextError);
+        if (
+          mappedContextError.code === AI_DIAGNOSTIC_CODES.UNAUTHORIZED ||
+          mappedContextError.code === AI_DIAGNOSTIC_CODES.VALIDATION
+        ) {
+          throw contextError;
+        }
 
+        const fallbackContext = buildFallbackAiContext(uid, request.tankId, request);
+        contextSummary = fallbackContext.contextSummary;
+        aiContext = fallbackContext.aiContext;
+        logOperation(logger, 'warn', 'ai_vision_context_fallback_used', {
+          endpoint: '/ai/vision/analyze',
+          operation: 'vision',
+          aiStage,
+          diagnosticCode: AI_DIAGNOSTIC_CODES.OK,
+          uid,
+          tankId: request.tankId,
+          payloadKeys,
+          questionLength: request.question.length,
+          additionalInfoLength: request.additionalInfo.length,
+          hasImageUrl: Boolean(request.imageUrl),
+          hasImageBase64: Boolean(request.imageBase64),
+          provider: providerName,
+          durationMs: now() - startedAt,
+          httpStatus: 200,
+          ...pickContextErrorLogDetails(contextError),
+        });
+      }
+      resolvedLanguage = resolveResponseLanguage(request, aiContext);
+      requestForProvider = { ...request, resolvedLanguage };
+
+      aiStage = 'provider';
       const providerResult = await withTimeout(
         aiProvider.analyzeVision({
           uid,
@@ -1784,6 +2280,7 @@ function createAiRequestHandlers(deps) {
       logOperation(logger, 'info', 'ai_vision_request_processed', {
         endpoint: '/ai/vision/analyze',
         operation: 'vision',
+        aiStage: 'done',
         diagnosticCode: AI_DIAGNOSTIC_CODES.OK,
         uid,
         tankId: request.tankId,
@@ -1823,6 +2320,63 @@ function createAiRequestHandlers(deps) {
         );
       }
 
+      if (
+        shouldReturnProviderFallback({
+          providerName,
+          mappedError: mapped,
+          requestForProvider,
+          contextSummary,
+        })
+      ) {
+        const fallbackResult = await createRuleBasedAiProvider().analyzeVision({
+          request: requestForProvider,
+          contextSummary: aiContext || contextSummary,
+        });
+        const normalizedFallback = normalizeVisionProviderResponse(
+          fallbackResult,
+          requestForProvider,
+          resolvedLanguage
+        );
+        const durationMs = now() - startedAt;
+        logOperation(logger, 'warn', 'ai_vision_provider_fallback_used', {
+          endpoint: '/ai/vision/analyze',
+          operation: 'vision',
+          aiStage,
+          diagnosticCode: AI_DIAGNOSTIC_CODES.OK,
+          uid,
+          tankId: request?.tankId ?? null,
+          payloadKeys,
+          questionLength: request?.question?.length ?? 0,
+          additionalInfoLength: request?.additionalInfo?.length ?? 0,
+          hasImageUrl: Boolean(request?.imageUrl),
+          hasImageBase64: Boolean(request?.imageBase64),
+          provider: providerName,
+          durationMs,
+          httpStatus: 200,
+          ...pickProviderErrorLogDetails(mapped),
+        });
+
+        return {
+          httpStatus: 200,
+          body: {
+            ok: true,
+            diagnosticCode: AI_DIAGNOSTIC_CODES.OK,
+            data: {
+              ...normalizedFallback,
+              warnings: normalizeStringArray(
+                [
+                  'OpenAI chwilowo nie zwrocil odpowiedzi, wiec pokazuje awaryjna odpowiedz lokalna.',
+                  ...normalizedFallback.warnings,
+                ],
+                4,
+                250
+              ),
+              contextSummary,
+            },
+          },
+        };
+      }
+
       const durationMs = now() - startedAt;
       logOperation(
         logger,
@@ -1831,6 +2385,7 @@ function createAiRequestHandlers(deps) {
         {
           endpoint: '/ai/vision/analyze',
           operation: 'vision',
+          aiStage,
           diagnosticCode: mapped.code,
           uid,
           tankId: request?.tankId ?? null,
@@ -1842,6 +2397,7 @@ function createAiRequestHandlers(deps) {
           provider: providerName,
           durationMs,
           httpStatus: mapped.httpStatus,
+          ...pickProviderErrorLogDetails(mapped),
         }
       );
 
@@ -1878,6 +2434,5 @@ module.exports = {
   createRuleBasedAiProvider,
   createOpenAiResponsesProvider,
   createAiRequestHandlers,
+  shouldReturnProviderFallback,
 };
-
-

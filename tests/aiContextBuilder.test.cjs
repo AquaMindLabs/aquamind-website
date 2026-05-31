@@ -107,6 +107,40 @@ test('buildUserAquariumContext uses fallback-safe shape when data is missing', (
   assert.equal(Array.isArray(context.actionCalendarHighlights.highlights), true);
 });
 
+test('buildUserAquariumContext keeps latest available values and skips empty measurements', () => {
+  const context = buildUserAquariumContext('user_a', 'tank_a', {
+    tanks: [{ id: 'tank_a', userId: 'user_a', name: 'Akwarium' }],
+    measurements: [
+      {
+        id: 'm_empty_newest',
+        tankId: 'tank_a',
+        measuredAt: '2026-05-20T08:00:00.000Z',
+      },
+      {
+        id: 'm_no3',
+        tankId: 'tank_a',
+        no3: 25,
+        measuredAt: '2026-05-01T08:00:00.000Z',
+      },
+      {
+        id: 'm_ph_old',
+        tankId: 'tank_a',
+        ph: 6.8,
+        measuredAt: '2026-04-01T08:00:00.000Z',
+      },
+    ],
+    stockItems: [],
+    issueCases: [],
+  });
+
+  assert.equal(context.measurementCount, 2);
+  assert.equal(context.meta.rawMeasurementCount, 3);
+  assert.equal(context.latestCoreMeasurements.no3, 25);
+  assert.equal(context.latestCoreMeasurements.ph, 6.8);
+  assert.equal(context.latestCoreMeasurements.valueSources.ph, '2026-04-01T08:00:00.000Z');
+  assert.equal(context.measurements.latest.length, 2);
+});
+
 test('buildUserAquariumContext applies deterministic size limit', () => {
   const veryLong = 'x'.repeat(3000);
   const data = {
@@ -164,4 +198,3 @@ test('buildUserAquariumContext applies deterministic size limit', () => {
     'context should respect maxContextChars'
   );
 });
-

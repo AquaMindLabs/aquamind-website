@@ -833,6 +833,76 @@ test('userSubscriptions: admin can write, owner can read only own doc', async ()
   );
 });
 
+test('aiAssistantHistory: owner can create/read/delete own history entry', async () => {
+  const userDb = asUser('user_a');
+  const historyRef = doc(userDb, 'users', 'user_a', 'aiAssistantHistory', 'ai-chat-1');
+  const createdAt = new Date('2026-05-30T10:00:00.000Z');
+
+  await assertSucceeds(
+    setDoc(historyRef, {
+      userId: 'user_a',
+      id: 'ai-chat-1',
+      type: 'chat',
+      createdAtMs: createdAt.getTime(),
+      createdAtLabel: '30.05.2026, 12:00:00',
+      question: 'Co zrobic z glonami?',
+      answer: 'Ogranicz swiatlo i sprawdz NO3 oraz PO4.',
+      recommendations: ['Skroc swiecenie', 'Zrob pomiary'],
+      warnings: ['To nie porada weterynaryjna.'],
+      hadEmptyDataFallback: false,
+      createdAt,
+      updatedAt: createdAt,
+      schemaVersion: 1,
+    })
+  );
+
+  await assertSucceeds(getDoc(historyRef));
+  await assertSucceeds(getDocs(collection(userDb, 'users', 'user_a', 'aiAssistantHistory')));
+  await assertSucceeds(deleteDoc(historyRef));
+});
+
+test('aiAssistantHistory: user cannot access or write foreign history', async () => {
+  const userDb = asUser('user_a');
+  const otherDb = asUser('user_b');
+  const createdAt = new Date('2026-05-30T10:00:00.000Z');
+
+  await assertFails(getDocs(collection(userDb, 'users', 'user_b', 'aiAssistantHistory')));
+  await assertFails(
+    setDoc(doc(userDb, 'users', 'user_b', 'aiAssistantHistory', 'ai-chat-foreign'), {
+      userId: 'user_b',
+      id: 'ai-chat-foreign',
+      type: 'chat',
+      createdAtMs: createdAt.getTime(),
+      createdAtLabel: '30.05.2026, 12:00:00',
+      question: 'Czy moge zapisac cudza historie?',
+      answer: 'Nie.',
+      recommendations: [],
+      warnings: [],
+      hadEmptyDataFallback: false,
+      createdAt,
+      updatedAt: createdAt,
+      schemaVersion: 1,
+    })
+  );
+  await assertFails(
+    setDoc(doc(otherDb, 'users', 'user_b', 'aiAssistantHistory', 'ai-chat-bad-owner'), {
+      userId: 'user_a',
+      id: 'ai-chat-bad-owner',
+      type: 'chat',
+      createdAtMs: createdAt.getTime(),
+      createdAtLabel: '30.05.2026, 12:00:00',
+      question: 'Czy moge podszyc userId?',
+      answer: 'Nie.',
+      recommendations: [],
+      warnings: [],
+      hadEmptyDataFallback: false,
+      createdAt,
+      updatedAt: createdAt,
+      schemaVersion: 1,
+    })
+  );
+});
+
 test('admin can read and update fish/plant catalog requests', async () => {
   await seedDoc('fishCatalogRequests', 'fish_req_1', {
     type: 'missing_fish',

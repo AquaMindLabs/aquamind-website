@@ -199,6 +199,32 @@ const IS_EXPO_GO =
   Constants.appOwnership === 'expo' ||
   Constants.executionEnvironment === 'storeClient';
 const IS_IOS_EXPO_GO = Platform.OS === 'ios' && IS_EXPO_GO;
+
+function buildAiDisplayPoints(value, maxItems = 5) {
+  const raw = String(value ?? '').trim();
+  if (!raw) {
+    return [];
+  }
+
+  const linePoints = raw
+    .split(/\n+/)
+    .map((item) => item.replace(/^\s*(?:[-*]|\d+[.)])\s*/, '').trim())
+    .filter(Boolean);
+  if (linePoints.length > 1) {
+    return linePoints.slice(0, maxItems);
+  }
+
+  const sentencePoints = raw
+    .match(/[^.!?]+[.!?]+|[^.!?]+$/g)
+    ?.map((item) => item.trim())
+    .filter(Boolean);
+  if (Array.isArray(sentencePoints) && sentencePoints.length > 1) {
+    return sentencePoints.slice(0, maxItems);
+  }
+
+  return [raw];
+}
+
 const ENABLE_FISH_IMAGES = true;
 const ENABLE_PLANT_IMAGES = true;
 const CATALOG_EAGER_RENDER_LIMIT = 150;
@@ -18403,22 +18429,64 @@ export default function HomeScreen() {
 
   const buildWaterHistoryAiPayload = (tank) => {
       const tankId = String(tank?.id ?? '').trim();
+      const measurementValueKeys = [
+        'ph',
+        'gh',
+        'kh',
+        'no2',
+        'no3',
+        'nh3nh4',
+        'temperature',
+        'po4',
+        'fe',
+        'ca',
+        'mg',
+        'k',
+        'tds',
+        'co2',
+      ];
+      const toMeasurementNumber = (value) => {
+        const numeric = Number(value);
+        return Number.isFinite(numeric) ? numeric : null;
+      };
+      const hasMeasurementData = (item) =>
+        measurementValueKeys.some((key) => toMeasurementNumber(item?.[key]) !== null);
+      const mapMeasurementForAi = (item) => {
+        const mapped = {
+          measuredAt: item?.measuredAt ?? item?.createdAt ?? null,
+        };
+        measurementValueKeys.forEach((key) => {
+          mapped[key] = toMeasurementNumber(item?.[key]);
+        });
+        return mapped;
+      };
+      const buildLatestMeasurementForAi = (items) => {
+        const snapshot = { measuredAt: null };
+        const valueSources = {};
+        measurementValueKeys.forEach((key) => {
+          const source = items.find((item) => toMeasurementNumber(item?.[key]) !== null);
+          snapshot[key] = source ? toMeasurementNumber(source?.[key]) : null;
+          if (source) {
+            const measuredAt = source?.measuredAt ?? source?.createdAt ?? null;
+            valueSources[key] = measuredAt;
+            if (!snapshot.measuredAt) {
+              snapshot.measuredAt = measuredAt;
+            }
+          }
+        });
+        return Object.keys(valueSources).length > 0
+          ? {
+              ...snapshot,
+              valueSources,
+            }
+          : null;
+      };
       const tankMeasurements = normalizeArray(measurements)
         .filter((item) => String(item?.tankId ?? '').trim() === tankId)
         .sort((left, right) => getMeasurementRecordedAtMs(right) - getMeasurementRecordedAtMs(left));
-      const latestMeasurement = tankMeasurements[0] ?? null;
-      const measurementHistory = tankMeasurements.slice(0, 8).map((item) => ({
-        measuredAt: item?.measuredAt ?? item?.createdAt ?? null,
-        ph: item?.ph ?? null,
-        gh: item?.gh ?? null,
-        kh: item?.kh ?? null,
-        no2: item?.no2 ?? null,
-        no3: item?.no3 ?? null,
-        nh3nh4: item?.nh3nh4 ?? null,
-        temperature: item?.temperature ?? null,
-        po4: item?.po4 ?? null,
-        co2: item?.co2 ?? null,
-      }));
+      const usefulTankMeasurements = tankMeasurements.filter(hasMeasurementData);
+      const latestMeasurement = buildLatestMeasurementForAi(usefulTankMeasurements);
+      const measurementHistory = usefulTankMeasurements.slice(0, 8).map(mapMeasurementForAi);
 
       const timelineEvents = normalizeArray(historyIssueTimeline).map((item) => ({
         at:
@@ -18486,14 +18554,14 @@ export default function HomeScreen() {
                 : null,
           },
         },
-        latestMeasurement:
-          latestMeasurement && measurementHistory.length > 0 ? measurementHistory[0] : null,
+        latestMeasurement,
         measurementHistory,
         recentEvents,
         analysisMeta: {
-          measurementCount: tankMeasurements.length,
+          measurementCount: usefulTankMeasurements.length,
+          rawMeasurementCount: tankMeasurements.length,
           latestMeasurementAgeDays,
-          hasTrendData: tankMeasurements.length >= 2,
+          hasTrendData: usefulTankMeasurements.length >= 2,
         },
       };
 
@@ -36527,48 +36595,154 @@ export default function HomeScreen() {
                         <View
                           style={{
                             borderWidth: 1,
-                            borderColor: themeBorder,
-                            borderRadius: 8,
-                            padding: 10,
+                            borderColor: themeAccent,
+                            borderRadius: 14,
+                            padding: 12,
                             marginTop: 10,
-                            backgroundColor: themeCardBgAlt,
+                            backgroundColor: themeAccentSoftBg,
                           }}>
-                          <Text style={{ color: themeTextSecondary, fontSize: 11 }}>
-                            {t('historyAiUpdatedAt', { value: historyAiAtLabel || '-' })}
-                          </Text>
-                          <Text style={{ color: themeTextSecondary, marginTop: 6, fontSize: 12 }}>
-                            {String(historyAiResult?.answer ?? '').trim() || t('historyAiEmptyAnswer')}
-                          </Text>
+                          <View
+                            style={{
+                              flexDirection: 'row',
+                              justifyContent: 'space-between',
+                              alignItems: 'center',
+                              gap: 8,
+                            }}>
+                            <Text
+                              style={{
+                                color: themeTextPrimary,
+                                fontSize: 14,
+                                fontWeight: '800',
+                                flex: 1,
+                              }}>
+                              {t('historyAiTrendTitle')}
+                            </Text>
+                            <Text style={{ color: themeTextSecondary, fontSize: 11 }}>
+                              {historyAiAtLabel || '-'}
+                            </Text>
+                          </View>
+                          <View
+                            style={{
+                              marginTop: 10,
+                              borderRadius: 10,
+                              padding: 10,
+                              backgroundColor: themeCardBg,
+                              borderWidth: 1,
+                              borderColor: themeBorder,
+                            }}>
+                            {buildAiDisplayPoints(historyAiResult?.answer, 5)
+                              .map((paragraph, index, points) => (
+                                <View
+                                  key={`history-ai-answer-${index}`}
+                                  style={{
+                                    flexDirection: 'row',
+                                    gap: 8,
+                                    marginTop: index === 0 ? 0 : 6,
+                                    alignItems: 'flex-start',
+                                  }}>
+                                  {points.length > 1 ? (
+                                    <View
+                                      style={{
+                                        width: 7,
+                                        height: 7,
+                                        borderRadius: 4,
+                                        backgroundColor: themeAccent,
+                                        marginTop: 6,
+                                      }}
+                                    />
+                                  ) : null}
+                                  <Text
+                                    style={{
+                                      color: themeTextPrimary,
+                                      fontSize: 13,
+                                      lineHeight: 19,
+                                      flex: 1,
+                                    }}>
+                                    {paragraph}
+                                  </Text>
+                                </View>
+                              ))}
+                            {!String(historyAiResult?.answer ?? '').trim() ? (
+                              <Text style={{ color: themeTextSecondary, fontSize: 13 }}>
+                                {t('historyAiEmptyAnswer')}
+                              </Text>
+                            ) : null}
+                          </View>
                           {normalizeArray(historyAiResult?.recommendations).length > 0 ? (
-                            <>
+                            <View
+                              style={{
+                                marginTop: 10,
+                                borderRadius: 10,
+                                padding: 10,
+                                backgroundColor: themeCardBg,
+                                borderWidth: 1,
+                                borderColor: themeBorder,
+                              }}>
                               <Text
                                 style={{
                                   color: themeTextPrimary,
-                                  marginTop: 8,
                                   fontWeight: '700',
-                                  fontSize: 12,
+                                  fontSize: 13,
                                 }}>
                                 {t('historyAiActionsNowTitle')}
                               </Text>
                               {normalizeArray(historyAiResult?.recommendations)
                                 .slice(0, 4)
                                 .map((item, index) => (
-                                  <Text
+                                  <View
                                     key={`history-ai-rec-tab-${index}`}
-                                    style={{ color: themeTextSecondary, marginTop: 3, fontSize: 12 }}>
-                                    - {String(item ?? '').trim()}
-                                  </Text>
+                                    style={{
+                                      flexDirection: 'row',
+                                      gap: 8,
+                                      marginTop: 8,
+                                      alignItems: 'flex-start',
+                                    }}>
+                                    <View
+                                      style={{
+                                        width: 22,
+                                        height: 22,
+                                        borderRadius: 11,
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        backgroundColor: themeAccent,
+                                      }}>
+                                      <Text
+                                        style={{
+                                          color: themeAccentOnStrong,
+                                          fontSize: 11,
+                                          fontWeight: '800',
+                                        }}>
+                                        {index + 1}
+                                      </Text>
+                                    </View>
+                                    <Text
+                                      style={{
+                                        color: themeTextSecondary,
+                                        fontSize: 12,
+                                        lineHeight: 18,
+                                        flex: 1,
+                                      }}>
+                                      {String(item ?? '').trim()}
+                                    </Text>
+                                  </View>
                                 ))}
-                            </>
+                            </View>
                           ) : null}
                           {normalizeArray(historyAiResult?.warnings).length > 0 ? (
-                            <>
+                            <View
+                              style={{
+                                marginTop: 10,
+                                borderRadius: 10,
+                                padding: 10,
+                                backgroundColor: themeCardBg,
+                                borderWidth: 1,
+                                borderColor: themeWarningText,
+                              }}>
                               <Text
                                 style={{
-                                  color: themeTextPrimary,
-                                  marginTop: 8,
+                                  color: themeWarningText,
                                   fontWeight: '700',
-                                  fontSize: 12,
+                                  fontSize: 13,
                                 }}>
                                 {t('historyAiWarningsTitle')}
                               </Text>
@@ -36577,11 +36751,16 @@ export default function HomeScreen() {
                                 .map((item, index) => (
                                   <Text
                                     key={`history-ai-warning-tab-${index}`}
-                                    style={{ color: themeWarningText, marginTop: 3, fontSize: 12 }}>
+                                    style={{
+                                      color: themeWarningText,
+                                      marginTop: 6,
+                                      fontSize: 12,
+                                      lineHeight: 18,
+                                    }}>
                                     - {String(item ?? '').trim()}
                                   </Text>
                                 ))}
-                            </>
+                            </View>
                           ) : null}
                         </View>
                       ) : null}

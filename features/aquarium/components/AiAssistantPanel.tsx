@@ -2,6 +2,17 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Image, Pressable, View } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import {
+  collection,
+  deleteDoc,
+  doc,
+  getDocs,
+  limit,
+  orderBy,
+  query,
+  serverTimestamp,
+  setDoc,
+} from 'firebase/firestore';
+import {
   AiChatRequestError,
   requestAiChat,
 } from '@/features/aquarium/services/aiChatService';
@@ -15,6 +26,7 @@ import {
   trackAiRequestStarted,
   trackAiRequestSuccess,
 } from '@/shared/services/observability';
+import { db } from '@/shared/services/firebase';
 import { Text, TextInput } from '@/features/aquarium/components/LocalizedText';
 
 type AiAssistantTheme = {
@@ -38,6 +50,7 @@ type AiAssistantTheme = {
 type AiChatHistoryEntry = {
   type: 'chat';
   id: string;
+  createdAtMs: number;
   createdAtLabel: string;
   question: string;
   answer: string;
@@ -49,6 +62,7 @@ type AiChatHistoryEntry = {
 type AiVisionHistoryEntry = {
   type: 'vision';
   id: string;
+  createdAtMs: number;
   createdAtLabel: string;
   question: string;
   imageUri: string;
@@ -91,14 +105,16 @@ type PickedVisionImage = {
 
 const MAX_HISTORY_ITEMS = 8;
 const MAX_DESCRIPTION_LENGTH = 600;
+const AI_HISTORY_COLLECTION = 'aiAssistantHistory';
 const QUICK_ACTIONS = Object.freeze([
   {
     id: 'interpret-params',
     label: 'Zinterpretuj moje parametry',
     question:
-      'Zinterpretuj moje ostatnie parametry w aktywnym akwarium i powiedz, co jest najpilniejsze.',
-    additionalInfo: "Skup się na pH, NO2, NO3, NH3/NH4 i temperaturze.",
+      'Przeanalizuj aktualne parametry w aktywnym akwarium i zwróć praktyczne sugestie.',
+    additionalInfo: 'Skup się na pH, NO2, NO3, NH3/NH4 i temperaturze. Nie układaj priorytetów.',
     mode: 'chat',
+    aiMode: 'water_parameters',
   },
   {
     id: 'what-now',
@@ -153,6 +169,120 @@ function toSafeString(value: unknown, maxLength = 4000): string {
   return normalized.slice(0, maxLength);
 }
 
+function buildHistoryEntryTitle(entry: AiAssistantEntry): string {
+  const source = entry.question || (entry.type === 'vision' ? 'Analiza zdjecia' : 'Rozmowa z AI');
+  const normalized = source.replace(/\s+/g, ' ').trim();
+  const prefix = entry.type === 'vision' ? 'Analiza zdjecia: ' : '';
+  const maxLength = entry.type === 'vision' ? 58 : 72;
+  const title = normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1).trim()}...` : normalized;
+  return `${prefix}${title}`;
+}
+
+function buildDisplayPoints(value: string | string[], maxItems = 8): string[] {
+  const source = Array.isArray(value) ? value.join('\n') : value;
+  const normalized = source.trim();
+  if (!normalized) {
+    return [];
+  }
+
+  return normalized
+    .split(/\n+|(?:^|\s)(?:[-*]|\d+[.)])\s+/)
+    .map((item) => item.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .slice(0, maxItems);
+}
+
+function getAiHistoryCollectionRef(uid: string) {
+  return collection(db, 'users', uid, AI_HISTORY_COLLECTION);
+}
+
+function normalizeStringList(value: unknown, maxItems = 8, maxLength = 1200): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => toSafeString(item, maxLength))
+    .filter(Boolean)
+    .slice(0, maxItems);
+}
+
+function normalizeHypotheses(value: unknown): AiVisionHistoryEntry['hypotheses'] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item, index) => {
+      const source = item as { key?: unknown; label?: unknown; confidence?: unknown };
+      const label = toSafeString(source?.label, 300);
+      if (!label) {
+        return null;
+      }
+      const rawConfidence = Number(source?.confidence);
+      const confidence = Number.isFinite(rawConfidence)
+        ? Math.min(1, Math.max(0, rawConfidence))
+        : 0;
+      return {
+        key: toSafeString(source?.key, 80) || `hypothesis-${index}`,
+        label,
+        confidence,
+      };
+    })
+    .filter((item): item is AiVisionHistoryEntry['hypotheses'][number] => Boolean(item))
+    .slice(0, 8);
+}
+
+function normalizeAiHistoryEntry(id: string, data: Record<string, unknown>): AiAssistantEntry | null {
+  const type = data.type === 'vision' ? 'vision' : data.type === 'chat' ? 'chat' : null;
+  if (!type) {
+    return null;
+  }
+
+  const createdAtMs = Number(data.createdAtMs);
+  const fallbackCreatedAtMs = Number.isFinite(createdAtMs) ? createdAtMs : Date.now();
+  const createdAtLabel =
+    toSafeString(data.createdAtLabel, 80) || new Date(fallbackCreatedAtMs).toLocaleString();
+  const question = toSafeString(data.question, 1200);
+
+  if (type === 'chat') {
+    const answer = toSafeString(data.answer, 8000);
+    if (!question || !answer) {
+      return null;
+    }
+    return {
+      type: 'chat',
+      id,
+      createdAtMs: fallbackCreatedAtMs,
+      createdAtLabel,
+      question,
+      answer,
+      recommendations: normalizeStringList(data.recommendations, 8, 1200),
+      warnings: normalizeStringList(data.warnings, 6, 1200),
+      hadEmptyDataFallback: data.hadEmptyDataFallback === true,
+    };
+  }
+
+  const summary = toSafeString(data.summary, 8000);
+  if (!question || !summary) {
+    return null;
+  }
+  return {
+    type: 'vision',
+    id,
+    createdAtMs: fallbackCreatedAtMs,
+    createdAtLabel,
+    question,
+    imageUri: toSafeString(data.imageUri, 4000),
+    summary,
+    hypotheses: normalizeHypotheses(data.hypotheses),
+    verificationSteps: normalizeStringList(data.verificationSteps, 8, 1200),
+    actionPlan: normalizeStringList(data.actionPlan, 8, 1200),
+    warnings: normalizeStringList(data.warnings, 6, 1200),
+    hadEmptyDataFallback: data.hadEmptyDataFallback === true,
+    unreadableImageFallback: data.unreadableImageFallback === true,
+  };
+}
+
 export function AiAssistantPanel({
   user,
   selectedTankId = null,
@@ -175,6 +305,10 @@ export function AiAssistantPanel({
     null
   );
   const [history, setHistory] = useState<AiAssistantEntry[]>([]);
+  const [selectedHistoryEntryId, setSelectedHistoryEntryId] = useState<string | null>(null);
+  const [deletingHistoryEntryId, setDeletingHistoryEntryId] = useState<string | null>(null);
+  const [historyStatusMessage, setHistoryStatusMessage] = useState('');
+  const [pendingChatMode, setPendingChatMode] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [retryableError, setRetryableError] = useState(false);
@@ -186,6 +320,7 @@ export function AiAssistantPanel({
     question: string;
     additionalInfo: string;
     tankId: string | null;
+    mode: string;
   } | null>(null);
   const [lastVisionRequest, setLastVisionRequest] = useState<{
     question: string;
@@ -204,9 +339,117 @@ export function AiAssistantPanel({
   const activeTankIdForRequest = effectiveIncludeActiveTank ? selectedTankId || null : null;
   const canRetry = Boolean(lastRetryKind) && retryableError && !isLoading;
   const historyItems = useMemo(() => history, [history]);
+  const selectedHistoryEntry = useMemo(
+    () => historyItems.find((entry) => entry.id === selectedHistoryEntryId) ?? null,
+    [historyItems, selectedHistoryEntryId]
+  );
   const pushHistoryEntry = useCallback((entry: AiAssistantEntry) => {
     setHistory((previous) => [entry, ...previous].slice(0, MAX_HISTORY_ITEMS));
   }, []);
+
+  const saveHistoryEntry = useCallback(
+    async (entry: AiAssistantEntry) => {
+      const uid = toSafeString(user?.uid, 128);
+      if (!uid) {
+        return;
+      }
+
+      try {
+        await setDoc(doc(getAiHistoryCollectionRef(uid), entry.id), {
+          ...entry,
+          userId: uid,
+          schemaVersion: 1,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        setHistoryStatusMessage('');
+      } catch {
+        setHistoryStatusMessage(
+          'Nie udalo sie zapisac historii w chmurze. Wpis zostal pokazany lokalnie.'
+        );
+      }
+    },
+    [user?.uid]
+  );
+
+  const deleteHistoryEntry = useCallback(
+    async (entryId: string) => {
+      const uid = toSafeString(user?.uid, 128);
+      const removedEntry = historyItems.find((entry) => entry.id === entryId) ?? null;
+
+      setDeletingHistoryEntryId(entryId);
+      setHistory((previous) => previous.filter((entry) => entry.id !== entryId));
+      if (selectedHistoryEntryId === entryId) {
+        setSelectedHistoryEntryId(null);
+      }
+
+      try {
+        if (uid) {
+          await deleteDoc(doc(getAiHistoryCollectionRef(uid), entryId));
+        }
+        setHistoryStatusMessage('');
+      } catch {
+        if (removedEntry) {
+          setHistory((previous) =>
+            [removedEntry, ...previous]
+              .filter((entry, index, list) => list.findIndex((item) => item.id === entry.id) === index)
+              .sort((a, b) => b.createdAtMs - a.createdAtMs)
+              .slice(0, MAX_HISTORY_ITEMS)
+          );
+        }
+        setHistoryStatusMessage('Nie udalo sie usunac wpisu historii. Sprobuj ponownie.');
+      } finally {
+        setDeletingHistoryEntryId(null);
+      }
+    },
+    [historyItems, selectedHistoryEntryId, user?.uid]
+  );
+
+  useEffect(() => {
+    if (selectedHistoryEntryId && !selectedHistoryEntry) {
+      setSelectedHistoryEntryId(null);
+    }
+  }, [selectedHistoryEntry, selectedHistoryEntryId]);
+
+  useEffect(() => {
+    const uid = toSafeString(user?.uid, 128);
+    if (!uid || !hasAiAssistantAccess) {
+      setHistory([]);
+      setSelectedHistoryEntryId(null);
+      return undefined;
+    }
+
+    let isMounted = true;
+    const loadHistory = async () => {
+      try {
+        const snapshot = await getDocs(
+          query(
+            getAiHistoryCollectionRef(uid),
+            orderBy('createdAtMs', 'desc'),
+            limit(MAX_HISTORY_ITEMS)
+          )
+        );
+        if (!isMounted) {
+          return;
+        }
+        const nextHistory = snapshot.docs
+          .map((item) => normalizeAiHistoryEntry(item.id, item.data()))
+          .filter((item): item is AiAssistantEntry => Boolean(item));
+        setHistory(nextHistory);
+        setHistoryStatusMessage('');
+      } catch {
+        if (isMounted) {
+          setHistoryStatusMessage('Nie udalo sie wczytac zapisanej historii AI.');
+        }
+      }
+    };
+
+    void loadHistory();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [hasAiAssistantAccess, user?.uid]);
 
   const setHandledError = useCallback((error: AiChatRequestError) => {
     setErrorMessage(error.message);
@@ -254,8 +497,12 @@ export function AiAssistantPanel({
 
   const runChatRequest = useCallback(
     async (
-      requestOverride: { question: string; additionalInfo: string; tankId: string | null } | null =
-        null
+      requestOverride: {
+        question: string;
+        additionalInfo: string;
+        tankId: string | null;
+        mode: string;
+      } | null = null
     ) => {
       if (!hasAiAssistantAccess || isLoading) {
         return;
@@ -265,6 +512,7 @@ export function AiAssistantPanel({
         question: toSafeString(question, MAX_DESCRIPTION_LENGTH),
         additionalInfo: '',
         tankId: activeTankIdForRequest,
+        mode: toSafeString(pendingChatMode, 64),
       };
       if (!aiConsentDataProcessing) {
         setHandledError(
@@ -304,6 +552,7 @@ export function AiAssistantPanel({
           question: nextRequest.question,
           additionalInfo: nextRequest.additionalInfo,
           tankId: nextRequest.tankId,
+          mode: nextRequest.mode,
         });
 
         const hasMinimalData = Boolean(
@@ -315,17 +564,22 @@ export function AiAssistantPanel({
           hasMinimalData ? buildMissingDataHints(response.contextSummary) : []
         );
 
-        pushHistoryEntry({
+        const createdAtMs = Date.now();
+        const historyEntry: AiChatHistoryEntry = {
           type: 'chat',
-          id: `ai-chat-${Date.now()}`,
-          createdAtLabel: new Date().toLocaleString(),
+          id: `ai-chat-${createdAtMs}`,
+          createdAtMs,
+          createdAtLabel: new Date(createdAtMs).toLocaleString(),
           question: nextRequest.question,
           answer: toSafeString(response.answer, 8000),
           recommendations: response.recommendations.slice(0, 4),
           warnings: response.warnings.slice(0, 3),
           hadEmptyDataFallback: hasMinimalData,
-        });
+        };
+        pushHistoryEntry(historyEntry);
+        void saveHistoryEntry(historyEntry);
         setQuestion('');
+        setPendingChatMode('');
         setLastRetryKind(null);
 
         trackAiRequestSuccess({
@@ -369,6 +623,8 @@ export function AiAssistantPanel({
       isLoading,
       pushHistoryEntry,
       question,
+      pendingChatMode,
+      saveHistoryEntry,
       setHandledError,
       user,
       buildMissingDataHints,
@@ -490,12 +746,14 @@ export function AiAssistantPanel({
           hasMinimalData ? buildMissingDataHints(response.contextSummary) : []
         );
 
-        pushHistoryEntry({
+        const createdAtMs = Date.now();
+        const historyEntry: AiVisionHistoryEntry = {
           type: 'vision',
-          id: `ai-vision-${Date.now()}`,
-          createdAtLabel: new Date().toLocaleString(),
-          question: nextRequest.question || 'Analiza zdjęcia akwarium',
-          imageUri: nextRequest.image.uri,
+          id: `ai-vision-${createdAtMs}`,
+          createdAtMs,
+          createdAtLabel: new Date(createdAtMs).toLocaleString(),
+          question: nextRequest.question || 'Analiza zdjecia akwarium',
+          imageUri: uploaded.downloadUrl || nextRequest.image.uri,
           summary: response.summary,
           hypotheses: response.hypotheses,
           verificationSteps: response.verificationSteps,
@@ -503,7 +761,9 @@ export function AiAssistantPanel({
           warnings: response.warnings,
           hadEmptyDataFallback: hasMinimalData,
           unreadableImageFallback: response.unreadableImageFallback,
-        });
+        };
+        pushHistoryEntry(historyEntry);
+        void saveHistoryEntry(historyEntry);
         setLastRetryKind(null);
 
         trackAiRequestSuccess({
@@ -548,6 +808,7 @@ export function AiAssistantPanel({
       isLoading,
       pushHistoryEntry,
       question,
+      saveHistoryEntry,
       selectedVisionImage,
       setHandledError,
       user,
@@ -563,6 +824,7 @@ export function AiAssistantPanel({
       }
 
       clearErrorState();
+      setPendingChatMode(toSafeString((action as { aiMode?: unknown }).aiMode, 64));
       setQuestion(
         toSafeString(`${action.question}\n${action.additionalInfo}`, MAX_DESCRIPTION_LENGTH)
       );
@@ -843,7 +1105,10 @@ export function AiAssistantPanel({
 
           <TextInput
             value={question}
-            onChangeText={setQuestion}
+            onChangeText={(value) => {
+              setQuestion(value);
+              setPendingChatMode('');
+            }}
             placeholder="Opisz problem lub pytanie (np. ryby lapia powietrze, NO3 rosnie, glony na szybach)."
             placeholderTextColor={theme.themePlaceholder}
             multiline
@@ -1041,128 +1306,326 @@ export function AiAssistantPanel({
           }}>
           Historia rozmowy i analiz
         </Text>
+        {historyStatusMessage ? (
+          <Text style={{ color: theme.themeWarningText, fontSize: 11, marginBottom: 8 }}>
+            {historyStatusMessage}
+          </Text>
+        ) : null}
         {historyItems.length === 0 ? (
           <Text style={{ color: theme.themeTextSecondary, fontSize: 12 }}>
             Brak wpisów. Użyj szybkiej akcji albo zadaj pytanie dla aktywnego akwarium.
           </Text>
-        ) : (
-          historyItems.map((entry) => (
-            <View
-              key={entry.id}
-              style={{
-                borderWidth: 1,
-                borderColor: theme.themeBorder,
-                borderRadius: 8,
-                padding: 10,
-                marginBottom: 8,
-                backgroundColor: theme.themeCardBgAlt,
-              }}>
-              <Text style={{ color: theme.themeTextSecondary, fontSize: 11 }}>
-                {entry.createdAtLabel}
-              </Text>
-              <Text style={{ color: theme.themeTextPrimary, fontWeight: '700', marginTop: 4 }}>
-                Q: {entry.question}
-              </Text>
+        ) : selectedHistoryEntry ? (
+          (() => {
+            const entry = selectedHistoryEntry;
+            const title = buildHistoryEntryTitle(entry);
+            const answerPoints =
+              entry.type === 'chat' ? buildDisplayPoints(entry.answer, 10) : [];
 
-              {entry.type === 'chat' ? (
-                <>
-                  <Text style={{ color: theme.themeTextPrimary, marginTop: 6 }}>
-                    A: {entry.answer}
-                  </Text>
-                  {entry.recommendations.length > 0 ? (
-                    <View style={{ marginTop: 6 }}>
-                      {entry.recommendations.slice(0, 3).map((item, index) => (
-                        <Text
-                          key={`${entry.id}-rec-${index}`}
-                          style={{
-                            color: theme.themeTextSecondary,
-                            fontSize: 12,
-                            marginTop: 2,
-                          }}>
-                          - {item}
-                        </Text>
-                      ))}
-                    </View>
-                  ) : null}
-                </>
-              ) : (
-                <>
-                  <Image
-                    source={{ uri: entry.imageUri }}
+            return (
+              <View
+                style={{
+                  borderWidth: 1,
+                  borderColor: theme.themeBorderStrong,
+                  borderRadius: 10,
+                  padding: 12,
+                  backgroundColor: theme.themeCardBgAlt,
+                }}>
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 10,
+                    marginBottom: 10,
+                  }}>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => setSelectedHistoryEntryId(null)}
                     style={{
-                      width: '100%',
-                      height: 150,
-                      borderRadius: 6,
-                      marginTop: 8,
-                      backgroundColor: '#00000022',
-                    }}
-                    resizeMode="cover"
-                  />
-                  <Text style={{ color: theme.themeTextPrimary, marginTop: 6 }}>
-                    {entry.summary}
-                  </Text>
-                  {entry.hypotheses.length > 0 ? (
-                    <View style={{ marginTop: 6 }}>
-                      {entry.hypotheses.slice(0, 3).map((item) => (
-                        <Text
-                          key={`${entry.id}-${item.key}`}
-                          style={{ color: theme.themeTextSecondary, fontSize: 12, marginTop: 2 }}>
-                          - {item.label} ({Math.round(item.confidence * 100)}%)
-                        </Text>
-                      ))}
-                    </View>
-                  ) : null}
-                  {entry.verificationSteps.length > 0 ? (
-                    <View style={{ marginTop: 6 }}>
-                      <Text style={{ color: theme.themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
-                        Kroki weryfikacyjne:
-                      </Text>
-                      {entry.verificationSteps.slice(0, 3).map((item, index) => (
-                        <Text
-                          key={`${entry.id}-verify-${index}`}
-                          style={{ color: theme.themeTextSecondary, fontSize: 12, marginTop: 2 }}>
-                          - {item}
-                        </Text>
-                      ))}
-                    </View>
-                  ) : null}
-                  {entry.actionPlan.length > 0 ? (
-                    <View style={{ marginTop: 6 }}>
-                      <Text style={{ color: theme.themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
-                        Plan działania:
-                      </Text>
-                      {entry.actionPlan.slice(0, 3).map((item, index) => (
-                        <Text
-                          key={`${entry.id}-plan-${index}`}
-                          style={{ color: theme.themeTextSecondary, fontSize: 12, marginTop: 2 }}>
-                          - {item}
-                        </Text>
-                      ))}
-                    </View>
-                  ) : null}
-                  <Text style={{ color: theme.themeWarningText, marginTop: 6, fontSize: 12 }}>
-                    To nie porada weterynaryjna.
-                  </Text>
-                  {entry.unreadableImageFallback ? (
-                    <Text style={{ color: theme.themeWarningText, marginTop: 4, fontSize: 11 }}>
-                      Fallback: obraz byl nieczytelny, wynik ma charakter orientacyjny.
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 6,
+                      flex: 1,
+                    }}>
+                    <MaterialIcons name="arrow-back" size={18} color={theme.themeAccent} />
+                    <Text style={{ color: theme.themeAccent, fontWeight: '700', fontSize: 12 }}>
+                      Wroc do historii
                     </Text>
-                  ) : null}
-                </>
-              )}
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={deletingHistoryEntryId === entry.id}
+                    onPress={() => void deleteHistoryEntry(entry.id)}
+                    style={{
+                      borderWidth: 1,
+                      borderColor: theme.themeDangerText,
+                      borderRadius: 999,
+                      paddingVertical: 6,
+                      paddingHorizontal: 10,
+                    }}>
+                    <Text
+                      style={{ color: theme.themeDangerText, fontSize: 11, fontWeight: '700' }}>
+                      {deletingHistoryEntryId === entry.id ? 'Usuwanie...' : 'Usun'}
+                    </Text>
+                  </Pressable>
+                </View>
 
-              {entry.warnings.length > 0 ? (
-                <Text style={{ color: theme.themeWarningText, marginTop: 6, fontSize: 12 }}>
-                  {entry.warnings[0]}
+                <Text style={{ color: theme.themeTextPrimary, fontWeight: '800', fontSize: 15 }}>
+                  {title}
                 </Text>
-              ) : null}
-              {entry.hadEmptyDataFallback ? (
-                <Text style={{ color: theme.themeWarningText, marginTop: 6, fontSize: 11 }}>
-                  Odpowiedz bazowala na ograniczonych danych.
+                <Text style={{ color: theme.themeTextSecondary, fontSize: 11, marginTop: 3 }}>
+                  {entry.createdAtLabel}
                 </Text>
-              ) : null}
-            </View>
-          ))
+
+                <View style={{ marginTop: 12 }}>
+                  <Text style={{ color: theme.themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+                    Pytanie
+                  </Text>
+                  <Text style={{ color: theme.themeTextPrimary, marginTop: 5, lineHeight: 20 }}>
+                    {entry.question}
+                  </Text>
+                </View>
+
+                {entry.type === 'chat' ? (
+                  <>
+                    <View style={{ marginTop: 14 }}>
+                      <Text
+                        style={{ color: theme.themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+                        Odpowiedz
+                      </Text>
+                      {answerPoints.length > 1 ? (
+                        <View style={{ marginTop: 5, gap: 6 }}>
+                          {answerPoints.map((item, index) => (
+                            <Text
+                              key={`${entry.id}-answer-point-${index}`}
+                              style={{ color: theme.themeTextPrimary, lineHeight: 20 }}>
+                              {index + 1}. {item}
+                            </Text>
+                          ))}
+                        </View>
+                      ) : (
+                        <Text
+                          style={{ color: theme.themeTextPrimary, marginTop: 5, lineHeight: 20 }}>
+                          {entry.answer}
+                        </Text>
+                      )}
+                    </View>
+
+                    {entry.recommendations.length > 0 ? (
+                      <View style={{ marginTop: 14 }}>
+                        <Text
+                          style={{
+                            color: theme.themeTextPrimary,
+                            fontWeight: '700',
+                            fontSize: 12,
+                          }}>
+                          Plan dzialania
+                        </Text>
+                        {entry.recommendations.map((item, index) => (
+                          <Text
+                            key={`${entry.id}-detail-rec-${index}`}
+                            style={{
+                              color: theme.themeTextSecondary,
+                              fontSize: 12,
+                              marginTop: 5,
+                              lineHeight: 18,
+                            }}>
+                            {index + 1}. {item}
+                          </Text>
+                        ))}
+                      </View>
+                    ) : null}
+                  </>
+                ) : (
+                  <>
+                    <Image
+                      source={{ uri: entry.imageUri }}
+                      style={{
+                        width: '100%',
+                        height: 180,
+                        borderRadius: 8,
+                        marginTop: 12,
+                        backgroundColor: '#00000022',
+                      }}
+                      resizeMode="cover"
+                    />
+                    <View style={{ marginTop: 14 }}>
+                      <Text
+                        style={{ color: theme.themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+                        Odpowiedz
+                      </Text>
+                      <Text style={{ color: theme.themeTextPrimary, marginTop: 5, lineHeight: 20 }}>
+                        {entry.summary}
+                      </Text>
+                    </View>
+                    {entry.hypotheses.length > 0 ? (
+                      <View style={{ marginTop: 14 }}>
+                        <Text
+                          style={{
+                            color: theme.themeTextPrimary,
+                            fontWeight: '700',
+                            fontSize: 12,
+                          }}>
+                          Hipotezy
+                        </Text>
+                        {entry.hypotheses.map((item, index) => (
+                          <Text
+                            key={`${entry.id}-detail-hypothesis-${item.key}-${index}`}
+                            style={{
+                              color: theme.themeTextSecondary,
+                              fontSize: 12,
+                              marginTop: 5,
+                              lineHeight: 18,
+                            }}>
+                            {index + 1}. {item.label} ({Math.round(item.confidence * 100)}%)
+                          </Text>
+                        ))}
+                      </View>
+                    ) : null}
+                    {entry.verificationSteps.length > 0 ? (
+                      <View style={{ marginTop: 14 }}>
+                        <Text
+                          style={{
+                            color: theme.themeTextPrimary,
+                            fontWeight: '700',
+                            fontSize: 12,
+                          }}>
+                          Kroki weryfikacyjne
+                        </Text>
+                        {entry.verificationSteps.map((item, index) => (
+                          <Text
+                            key={`${entry.id}-detail-verify-${index}`}
+                            style={{
+                              color: theme.themeTextSecondary,
+                              fontSize: 12,
+                              marginTop: 5,
+                              lineHeight: 18,
+                            }}>
+                            {index + 1}. {item}
+                          </Text>
+                        ))}
+                      </View>
+                    ) : null}
+                    {entry.actionPlan.length > 0 ? (
+                      <View style={{ marginTop: 14 }}>
+                        <Text
+                          style={{
+                            color: theme.themeTextPrimary,
+                            fontWeight: '700',
+                            fontSize: 12,
+                          }}>
+                          Plan dzialania
+                        </Text>
+                        {entry.actionPlan.map((item, index) => (
+                          <Text
+                            key={`${entry.id}-detail-plan-${index}`}
+                            style={{
+                              color: theme.themeTextSecondary,
+                              fontSize: 12,
+                              marginTop: 5,
+                              lineHeight: 18,
+                            }}>
+                            {index + 1}. {item}
+                          </Text>
+                        ))}
+                      </View>
+                    ) : null}
+                    {entry.unreadableImageFallback ? (
+                      <Text style={{ color: theme.themeWarningText, marginTop: 10, fontSize: 11 }}>
+                        Fallback: obraz byl nieczytelny, wynik ma charakter orientacyjny.
+                      </Text>
+                    ) : null}
+                  </>
+                )}
+
+                {entry.warnings.length > 0 ? (
+                  <View style={{ marginTop: 14 }}>
+                    <Text
+                      style={{ color: theme.themeWarningText, fontWeight: '700', fontSize: 12 }}>
+                      Ostrzezenia
+                    </Text>
+                    {entry.warnings.map((warning, index) => (
+                      <Text
+                        key={`${entry.id}-detail-warning-${index}`}
+                        style={{ color: theme.themeWarningText, fontSize: 12, marginTop: 4 }}>
+                        {index + 1}. {warning}
+                      </Text>
+                    ))}
+                  </View>
+                ) : null}
+                {entry.hadEmptyDataFallback ? (
+                  <Text style={{ color: theme.themeWarningText, marginTop: 10, fontSize: 11 }}>
+                    Odpowiedz bazowala na ograniczonych danych.
+                  </Text>
+                ) : null}
+              </View>
+            );
+          })()
+        ) : (
+          historyItems.map((entry) => {
+            const title = buildHistoryEntryTitle(entry);
+
+            return (
+              <View
+                key={entry.id}
+                style={{
+                  borderWidth: 1,
+                  borderColor: theme.themeBorder,
+                  borderRadius: 8,
+                  padding: 12,
+                  marginBottom: 8,
+                  backgroundColor: theme.themeCardBgAlt,
+                }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => setSelectedHistoryEntryId(entry.id)}
+                    style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                    <View
+                      style={{
+                        width: 30,
+                        height: 30,
+                        borderRadius: 15,
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        backgroundColor: theme.isLightTheme ? '#e8f2ff' : '#17314f',
+                      }}>
+                      <MaterialIcons
+                        name={entry.type === 'vision' ? 'image-search' : 'chat-bubble-outline'}
+                        size={16}
+                        color={theme.themeAccent}
+                      />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ color: theme.themeTextPrimary, fontWeight: '700' }}>
+                        {title}
+                      </Text>
+                      <Text style={{ color: theme.themeTextSecondary, fontSize: 11, marginTop: 3 }}>
+                        {entry.createdAtLabel}
+                      </Text>
+                    </View>
+                    <MaterialIcons name="chevron-right" size={20} color={theme.themeTextSecondary} />
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={deletingHistoryEntryId === entry.id}
+                    onPress={() => void deleteHistoryEntry(entry.id)}
+                    style={{
+                      width: 34,
+                      height: 34,
+                      borderRadius: 17,
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      borderWidth: 1,
+                      borderColor: theme.themeDangerText,
+                    }}>
+                    <MaterialIcons name="delete-outline" size={17} color={theme.themeDangerText} />
+                  </Pressable>
+                </View>
+              </View>
+            );
+          })
         )}
       </View>
       <Text style={{ color: theme.themeTextSecondary, fontSize: 11, marginTop: 8 }}>
@@ -1171,4 +1634,3 @@ export function AiAssistantPanel({
     </View>
   );
 }
-

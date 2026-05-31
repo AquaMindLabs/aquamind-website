@@ -64,7 +64,7 @@ Szybko potwierdzic, ze kluczowe flow produktu dzialaja po releasie i nie ma bloc
 
 ## 7) T-30 min przed publikacja (AI API final check)
 - [ ] [SMK-AI-RLS-01] Doladuj minimum 5 USD na koncie API (prepaid billing) i potwierdz saldo.
-- [ ] [SMK-AI-RLS-02] Zweryfikuj `.env`: `AI_PROVIDER_NAME=openai`, `OPENAI_MODEL=gpt-5-mini`, `EXPO_PUBLIC_AI_BACKEND_URL=http://<LAN_IP>:8790`.
+- [ ] [SMK-AI-RLS-02] Zweryfikuj `.env`: `AI_PROVIDER_NAME=openai`, `OPENAI_MODEL=gpt-5-mini`, `EXPO_PUBLIC_AI_BACKEND_URL=https://<PUBLIC_AI_BACKEND_URL>` oraz `npm run ai:release:audit`.
 - [ ] [SMK-AI-RLS-03] Uruchom backend AI i potwierdz log startu: `provider=openai`.
 - [ ] [SMK-AI-RLS-04] Wykonaj 1 probe chat i 1 probe vision na realnym koncie testowym.
 - [ ] [SMK-AI-RLS-05] Brak `AIW_PROVIDER_ERROR` i brak timeoutow krytycznych w probach finalnych.

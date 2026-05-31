@@ -36,7 +36,8 @@
     "test:subscription:webhook": "node --test tests/subscriptionWebhookSync.test.cjs",
     "test:subscription:gating": "node --test tests/aiSubscriptionGating.test.cjs",
     "ai:backend:start": "node scripts/ai-backend-server.cjs",
-    "test:ai:backend": "node --test tests/aiContextBuilder.test.cjs tests/aiBackendEndpoints.test.cjs"
+    "test:ai:backend": "node --test tests/aiContextBuilder.test.cjs tests/aiBackendEndpoints.test.cjs",
+    "ai:release:audit": "node scripts/ai-release-config-audit.cjs"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",

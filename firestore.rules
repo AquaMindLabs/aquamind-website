@@ -643,6 +643,82 @@ service cloud.firestore {
         optionalMap(data, 'context', 80);
     }
 
+    function validAiHistoryType(value) {
+      return value == 'chat' || value == 'vision';
+    }
+
+    function isValidAiHistoryDoc(uid, entryId, data) {
+      return data.keys().hasAll([
+          'userId',
+          'id',
+          'type',
+          'createdAtMs',
+          'createdAtLabel',
+          'question',
+          'createdAt',
+          'updatedAt',
+          'schemaVersion'
+        ]) &&
+        data.keys().hasOnly([
+          'userId',
+          'id',
+          'type',
+          'createdAtMs',
+          'createdAtLabel',
+          'question',
+          'answer',
+          'recommendations',
+          'warnings',
+          'hadEmptyDataFallback',
+          'imageUri',
+          'summary',
+          'hypotheses',
+          'verificationSteps',
+          'actionPlan',
+          'unreadableImageFallback',
+          'createdAt',
+          'updatedAt',
+          'schemaVersion'
+        ]) &&
+        isOwnerUid(uid) &&
+        data.userId == uid &&
+        data.id == entryId &&
+        validAiHistoryType(data.type) &&
+        data.id is string &&
+        data.id.size() >= 1 &&
+        data.id.size() <= 128 &&
+        data.createdAtMs is number &&
+        data.createdAtMs >= 0 &&
+        data.createdAtLabel is string &&
+        data.createdAtLabel.size() <= 80 &&
+        data.question is string &&
+        data.question.size() >= 1 &&
+        data.question.size() <= 1200 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp &&
+        data.schemaVersion == 1 &&
+        optionalString(data, 'answer', 8000) &&
+        optionalString(data, 'imageUri', 4000) &&
+        optionalString(data, 'summary', 8000) &&
+        optionalList(data, 'recommendations', 8) &&
+        optionalList(data, 'warnings', 6) &&
+        optionalList(data, 'hypotheses', 8) &&
+        optionalList(data, 'verificationSteps', 8) &&
+        optionalList(data, 'actionPlan', 8) &&
+        (!('hadEmptyDataFallback' in data) || data.hadEmptyDataFallback is bool) &&
+        (!('unreadableImageFallback' in data) || data.unreadableImageFallback is bool) &&
+        (
+          (data.type == 'chat' && data.answer is string && data.answer.size() >= 1) ||
+          (data.type == 'vision' && data.summary is string && data.summary.size() >= 1)
+        );
+    }
+
+    match /users/{uid}/aiAssistantHistory/{entryId} {
+      allow read: if isOwnerUid(uid) || isAdmin();
+      allow create, update: if isValidAiHistoryDoc(uid, entryId, request.resource.data);
+      allow delete: if isOwnerUid(uid);
+    }
+
     match /tanks/{tankId} {
       allow read: if isOwnerData(resource.data) || isAdmin();
       allow create: if isValidTankDoc(request.resource.data);

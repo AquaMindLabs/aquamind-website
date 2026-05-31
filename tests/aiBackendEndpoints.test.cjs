@@ -211,6 +211,20 @@ test('POST /ai/chat requires authorization', async () => {
   }
 });
 
+test('GET /healthz returns backend health without authorization', async () => {
+  const { server, baseUrl } = await startServerForTest();
+  try {
+    const response = await fetch(`${baseUrl}/healthz`);
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.provider, 'test_provider');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test('POST /ai/vision/analyze returns readable fallback for unreadable image', async () => {
   const { server, baseUrl } = await startServerForTest();
   try {
@@ -371,6 +385,154 @@ test('POST /ai/chat maps provider error deterministically', async () => {
     assert.equal(response.status, 502);
     assert.equal(payload.ok, false);
     assert.equal(payload.diagnosticCode, 'AIW_PROVIDER_ERROR');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('POST /ai/chat returns local fallback when OpenAI provider fails', async () => {
+  const server = createAiHttpServer({
+    authVerifier: createAuthVerifier(),
+    dataStore: createDataStore(),
+    aiProvider: {
+      async generateChat() {
+        throw new Error('provider_down');
+      },
+      async analyzeVision() {
+        throw new Error('provider_down');
+      },
+    },
+    providerTimeoutMs: 40,
+    providerName: 'openai',
+    logger: {
+      info: () => null,
+      warn: () => null,
+      error: () => null,
+    },
+  });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const address = server.address();
+  const port = address && typeof address === 'object' ? address.port : 0;
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/ai/chat`, {
+      method: 'POST',
+      headers: buildHeaders('token-user-a'),
+      body: JSON.stringify({
+        question: 'Jak poprawic stabilnosc parametrow?',
+        tankId: 'tank_a',
+      }),
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.diagnosticCode, 'AIW_OK');
+    assert.match(String(payload?.data?.answer ?? ''), /akwarium|parametr/i);
+    assert.equal(
+      payload.data.warnings.some((warning) =>
+        String(warning).includes('awaryjna odpowiedz lokalna')
+      ),
+      true
+    );
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('POST /ai/chat returns local fallback when OpenAI fetch fails', async () => {
+  const providerError = new Error('fetch failed');
+  providerError.code = 'AIW_PROVIDER_ERROR';
+  providerError.httpStatus = 502;
+  providerError.providerHttpStatus = 0;
+  providerError.providerErrorType = 'TypeError';
+  providerError.providerErrorCode = 'UND_ERR_CONNECT_TIMEOUT';
+  providerError.providerErrorMessage = 'fetch failed';
+
+  const server = createAiHttpServer({
+    authVerifier: createAuthVerifier(),
+    dataStore: createDataStore(),
+    aiProvider: {
+      async generateChat() {
+        throw providerError;
+      },
+      async analyzeVision() {
+        throw providerError;
+      },
+    },
+    providerTimeoutMs: 40,
+    providerName: 'openai',
+    logger: {
+      info: () => null,
+      warn: () => null,
+      error: () => null,
+    },
+  });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const address = server.address();
+  const port = address && typeof address === 'object' ? address.port : 0;
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/ai/chat`, {
+      method: 'POST',
+      headers: buildHeaders('token-user-a'),
+      body: JSON.stringify({
+        question: 'Jak poprawic stabilnosc parametrow?',
+        tankId: 'tank_a',
+      }),
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.diagnosticCode, 'AIW_OK');
+    assert.equal(
+      payload.data.warnings.some((warning) =>
+        String(warning).includes('awaryjna odpowiedz lokalna')
+      ),
+      true
+    );
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('POST /ai/chat continues with minimal context when context loading fails', async () => {
+  const server = createAiHttpServer({
+    authVerifier: createAuthVerifier(),
+    dataStore: {
+      async getUserData() {
+        throw new Error('firestore_unavailable');
+      },
+    },
+    aiProvider: createAiProvider(),
+    providerTimeoutMs: 40,
+    providerName: 'openai',
+    logger: {
+      info: () => null,
+      warn: () => null,
+      error: () => null,
+    },
+  });
+  await new Promise((resolve) => server.listen(0, resolve));
+  const address = server.address();
+  const port = address && typeof address === 'object' ? address.port : 0;
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/ai/chat`, {
+      method: 'POST',
+      headers: buildHeaders('token-user-a'),
+      body: JSON.stringify({
+        question: 'Jak poprawic stabilnosc parametrow?',
+        tankId: 'tank_a',
+      }),
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.diagnosticCode, 'AIW_OK');
+    assert.equal(payload.data.contextSummary.tankCount, 0);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

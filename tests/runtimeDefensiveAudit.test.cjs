@@ -5,6 +5,7 @@ const {
 } = require('../scripts/ai-context-builder.cjs');
 const {
   AI_DIAGNOSTIC_CODES,
+  buildAquariumAiContext,
   createAiRequestHandlers,
 } = require('../scripts/ai-backend-core.cjs');
 
@@ -110,6 +111,33 @@ test('buildUserAquariumContext: stock summary is stable for mixed invalid items'
   assert.equal(context.stockSummary.fishCount, 1);
   assert.equal(context.stockSummary.plantCount, 1);
   assert.equal(context.stockSummary.otherCount, 1);
+});
+
+test('buildAquariumAiContext: currentWater uses latest value per parameter', () => {
+  const context = buildAquariumAiContext({
+    request: { tankId: 'tank_1' },
+    contextSummary: {
+      selectedTank: { id: 'tank_1' },
+      measurementCount: 3,
+    },
+    userData: {
+      tanks: [{ id: 'tank_1', name: 'Tank 1' }],
+      measurements: [
+        { id: 'empty', tankId: 'tank_1', measuredAt: '2026-05-20T00:00:00.000Z' },
+        { id: 'no3', tankId: 'tank_1', no3: 30, measuredAt: '2026-05-01T00:00:00.000Z' },
+        { id: 'ph', tankId: 'tank_1', ph: 7.1, measuredAt: '2026-04-01T00:00:00.000Z' },
+      ],
+      stockItems: [],
+      issueCases: [],
+    },
+  });
+
+  assert.equal(context.currentWater.no3, 30);
+  assert.equal(context.currentWater.ph, 7.1);
+  assert.equal(context.currentWater.valueSources.ph, '2026-04-01T00:00:00.000Z');
+  assert.equal(context.recentMeasurements.length, 2);
+  assert.equal(context.appAnalysis.measurementCount, 2);
+  assert.equal(context.appAnalysis.rawMeasurementCount, 3);
 });
 
 test('ai handlers: missing auth maps to deterministic unauthorized error', async () => {

@@ -1,10 +1,11 @@
 import { Platform } from 'react-native';
+import Constants from 'expo-constants';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { storage } from '@/shared/services/firebase';
 import { AiChatRequestError } from '@/features/aquarium/services/aiChatService';
 import { logAiDiagnosticEvent } from '@/shared/services/observability';
 
-const DEFAULT_AI_TIMEOUT_MS = 20000;
+const DEFAULT_AI_TIMEOUT_MS = 90000;
 const AI_VISION_ANALYZE_PATH = '/ai/vision/analyze';
 
 const AI_DIAGNOSTIC_CODES = Object.freeze({
@@ -43,10 +44,48 @@ function sanitizeTextForAi(value: unknown, maxLength = 4000): string {
     .trim();
 }
 
+function isLocalOrPrivateAiBackendUrl(value: string): boolean {
+  const normalized = toSafeString(value, 512).toLowerCase();
+  const match = normalized.match(/^https?:\/\/([^/:?#]+)/);
+  const host = match?.[1] ?? '';
+  if (!host) {
+    return false;
+  }
+  return (
+    host === 'localhost' ||
+    host === '0.0.0.0' ||
+    host.startsWith('127.') ||
+    host.startsWith('10.') ||
+    host.startsWith('192.168.') ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(host)
+  );
+}
+
+function normalizeConfiguredAiBackendUrl(value: unknown): string {
+  const url = toSafeString(value, 512).replace(/\/+$/, '');
+  if (!url) {
+    return '';
+  }
+  if (!__DEV__ && (!url.startsWith('https://') || isLocalOrPrivateAiBackendUrl(url))) {
+    return '';
+  }
+  return url;
+}
+
+function resolveConfiguredAiBackendUrl(): string {
+  const envUrl = normalizeConfiguredAiBackendUrl(process.env.EXPO_PUBLIC_AI_BACKEND_URL);
+  if (envUrl) {
+    return envUrl;
+  }
+
+  const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, unknown>;
+  return __DEV__ ? normalizeConfiguredAiBackendUrl(extra.aiBackendUrl) : '';
+}
+
 function resolveAiBackendBaseUrl(): string {
-  const configured = toSafeString(process.env.EXPO_PUBLIC_AI_BACKEND_URL, 512);
+  const configured = resolveConfiguredAiBackendUrl();
   if (configured) {
-    return configured.replace(/\/+$/, '');
+    return configured;
   }
   if (!__DEV__) {
     return '';
@@ -59,7 +98,7 @@ function resolveAiBackendBaseUrl(): string {
 
 function mapDiagnosticCodeToUserMessage(code: string): string {
   if (code === AI_DIAGNOSTIC_CODES.UNAUTHORIZED) {
-    return 'Sesja wygasla. Zaloguj się ponownie i spróbuj jeszcze raz.';
+    return 'Sesja wygasła. Zaloguj się ponownie i spróbuj jeszcze raz.';
   }
   if (code === AI_DIAGNOSTIC_CODES.TIMEOUT) {
     return 'Analiza obrazu trwa zbyt długo. Spróbuj ponownie za chwilę.';
@@ -71,7 +110,7 @@ function mapDiagnosticCodeToUserMessage(code: string): string {
     return 'Analiza obrazu jest chwilowo niedostępna. Spróbuj ponownie za moment.';
   }
   if (code === AI_DIAGNOSTIC_CODES.UNAVAILABLE) {
-    return 'Asystent AI nie jest jeszcze skonfigurowany dla tego builda.';
+    return 'Asystent AI nie ma skonfigurowanego adresu backendu w tym buildzie.';
   }
   return 'Wystąpił błąd analizy obrazu. Spróbuj ponownie.';
 }
@@ -142,6 +181,62 @@ async function loadImagePickerModule() {
   }
 }
 
+function getAndroidSdkVersion(): number {
+  if (Platform.OS !== 'android') {
+    return 0;
+  }
+  const version = Number(Platform.Version);
+  return Number.isFinite(version) ? version : 0;
+}
+
+function shouldRequestMediaLibraryPermission(): boolean {
+  return Platform.OS !== 'android' || getAndroidSdkVersion() < 33;
+}
+
+function isPickerCancellationError(error: unknown): boolean {
+  const message = String((error as { message?: unknown })?.message ?? error ?? '').toLowerCase();
+  const code = String((error as { code?: unknown })?.code ?? '').toLowerCase();
+  return (
+    code.includes('cancel') ||
+    message.includes('cancel') ||
+    message.includes('operation canceled') ||
+    message.includes('operationcancel')
+  );
+}
+
+function mapPickerError(error: unknown, source: ImageSourceKind): AiChatRequestError {
+  if (error instanceof AiChatRequestError) {
+    return error;
+  }
+  const rawMessage = toSafeString((error as { message?: unknown })?.message ?? error, 500);
+  const lowerMessage = rawMessage.toLowerCase();
+  if (lowerMessage.includes('permission') || lowerMessage.includes('denied')) {
+    return new AiChatRequestError(
+      source === 'camera'
+        ? 'Brak zgody na aparat. Zezwol na dostep w ustawieniach telefonu.'
+        : 'Brak zgody na galerie. Zezwol na dostep do zdjec w ustawieniach telefonu.',
+      AI_DIAGNOSTIC_CODES.VALIDATION,
+      false
+    );
+  }
+  if (lowerMessage.includes('activity') || lowerMessage.includes('intent')) {
+    return new AiChatRequestError(
+      source === 'camera'
+        ? 'Nie znaleziono aplikacji aparatu. Sprobuj wybrac zdjecie z galerii.'
+        : 'Nie znaleziono aplikacji galerii. Sprobuj ponownie lub wybierz inna aplikacje zdjec.',
+      AI_DIAGNOSTIC_CODES.VALIDATION,
+      true
+    );
+  }
+  return new AiChatRequestError(
+    rawMessage
+      ? `Nie udalo sie wybrac zdjecia: ${rawMessage}`
+      : 'Nie udalo sie wybrac zdjecia. Sprobuj ponownie.',
+    AI_DIAGNOSTIC_CODES.INTERNAL,
+    true
+  );
+}
+
 function resolveAssetMimeType(uri: string, fallback = 'image/jpeg'): string {
   const normalizedUri = toSafeString(uri, 2048).toLowerCase();
   if (normalizedUri.endsWith('.png')) {
@@ -194,49 +289,62 @@ export async function pickVisionImage(
 ): Promise<PickedImage | null> {
   const ImagePicker = await loadImagePickerModule();
   const isCamera = source === 'camera';
-  const permissionResult = isCamera
-    ? await ImagePicker.requestCameraPermissionsAsync()
-    : await ImagePicker.requestMediaLibraryPermissionsAsync();
+  try {
+    if (isCamera || shouldRequestMediaLibraryPermission()) {
+      const permissionResult = isCamera
+        ? await ImagePicker.requestCameraPermissionsAsync()
+        : await ImagePicker.requestMediaLibraryPermissionsAsync(false);
 
-  if (!permissionResult?.granted) {
-    throw new AiChatRequestError(
-      isCamera
-        ? 'Brak zgody na aparat. Zezwól na dostęp w ustawieniach.'
-        : 'Brak zgody na galerie. Zezwól na dostęp do zdjęć w ustawieniach.',
-      AI_DIAGNOSTIC_CODES.VALIDATION,
-      false
-    );
+      if (!permissionResult?.granted) {
+        throw new AiChatRequestError(
+          isCamera
+            ? 'Brak zgody na aparat. Zezwol na dostep w ustawieniach telefonu.'
+            : 'Brak zgody na galerie. Zezwol na dostep do zdjec w ustawieniach telefonu.',
+          AI_DIAGNOSTIC_CODES.VALIDATION,
+          false
+        );
+      }
+    }
+
+    const pickerOptions = {
+      allowsEditing: false,
+      base64: true,
+      quality: 0.75,
+      mediaTypes: ['images' as const],
+    };
+
+    let pickerResult = isCamera
+      ? await ImagePicker.launchCameraAsync(pickerOptions)
+      : await ImagePicker.launchImageLibraryAsync(pickerOptions);
+
+    if (!isCamera && pickerResult?.canceled && Platform.OS === 'android') {
+      const pendingResult = await ImagePicker.getPendingResultAsync?.();
+      if (pendingResult && !Array.isArray(pendingResult) && 'assets' in pendingResult) {
+        pickerResult = pendingResult;
+      }
+    }
+
+    if (pickerResult?.canceled) {
+      return null;
+    }
+    const asset = Array.isArray(pickerResult?.assets) ? pickerResult.assets[0] : null;
+    if (!asset?.uri) {
+      return null;
+    }
+
+    return {
+      uri: asset.uri,
+      width: Number(asset.width) || 0,
+      height: Number(asset.height) || 0,
+      mimeType: toSafeString(asset.mimeType, 80) || resolveAssetMimeType(asset.uri),
+      base64: toSafeString(asset.base64, Number.MAX_SAFE_INTEGER) || null,
+    };
+  } catch (error) {
+    if (isPickerCancellationError(error)) {
+      return null;
+    }
+    throw mapPickerError(error, source);
   }
-
-  const pickerResult = isCamera
-    ? await ImagePicker.launchCameraAsync({
-        allowsEditing: false,
-        base64: true,
-        quality: 0.75,
-        mediaTypes: ['images'],
-      })
-    : await ImagePicker.launchImageLibraryAsync({
-        allowsEditing: false,
-        base64: true,
-        quality: 0.75,
-        mediaTypes: ['images'],
-      });
-
-  if (pickerResult?.canceled) {
-    return null;
-  }
-  const asset = Array.isArray(pickerResult?.assets) ? pickerResult.assets[0] : null;
-  if (!asset?.uri) {
-    return null;
-  }
-
-  return {
-    uri: asset.uri,
-    width: Number(asset.width) || 0,
-    height: Number(asset.height) || 0,
-    mimeType: toSafeString(asset.mimeType, 80) || resolveAssetMimeType(asset.uri),
-    base64: toSafeString(asset.base64, Number.MAX_SAFE_INTEGER) || null,
-  };
 }
 
 export async function uploadVisionImageForUser(

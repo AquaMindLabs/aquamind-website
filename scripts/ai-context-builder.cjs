@@ -139,7 +139,7 @@ function isIssueActive(issue) {
 }
 
 function buildMeasurementTrends(measurements, maxPoints) {
-  const keys = ['ph', 'no2', 'no3', 'temperature'];
+  const keys = ['ph', 'gh', 'kh', 'no2', 'no3', 'nh3nh4', 'po4', 'fe', 'temperature'];
   return keys
     .map((key) => {
       const series = measurements
@@ -173,6 +173,61 @@ function buildMeasurementTrends(measurements, maxPoints) {
       };
     })
     .filter(Boolean);
+}
+
+const MEASUREMENT_VALUE_KEYS = [
+  'ph',
+  'gh',
+  'kh',
+  'no2',
+  'no3',
+  'nh3nh4',
+  'po4',
+  'fe',
+  'temperature',
+  'ca',
+  'mg',
+  'k',
+  'tds',
+  'co2',
+];
+
+function hasUsefulMeasurementData(measurement) {
+  return MEASUREMENT_VALUE_KEYS.some((key) => toFiniteNumber(measurement?.[key]) !== null);
+}
+
+function mapMeasurementForAiContext(measurement) {
+  const mapped = {
+    measuredAt: toIsoDate(measurement?.measuredAt ?? measurement?.createdAt),
+  };
+  MEASUREMENT_VALUE_KEYS.forEach((key) => {
+    mapped[key] = toFiniteNumber(measurement?.[key]);
+  });
+  return mapped;
+}
+
+function buildLatestMeasurementSnapshot(measurements) {
+  const snapshot = { measuredAt: null };
+  const valueSources = {};
+
+  MEASUREMENT_VALUE_KEYS.forEach((key) => {
+    const source = measurements.find((measurement) => toFiniteNumber(measurement?.[key]) !== null);
+    snapshot[key] = source ? toFiniteNumber(source?.[key]) : null;
+    if (source) {
+      const measuredAt = toIsoDate(source?.measuredAt ?? source?.createdAt);
+      valueSources[key] = measuredAt;
+      if (!snapshot.measuredAt) {
+        snapshot.measuredAt = measuredAt;
+      }
+    }
+  });
+
+  return Object.keys(valueSources).length > 0
+    ? {
+        ...snapshot,
+        valueSources,
+      }
+    : null;
 }
 
 function extractEquipmentEntries(value) {
@@ -237,9 +292,10 @@ function buildUserAquariumContext(uid, optionalTankId = null, data = {}, options
 
   const selectedTank = getSelectedTank(tanks, optionalTankId);
   const selectedTankId = selectedTank?.id ? String(selectedTank.id) : null;
-  const tankScopedMeasurements = selectedTankId
+  const tankScopedRawMeasurements = selectedTankId
     ? measurements.filter((item) => String(item?.tankId ?? '') === selectedTankId)
     : measurements;
+  const tankScopedMeasurements = tankScopedRawMeasurements.filter(hasUsefulMeasurementData);
   const tankScopedStockItems = selectedTankId
     ? stockItems.filter((item) => String(item?.tankId ?? '') === selectedTankId)
     : stockItems;
@@ -247,16 +303,7 @@ function buildUserAquariumContext(uid, optionalTankId = null, data = {}, options
     ? issueCases.filter((item) => String(item?.tankId ?? '') === selectedTankId)
     : issueCases;
 
-  const latestMeasurement = tankScopedMeasurements[0] ?? null;
-  const latestCoreMeasurements = latestMeasurement
-    ? {
-        ph: toFiniteNumber(latestMeasurement?.ph),
-        no2: toFiniteNumber(latestMeasurement?.no2),
-        no3: toFiniteNumber(latestMeasurement?.no3),
-        temperature: toFiniteNumber(latestMeasurement?.temperature),
-        measuredAt: toIsoDate(latestMeasurement?.measuredAt ?? latestMeasurement?.createdAt),
-      }
-    : null;
+  const latestCoreMeasurements = buildLatestMeasurementSnapshot(tankScopedMeasurements);
 
   const fishCount = tankScopedStockItems.filter(
     (item) => normalizeStockType(item?.type) === 'fish'
@@ -307,13 +354,9 @@ function buildUserAquariumContext(uid, optionalTankId = null, data = {}, options
       hasData: tanks.length > 0,
     },
     measurements: {
-      latest: tankScopedMeasurements.slice(0, limits.maxMeasurements).map((item) => ({
-        measuredAt: toIsoDate(item?.measuredAt ?? item?.createdAt),
-        ph: toFiniteNumber(item?.ph),
-        no2: toFiniteNumber(item?.no2),
-        no3: toFiniteNumber(item?.no3),
-        temperature: toFiniteNumber(item?.temperature),
-      })),
+      latest: tankScopedMeasurements
+        .slice(0, limits.maxMeasurements)
+        .map(mapMeasurementForAiContext),
       trends: buildMeasurementTrends(
         tankScopedMeasurements,
         limits.maxMeasurementTrendPoints
@@ -365,6 +408,7 @@ function buildUserAquariumContext(uid, optionalTankId = null, data = {}, options
       trimmedBySizeLimit: false,
       sourceScope: selectedTankId ? 'single_tank' : 'user_all_tanks',
       hasMinimalData: !safeUid || tanks.length === 0,
+      rawMeasurementCount: tankScopedRawMeasurements.length,
     },
   };
 

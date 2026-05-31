@@ -12,6 +12,8 @@ const {
   createRuleBasedAiProvider,
 } = require('./ai-backend-core.cjs');
 
+const AI_BACKEND_RUNTIME_VERSION = 'ai-backend-provider-fallback-v9';
+
 function loadEnvFile() {
   const envPath = path.resolve(process.cwd(), '.env');
   if (!fs.existsSync(envPath)) {
@@ -107,6 +109,11 @@ function sendJson(res, statusCode, payload) {
   res.end(body);
 }
 
+function sendNoContent(res, statusCode = 204) {
+  res.writeHead(statusCode);
+  res.end();
+}
+
 function pathOnly(url) {
   return String(url ?? '').split('?')[0] || '/';
 }
@@ -122,7 +129,7 @@ function resolveAiProviderConfig() {
         apiKey: process.env.OPENAI_API_KEY,
         model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
         baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
-        maxOutputTokens: Number(process.env.OPENAI_MAX_OUTPUT_TOKENS || 900),
+        maxOutputTokens: Number(process.env.OPENAI_MAX_OUTPUT_TOKENS || 2400),
       }),
     };
   }
@@ -138,7 +145,7 @@ function createAiHttpServer({
   dataStore,
   aiProvider,
   logger = console,
-  providerTimeoutMs = Number(process.env.AI_PROVIDER_TIMEOUT_MS || 15000),
+  providerTimeoutMs = Number(process.env.AI_PROVIDER_TIMEOUT_MS || 45000),
   providerName = process.env.AI_PROVIDER_NAME || 'rule_based',
 } = {}) {
   const handlers = createAiRequestHandlers({
@@ -153,6 +160,20 @@ function createAiHttpServer({
   return http.createServer(async (req, res) => {
     const route = pathOnly(req.url);
     const method = String(req.method ?? '').toUpperCase();
+
+    if (method === 'GET' && (route === '/healthz' || route === '/health')) {
+      sendJson(res, 200, {
+        ok: true,
+        provider: providerName,
+        version: AI_BACKEND_RUNTIME_VERSION,
+      });
+      return;
+    }
+
+    if (method === 'OPTIONS') {
+      sendNoContent(res);
+      return;
+    }
 
     if (method !== 'POST') {
       sendJson(res, 405, {
@@ -217,7 +238,7 @@ function createAiHttpServer({
 }
 
 async function startServer() {
-  const port = Number(process.env.AI_BACKEND_PORT || 8790);
+  const port = Number(process.env.PORT || process.env.AI_BACKEND_PORT || 8790);
   const { auth, db } = ensureAdminServices();
 
   const authVerifier = {
@@ -225,7 +246,7 @@ async function startServer() {
       return auth.verifyIdToken(token);
     },
   };
-  const dataStore = createFirestoreAiDataStore(db);
+  const dataStore = createFirestoreAiDataStore(db, { projectId: resolveProjectId() });
   const { provider, providerName } = resolveAiProviderConfig();
 
   const server = createAiHttpServer({
@@ -233,13 +254,13 @@ async function startServer() {
     dataStore,
     aiProvider: provider,
     logger: console,
-    providerTimeoutMs: Number(process.env.AI_PROVIDER_TIMEOUT_MS || 15000),
+    providerTimeoutMs: Number(process.env.AI_PROVIDER_TIMEOUT_MS || 45000),
     providerName,
   });
 
   server.listen(port, () => {
     console.log(
-      `AI backend server listening on http://0.0.0.0:${port} (provider=${providerName})`
+      `AI backend server listening on http://0.0.0.0:${port} (provider=${providerName}, version=${AI_BACKEND_RUNTIME_VERSION})`
     );
   });
 }

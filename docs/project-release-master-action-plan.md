@@ -111,7 +111,7 @@ Exit criteria WS-C:
 - [ ] D3. Potwierdzic `.env`:
   - `AI_PROVIDER_NAME=openai`
   - `OPENAI_MODEL=gpt-5-mini` (fallback: `gpt-4.1-mini`)
-  - `EXPO_PUBLIC_AI_BACKEND_URL=http://<LAN_IP>:8790`
+  - `EXPO_PUBLIC_AI_BACKEND_URL=https://<PUBLIC_AI_BACKEND_URL>`
 - [ ] D4. Przejsc retest AI:
   - chat na danych usera,
   - fallback przy brakach danych,

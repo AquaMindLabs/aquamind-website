@@ -18,6 +18,10 @@
     "android": {
       "versionCode": 1,
       "package": "com.myaquarium.assistant",
+      "usesCleartextTraffic": true,
+      "permissions": [
+        "CAMERA"
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",

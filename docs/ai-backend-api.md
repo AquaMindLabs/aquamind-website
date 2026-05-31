@@ -4,17 +4,56 @@
 
 - `POST /ai/chat`
 - `POST /ai/vision/analyze`
+- `GET /healthz`
 
 Endpointy wymagaja `Authorization: Bearer <firebase_id_token>`.
+`GET /healthz` jest publicznym healthcheckiem dla hostingu.
 
-## Szybka konfiguracja API providera (OpenAI)
+## Konfiguracja produkcyjna dla wszystkich uzytkownikow
+
+AI nie moze dzialac bezposrednio z aplikacji mobilnej, bo wtedy klucz OpenAI trafilby do builda. Produkcyjny ruch musi isc tak:
+
+`aplikacja -> publiczny backend HTTPS -> OpenAI + Firebase Admin`
+
+W produkcji:
+
+- backend AI musi byc uruchomiony na publicznym adresie HTTPS,
+- `OPENAI_API_KEY` ustawiasz tylko w srodowisku backendu,
+- aplikacja dostaje tylko publiczny adres backendu w `EXPO_PUBLIC_AI_BACKEND_URL`,
+- nie wolno wydawac builda z `localhost`, `127.0.0.1`, `10.x`, `172.16-31.x` ani `192.168.x`.
+
+Minimalne zmienne backendu:
+
+```env
+AI_PROVIDER_NAME=openai
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-5-mini
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MAX_OUTPUT_TOKENS=2400
+AI_PROVIDER_TIMEOUT_MS=45000
+FIREBASE_PROJECT_ID=my-aquarium-assistant
+```
+
+Minimalna zmienna aplikacji przy buildzie EAS:
+
+```env
+EXPO_PUBLIC_AI_BACKEND_URL=https://twoj-publiczny-backend.example.com
+```
+
+Przed buildem produkcyjnym uruchom:
+
+```bash
+npm run ai:release:audit
+```
+
+## Szybka konfiguracja lokalna API providera (OpenAI)
 
 1. Ustaw w `.env`:
 
 ```env
 AI_PROVIDER_NAME=openai
 OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-4.1-mini
+OPENAI_MODEL=gpt-5-mini
 OPENAI_BASE_URL=https://api.openai.com/v1
 EXPO_PUBLIC_AI_BACKEND_URL=http://<IP_Twojego_komputera_w_LAN>:8790
 ```
