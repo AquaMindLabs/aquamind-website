@@ -14,7 +14,9 @@ import {
 } from 'firebase/firestore';
 import {
   AiChatRequestError,
+  requestAiUsage,
   requestAiChat,
+  type AiUsageStatus,
 } from '@/features/aquarium/services/aiChatService';
 import {
   pickVisionImage,
@@ -314,6 +316,7 @@ export function AiAssistantPanel({
   const [errorMessage, setErrorMessage] = useState('');
   const [retryableError, setRetryableError] = useState(false);
   const [isTimeoutError, setIsTimeoutError] = useState(false);
+  const [aiUsage, setAiUsage] = useState<AiUsageStatus | null>(null);
   const [emptyDataHintVisible, setEmptyDataHintVisible] = useState(false);
   const [missingDataHints, setMissingDataHints] = useState<string[]>([]);
   const [lastRetryKind, setLastRetryKind] = useState<RetryKind>(null);
@@ -452,6 +455,34 @@ export function AiAssistantPanel({
     };
   }, [hasAiAssistantAccess, user?.uid]);
 
+  useEffect(() => {
+    let isMounted = true;
+    if (!hasAiAssistantAccess || !user?.getIdToken) {
+      setAiUsage(null);
+      return () => {
+        isMounted = false;
+      };
+    }
+
+    user
+      .getIdToken()
+      .then((token) => requestAiUsage(toSafeString(token, 4096)))
+      .then((usage) => {
+        if (isMounted) {
+          setAiUsage(usage);
+        }
+      })
+      .catch(() => {
+        if (isMounted) {
+          setAiUsage(null);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [hasAiAssistantAccess, user]);
+
   const setHandledError = useCallback((error: AiChatRequestError) => {
     setErrorMessage(error.message);
     setRetryableError(Boolean(error.retryable));
@@ -555,6 +586,9 @@ export function AiAssistantPanel({
           tankId: nextRequest.tankId,
           mode: nextRequest.mode,
         });
+        if (response.usage) {
+          setAiUsage(response.usage);
+        }
 
         const hasMinimalData = Boolean(
           (response.contextSummary as { meta?: { hasMinimalData?: boolean } } | null)?.meta
@@ -739,6 +773,9 @@ export function AiAssistantPanel({
           },
           { maxAttempts: 2, retryDelayMs: 450 }
         );
+        if (response.usage) {
+          setAiUsage(response.usage);
+        }
 
         const hasMinimalData = Boolean(
           (response.contextSummary as { meta?: { hasMinimalData?: boolean } } | null)?.meta
@@ -853,6 +890,37 @@ export function AiAssistantPanel({
     void runChatRequest();
   }, [runChatRequest, runVisionRequest, selectedVisionImage?.uri]);
 
+  const renderUsagePill = (
+    label: string,
+    bucket: { used: number; limit: number; remaining: number } | undefined
+  ) => {
+    if (!bucket || bucket.limit <= 0) {
+      return null;
+    }
+    const nearLimit = bucket.remaining <= Math.max(1, Math.ceil(bucket.limit * 0.15));
+    return (
+      <View
+        key={label}
+        style={{
+          borderWidth: 1,
+          borderColor: nearLimit ? theme.themeWarningText : theme.themeBorderStrong,
+          borderRadius: 999,
+          paddingVertical: 5,
+          paddingHorizontal: 9,
+          backgroundColor: theme.themeCardBg,
+        }}>
+        <Text
+          style={{
+            color: nearLimit ? theme.themeWarningText : theme.themeTextSecondary,
+            fontSize: 11,
+            fontWeight: '700',
+          }}>
+          {label}: {bucket.used}/{bucket.limit}
+        </Text>
+      </View>
+    );
+  };
+
   return (
     <View
       style={{
@@ -895,6 +963,29 @@ export function AiAssistantPanel({
         Doradca premium, który analizuje dane konkretnego akwarium: parametry, obsade, sprzęt,
         onboarding i zdjęcia.
       </Text>
+
+      {hasAiAssistantAccess && aiUsage ? (
+        <View
+          style={{
+            borderWidth: 1,
+            borderColor: theme.themeBorder,
+            borderRadius: 8,
+            padding: 10,
+            backgroundColor: theme.themeCardBgAlt,
+            marginBottom: 10,
+          }}>
+          <Text style={{ color: theme.themeTextPrimary, fontSize: 12, fontWeight: '700' }}>
+            Limity AI w tym miesiacu
+          </Text>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+            {renderUsagePill('Pytania', aiUsage.text)}
+            {renderUsagePill('Zdjecia', aiUsage.vision)}
+          </View>
+          <Text style={{ color: theme.themeTextSecondary, fontSize: 11, marginTop: 6 }}>
+            Limity odnawiaja sie co miesiac. Uzywaj zdjec, gdy obraz realnie pomaga w diagnozie.
+          </Text>
+        </View>
+      ) : null}
 
       {!hasAiAssistantAccess ? (
         <View

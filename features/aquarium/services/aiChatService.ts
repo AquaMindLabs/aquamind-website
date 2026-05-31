@@ -4,6 +4,7 @@ import { logAiDiagnosticEvent } from '@/shared/services/observability';
 
 const DEFAULT_AI_TIMEOUT_MS = 60000;
 const AI_CHAT_PATH = '/ai/chat';
+const AI_USAGE_PATH = '/ai/usage';
 
 const AI_DIAGNOSTIC_CODES = Object.freeze({
   OK: 'AIW_OK',
@@ -11,6 +12,7 @@ const AI_DIAGNOSTIC_CODES = Object.freeze({
   TIMEOUT: 'AIW_TIMEOUT',
   PROVIDER_ERROR: 'AIW_PROVIDER_ERROR',
   VALIDATION: 'AIW_VALIDATION',
+  QUOTA_EXCEEDED: 'AIW_QUOTA_EXCEEDED',
   INTERNAL: 'AIW_INTERNAL',
   UNAVAILABLE: 'AIW_UNAVAILABLE',
 });
@@ -119,6 +121,9 @@ function mapDiagnosticCodeToUserMessage(code: string): string {
   if (code === AI_DIAGNOSTIC_CODES.PROVIDER_ERROR) {
     return 'Asystent jest chwilowo niedostępny. Spróbuj ponownie za moment.';
   }
+  if (code === AI_DIAGNOSTIC_CODES.QUOTA_EXCEEDED) {
+    return 'Wykorzystano miesieczny limit AI w tym planie.';
+  }
   if (code === AI_DIAGNOSTIC_CODES.UNAVAILABLE) {
     return 'Asystent AI nie ma skonfigurowanego adresu backendu w tym buildzie.';
   }
@@ -142,13 +147,90 @@ export type AiChatRequestPayload = {
   timeoutMs?: number;
 };
 
+export type AiUsageBucket = {
+  used: number;
+  limit: number;
+  remaining: number;
+};
+
+export type AiUsageStatus = {
+  period: string;
+  text: AiUsageBucket;
+  vision: AiUsageBucket;
+};
+
 export type AiChatResponse = {
   answer: string;
   recommendations: string[];
   warnings: string[];
   contextSummary: Record<string, unknown> | null;
   diagnosticCode: string;
+  usage: AiUsageStatus | null;
 };
+
+function normalizeUsageBucket(value: unknown): AiUsageBucket {
+  const record = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+  const limit = Math.max(0, Math.floor(Number(record.limit) || 0));
+  const used = Math.max(0, Math.floor(Number(record.used) || 0));
+  const remaining = Math.max(0, Math.floor(Number(record.remaining) || Math.max(0, limit - used)));
+  return { used, limit, remaining };
+}
+
+export function normalizeAiUsageStatus(value: unknown): AiUsageStatus | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  return {
+    period: toSafeString(record.period, 16),
+    text: normalizeUsageBucket(record.text),
+    vision: normalizeUsageBucket(record.vision),
+  };
+}
+
+export async function requestAiUsage(idToken: string): Promise<AiUsageStatus | null> {
+  const token = toSafeString(idToken, 4096);
+  if (!token) {
+    throw new AiChatRequestError(
+      mapDiagnosticCodeToUserMessage(AI_DIAGNOSTIC_CODES.UNAUTHORIZED),
+      AI_DIAGNOSTIC_CODES.UNAUTHORIZED,
+      false,
+      401
+    );
+  }
+
+  const baseUrl = resolveAiBackendBaseUrl();
+  if (!baseUrl) {
+    throw new AiChatRequestError(
+      mapDiagnosticCodeToUserMessage(AI_DIAGNOSTIC_CODES.UNAVAILABLE),
+      AI_DIAGNOSTIC_CODES.UNAVAILABLE,
+      false
+    );
+  }
+
+  const response = await fetch(`${baseUrl}${AI_USAGE_PATH}`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  let payload: Record<string, unknown> = {};
+  try {
+    payload = (await response.json()) as Record<string, unknown>;
+  } catch {
+    payload = {};
+  }
+  const diagnosticCode = toSafeString(payload?.diagnosticCode, 80) || AI_DIAGNOSTIC_CODES.INTERNAL;
+  if (!response.ok || payload?.ok === false) {
+    throw new AiChatRequestError(
+      mapDiagnosticCodeToUserMessage(diagnosticCode),
+      diagnosticCode,
+      false,
+      response.status
+    );
+  }
+  const data = (payload?.data ?? {}) as Record<string, unknown>;
+  return normalizeAiUsageStatus(data?.usage);
+}
 
 export async function requestAiChat({
   idToken,
@@ -284,6 +366,7 @@ export async function requestAiChat({
           ? (data.contextSummary as Record<string, unknown>)
           : null,
       diagnosticCode,
+      usage: normalizeAiUsageStatus(data?.usage),
     };
   } catch (error) {
     if (error instanceof AiChatRequestError) {

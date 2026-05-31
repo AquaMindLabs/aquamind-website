@@ -183,6 +183,7 @@ function createAiHttpServer({
   logger = console,
   providerTimeoutMs = Number(process.env.AI_PROVIDER_TIMEOUT_MS || 45000),
   providerName = process.env.AI_PROVIDER_NAME || 'rule_based',
+  quotaLimits,
 } = {}) {
   const handlers = createAiRequestHandlers({
     authVerifier,
@@ -191,6 +192,7 @@ function createAiHttpServer({
     logger,
     providerTimeoutMs,
     providerName,
+    quotaLimits,
   });
 
   return http.createServer(async (req, res) => {
@@ -203,6 +205,12 @@ function createAiHttpServer({
         provider: providerName,
         version: AI_BACKEND_RUNTIME_VERSION,
       });
+      return;
+    }
+
+    if (method === 'GET' && route === '/ai/usage') {
+      const result = await handlers.handleUsage({ headers: req.headers ?? {} });
+      sendJson(res, result.httpStatus, result.body);
       return;
     }
 

@@ -1,6 +1,10 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createAiHttpServer } = require('../scripts/ai-backend-server.cjs');
+const {
+  AI_DIAGNOSTIC_CODES,
+  createAiBackendError,
+} = require('../scripts/ai-backend-core.cjs');
 
 function createAuthVerifier() {
   return {
@@ -75,6 +79,61 @@ function createDataStore() {
         stockItems: record.stockItems,
         issueCases: record.issueCases,
       };
+    },
+  };
+}
+
+function createQuotaDataStore(initialUsage = { chatUsed: 0, visionUsed: 0 }) {
+  const baseStore = createDataStore();
+  const usage = {
+    period: '2026-05',
+    chatUsed: Number(initialUsage.chatUsed) || 0,
+    visionUsed: Number(initialUsage.visionUsed) || 0,
+  };
+  const toUsageStatus = (limits) => ({
+    period: usage.period,
+    text: {
+      used: usage.chatUsed,
+      limit: limits.chat,
+      remaining: Math.max(0, limits.chat - usage.chatUsed),
+    },
+    vision: {
+      used: usage.visionUsed,
+      limit: limits.vision,
+      remaining: Math.max(0, limits.vision - usage.visionUsed),
+    },
+  });
+
+  return {
+    ...baseStore,
+    async getAiUsage(uid, limits) {
+      assert.equal(uid, 'user_a');
+      return toUsageStatus(limits);
+    },
+    async consumeAiUsage(uid, operation, limits) {
+      assert.equal(uid, 'user_a');
+      if (operation === 'vision') {
+        if (usage.visionUsed >= limits.vision) {
+          throw createAiBackendError(
+            AI_DIAGNOSTIC_CODES.QUOTA_EXCEEDED,
+            'Wykorzystano miesieczny limit analiz zdjec AI.',
+            429,
+            { usage: toUsageStatus(limits) }
+          );
+        }
+        usage.visionUsed += 1;
+      } else {
+        if (usage.chatUsed >= limits.chat) {
+          throw createAiBackendError(
+            AI_DIAGNOSTIC_CODES.QUOTA_EXCEEDED,
+            'Wykorzystano miesieczny limit pytan tekstowych AI.',
+            429,
+            { usage: toUsageStatus(limits) }
+          );
+        }
+        usage.chatUsed += 1;
+      }
+      return toUsageStatus(limits);
     },
   };
 }
@@ -163,13 +222,14 @@ function createAiProvider() {
   };
 }
 
-async function startServerForTest() {
+async function startServerForTest(options = {}) {
   const server = createAiHttpServer({
     authVerifier: createAuthVerifier(),
-    dataStore: createDataStore(),
+    dataStore: options.dataStore ?? createDataStore(),
     aiProvider: createAiProvider(),
     providerTimeoutMs: 40,
     providerName: 'test_provider',
+    quotaLimits: options.quotaLimits,
     logger: {
       info: () => null,
       warn: () => null,
@@ -575,6 +635,54 @@ test('POST /ai/chat returns scoped user response', async () => {
     assert.match(payload.data.answer, /Odpowiedz AI/);
     assert.equal(payload.data.contextSummary.selectedTank.id, 'tank_a');
     assert.equal(payload.data.contextSummary.tankCount, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('GET /ai/usage returns visible monthly AI limits', async () => {
+  const { server, baseUrl } = await startServerForTest({
+    dataStore: createQuotaDataStore({ chatUsed: 7, visionUsed: 2 }),
+    quotaLimits: { chat: 100, vision: 20 },
+  });
+  try {
+    const response = await fetch(`${baseUrl}/ai/usage`, {
+      method: 'GET',
+      headers: buildHeaders('token-user-a'),
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.data.usage.text.used, 7);
+    assert.equal(payload.data.usage.text.limit, 100);
+    assert.equal(payload.data.usage.text.remaining, 93);
+    assert.equal(payload.data.usage.vision.used, 2);
+    assert.equal(payload.data.usage.vision.limit, 20);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('POST /ai/chat enforces monthly text quota', async () => {
+  const { server, baseUrl } = await startServerForTest({
+    dataStore: createQuotaDataStore({ chatUsed: 1, visionUsed: 0 }),
+    quotaLimits: { chat: 1, vision: 20 },
+  });
+  try {
+    const response = await fetch(`${baseUrl}/ai/chat`, {
+      method: 'POST',
+      headers: buildHeaders('token-user-a'),
+      body: JSON.stringify({
+        question: 'Czy parametry sa ok?',
+        tankId: 'tank_a',
+      }),
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 429);
+    assert.equal(payload.ok, false);
+    assert.equal(payload.diagnosticCode, 'AIW_QUOTA_EXCEEDED');
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

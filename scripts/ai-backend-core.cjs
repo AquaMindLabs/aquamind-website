@@ -7,6 +7,7 @@ const AI_DIAGNOSTIC_CODES = Object.freeze({
   TIMEOUT: 'AIW_TIMEOUT',
   PROVIDER_ERROR: 'AIW_PROVIDER_ERROR',
   VALIDATION: 'AIW_VALIDATION',
+  QUOTA_EXCEEDED: 'AIW_QUOTA_EXCEEDED',
   INTERNAL: 'AIW_INTERNAL',
 });
 
@@ -18,6 +19,8 @@ const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
 const DEFAULT_OPENAI_MODEL = 'gpt-4.1-mini';
 const MAX_AI_CONTEXT_CHARS = 7000;
 const DEFAULT_RESPONSE_LANGUAGE = 'pl';
+const DEFAULT_AI_TEXT_MONTHLY_LIMIT = 100;
+const DEFAULT_AI_VISION_MONTHLY_LIMIT = 20;
 
 class AiBackendError extends Error {
   constructor(code, message, httpStatus = 500, details = {}) {
@@ -72,6 +75,60 @@ function toIso(value) {
     return null;
   }
   return new Date(parsed).toISOString();
+}
+
+function getAiQuotaPeriod(nowMs = Date.now()) {
+  const date = new Date(Number(nowMs) || Date.now());
+  return date.toISOString().slice(0, 7);
+}
+
+function normalizePositiveLimit(value, fallback) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? Math.floor(numeric) : fallback;
+}
+
+function resolveAiQuotaLimits(overrides = {}) {
+  return {
+    chat: normalizePositiveLimit(
+      overrides.chat ?? process.env.AI_TEXT_MONTHLY_LIMIT,
+      DEFAULT_AI_TEXT_MONTHLY_LIMIT
+    ),
+    vision: normalizePositiveLimit(
+      overrides.vision ?? process.env.AI_VISION_MONTHLY_LIMIT,
+      DEFAULT_AI_VISION_MONTHLY_LIMIT
+    ),
+  };
+}
+
+function normalizeAiUsageRecord(record = {}, limits = resolveAiQuotaLimits()) {
+  const period = toSafeString(record.period, 16) || getAiQuotaPeriod();
+  const chatUsed = Math.max(0, Math.floor(Number(record.chatUsed) || 0));
+  const visionUsed = Math.max(0, Math.floor(Number(record.visionUsed) || 0));
+  return {
+    period,
+    text: {
+      used: chatUsed,
+      limit: limits.chat,
+      remaining: Math.max(0, limits.chat - chatUsed),
+    },
+    vision: {
+      used: visionUsed,
+      limit: limits.vision,
+      remaining: Math.max(0, limits.vision - visionUsed),
+    },
+  };
+}
+
+function createQuotaExceededError(operation, usage) {
+  const isVision = operation === 'vision';
+  return createAiBackendError(
+    AI_DIAGNOSTIC_CODES.QUOTA_EXCEEDED,
+    isVision
+      ? 'Wykorzystano miesieczny limit analiz zdjec AI.'
+      : 'Wykorzystano miesieczny limit pytan tekstowych AI.',
+    429,
+    { usage }
+  );
 }
 
 function normalizeLanguageCode(value) {
@@ -901,6 +958,20 @@ async function readCollectionByUserViaFirestoreRest({
 }
 
 function createFirestoreAiDataStore(db = getFirestore(), options = {}) {
+  function getAiUsageRef(uid, period) {
+    return db.collection('users').doc(uid).collection('aiUsage').doc(period);
+  }
+
+  async function readAiUsage(uid, period = getAiQuotaPeriod()) {
+    const snapshot = await getAiUsageRef(uid, period).get();
+    const data = snapshot.exists ? snapshot.data() : {};
+    return {
+      period,
+      chatUsed: Number(data?.chatUsed) || 0,
+      visionUsed: Number(data?.visionUsed) || 0,
+    };
+  }
+
   async function readCollectionByUser(collectionName, uid, authContext = {}) {
     try {
       const snapshot = await db
@@ -928,6 +999,64 @@ function createFirestoreAiDataStore(db = getFirestore(), options = {}) {
   }
 
   return {
+    async getAiUsage(uid, limits = resolveAiQuotaLimits(), nowMs = Date.now()) {
+      const safeUid = toSafeString(uid, 128);
+      if (!safeUid) {
+        throw createAiBackendError(
+          AI_DIAGNOSTIC_CODES.UNAUTHORIZED,
+          'Brak autoryzacji.',
+          401
+        );
+      }
+      const period = getAiQuotaPeriod(nowMs);
+      const usage = await readAiUsage(safeUid, period);
+      return normalizeAiUsageRecord(usage, limits);
+    },
+
+    async consumeAiUsage(uid, operation, limits = resolveAiQuotaLimits(), nowMs = Date.now()) {
+      const safeUid = toSafeString(uid, 128);
+      const safeOperation = operation === 'vision' ? 'vision' : 'chat';
+      if (!safeUid) {
+        throw createAiBackendError(
+          AI_DIAGNOSTIC_CODES.UNAUTHORIZED,
+          'Brak autoryzacji.',
+          401
+        );
+      }
+
+      const period = getAiQuotaPeriod(nowMs);
+      const ref = getAiUsageRef(safeUid, period);
+      return db.runTransaction(async (transaction) => {
+        const snapshot = await transaction.get(ref);
+        const current = snapshot.exists ? snapshot.data() : {};
+        const chatUsed = Math.max(0, Math.floor(Number(current?.chatUsed) || 0));
+        const visionUsed = Math.max(0, Math.floor(Number(current?.visionUsed) || 0));
+        const usageBefore = normalizeAiUsageRecord(
+          { period, chatUsed, visionUsed },
+          limits
+        );
+        if (safeOperation === 'vision' && visionUsed >= limits.vision) {
+          throw createQuotaExceededError(safeOperation, usageBefore);
+        }
+        if (safeOperation === 'chat' && chatUsed >= limits.chat) {
+          throw createQuotaExceededError(safeOperation, usageBefore);
+        }
+
+        const nextRecord = {
+          userId: safeUid,
+          period,
+          chatUsed: safeOperation === 'chat' ? chatUsed + 1 : chatUsed,
+          visionUsed: safeOperation === 'vision' ? visionUsed + 1 : visionUsed,
+          updatedAt: new Date(nowMs).toISOString(),
+        };
+        if (!snapshot.exists) {
+          nextRecord.createdAt = new Date(nowMs).toISOString();
+        }
+        transaction.set(ref, nextRecord, { merge: true });
+        return normalizeAiUsageRecord(nextRecord, limits);
+      });
+    },
+
     async getUserData(uid, requestedTankId = null, authContext = {}) {
       const [tanks, measurements, stockItems, issueCases] = await Promise.all([
         readCollectionByUser('tanks', uid, authContext),
@@ -1967,6 +2096,7 @@ function createAiRequestHandlers(deps) {
   const logger = deps?.logger ?? console;
   const now = typeof deps?.now === 'function' ? deps.now : Date.now;
   const providerName = toSafeString(deps?.providerName, 64) || 'rule_based';
+  const quotaLimits = resolveAiQuotaLimits(deps?.quotaLimits);
 
   if (!authVerifier || typeof authVerifier.verifyIdToken !== 'function') {
     throw new Error('authVerifier.verifyIdToken is required');
@@ -2004,6 +2134,45 @@ function createAiRequestHandlers(deps) {
     return { uid, idToken: token };
   }
 
+  async function readUsageForUid(uid) {
+    if (dataStore && typeof dataStore.getAiUsage === 'function') {
+      return dataStore.getAiUsage(uid, quotaLimits, now());
+    }
+    return normalizeAiUsageRecord({ period: getAiQuotaPeriod(now()) }, quotaLimits);
+  }
+
+  async function consumeUsageForUid(uid, operation) {
+    if (dataStore && typeof dataStore.consumeAiUsage === 'function') {
+      return dataStore.consumeAiUsage(uid, operation, quotaLimits, now());
+    }
+    return normalizeAiUsageRecord({ period: getAiQuotaPeriod(now()) }, quotaLimits);
+  }
+
+  async function handleUsage({ headers }) {
+    try {
+      const authContext = await resolveUidFromHeaders(headers);
+      const usage = await readUsageForUid(authContext.uid);
+      return {
+        httpStatus: 200,
+        body: {
+          ok: true,
+          diagnosticCode: AI_DIAGNOSTIC_CODES.OK,
+          data: { usage },
+        },
+      };
+    } catch (rawError) {
+      const mapped = mapUnknownErrorToAiError(rawError);
+      return {
+        httpStatus: mapped.httpStatus,
+        body: {
+          ok: false,
+          diagnosticCode: mapped.code,
+          message: mapped.message,
+        },
+      };
+    }
+  }
+
   async function handleChat({ headers, payload }) {
     const startedAt = now();
     const payloadKeys = pickPayloadKeys(payload);
@@ -2014,12 +2183,15 @@ function createAiRequestHandlers(deps) {
     let aiContext = null;
     let requestForProvider = null;
     let resolvedLanguage = DEFAULT_RESPONSE_LANGUAGE;
+    let usage = null;
     let aiStage = 'validate';
     try {
       request = validateChatRequest(payload);
       aiStage = 'auth';
       const authContext = await resolveUidFromHeaders(headers);
       uid = authContext.uid;
+      aiStage = 'quota';
+      usage = await consumeUsageForUid(uid, 'chat');
       try {
         aiStage = 'context';
         const userData = await dataStore.getUserData(uid, request.tankId, authContext);
@@ -2101,6 +2273,7 @@ function createAiRequestHandlers(deps) {
             recommendations: normalized.recommendations,
             warnings: normalized.warnings,
             contextSummary,
+            usage,
           },
         },
       };
@@ -2170,6 +2343,7 @@ function createAiRequestHandlers(deps) {
                 250
               ),
               contextSummary,
+              usage,
             },
           },
         };
@@ -2218,12 +2392,15 @@ function createAiRequestHandlers(deps) {
     let aiContext = null;
     let requestForProvider = null;
     let resolvedLanguage = DEFAULT_RESPONSE_LANGUAGE;
+    let usage = null;
     let aiStage = 'validate';
     try {
       request = validateVisionRequest(payload);
       aiStage = 'auth';
       const authContext = await resolveUidFromHeaders(headers);
       uid = authContext.uid;
+      aiStage = 'quota';
+      usage = await consumeUsageForUid(uid, 'vision');
       try {
         aiStage = 'context';
         const userData = await dataStore.getUserData(uid, request.tankId, authContext);
@@ -2306,6 +2483,7 @@ function createAiRequestHandlers(deps) {
           data: {
             ...normalized,
             contextSummary,
+            usage,
           },
         },
       };
@@ -2376,6 +2554,7 @@ function createAiRequestHandlers(deps) {
                 250
               ),
               contextSummary,
+              usage,
             },
           },
         };
@@ -2417,6 +2596,7 @@ function createAiRequestHandlers(deps) {
   }
 
   return {
+    handleUsage,
     handleChat,
     handleVision,
   };

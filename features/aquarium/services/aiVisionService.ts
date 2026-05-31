@@ -2,7 +2,11 @@ import { Platform } from 'react-native';
 import Constants from 'expo-constants';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { storage } from '@/shared/services/firebase';
-import { AiChatRequestError } from '@/features/aquarium/services/aiChatService';
+import {
+  AiChatRequestError,
+  normalizeAiUsageStatus,
+  type AiUsageStatus,
+} from '@/features/aquarium/services/aiChatService';
 import { logAiDiagnosticEvent } from '@/shared/services/observability';
 
 const DEFAULT_AI_TIMEOUT_MS = 90000;
@@ -15,6 +19,7 @@ const AI_DIAGNOSTIC_CODES = Object.freeze({
   TIMEOUT: 'AIW_TIMEOUT',
   PROVIDER_ERROR: 'AIW_PROVIDER_ERROR',
   VALIDATION: 'AIW_VALIDATION',
+  QUOTA_EXCEEDED: 'AIW_QUOTA_EXCEEDED',
   INTERNAL: 'AIW_INTERNAL',
   UNAVAILABLE: 'AIW_UNAVAILABLE',
 });
@@ -110,6 +115,9 @@ function mapDiagnosticCodeToUserMessage(code: string): string {
   if (code === AI_DIAGNOSTIC_CODES.PROVIDER_ERROR) {
     return 'Analiza obrazu jest chwilowo niedostępna. Spróbuj ponownie za moment.';
   }
+  if (code === AI_DIAGNOSTIC_CODES.QUOTA_EXCEEDED) {
+    return 'Wykorzystano miesieczny limit analiz AI w tym planie.';
+  }
   if (code === AI_DIAGNOSTIC_CODES.UNAVAILABLE) {
     return 'Asystent AI nie ma skonfigurowanego adresu backendu w tym buildzie.';
   }
@@ -145,6 +153,7 @@ export type AiVisionResponse = {
   contextSummary: Record<string, unknown> | null;
   diagnosticCode: string;
   unreadableImageFallback: boolean;
+  usage: AiUsageStatus | null;
 };
 
 type AiVisionAnalyzePayload = {
@@ -597,6 +606,7 @@ export async function requestAiVisionAnalyze({
           : null,
       diagnosticCode,
       unreadableImageFallback,
+      usage: normalizeAiUsageStatus(data?.usage),
     };
   } catch (error) {
     if (error instanceof AiChatRequestError) {
