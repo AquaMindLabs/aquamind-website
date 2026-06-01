@@ -16,7 +16,7 @@ const MAX_TEXT_LENGTH = 4000;
 const MAX_IMAGE_BASE64_LENGTH = 8_000_000;
 const MAX_ITEMS_PER_COLLECTION = 80;
 const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
-const DEFAULT_OPENAI_MODEL = 'gpt-4.1-mini';
+const DEFAULT_OPENAI_MODEL = 'gpt-5.4-mini';
 const MAX_AI_CONTEXT_CHARS = 7000;
 const DEFAULT_RESPONSE_LANGUAGE = 'pl';
 const DEFAULT_AI_TEXT_MONTHLY_LIMIT = 100;
@@ -1478,6 +1478,7 @@ function buildProviderFetchErrorDetails(error) {
 function createOpenAiResponsesProvider({
   apiKey,
   model = DEFAULT_OPENAI_MODEL,
+  visionModel = model,
   baseUrl = DEFAULT_OPENAI_BASE_URL,
   maxOutputTokens = 2400,
 } = {}) {
@@ -1487,15 +1488,18 @@ function createOpenAiResponsesProvider({
   }
 
   const safeModel = toSafeString(model, 120) || DEFAULT_OPENAI_MODEL;
+  const safeVisionModel = toSafeString(visionModel, 120) || safeModel;
   const normalizedBaseUrl =
     toSafeString(baseUrl, 512).replace(/\/+$/, '') || DEFAULT_OPENAI_BASE_URL;
   const safeMaxOutputTokens =
     Number.isFinite(Number(maxOutputTokens)) && Number(maxOutputTokens) > 100
       ? Math.round(Number(maxOutputTokens))
       : 2400;
-  const shouldUseLowReasoning = /^gpt-5(?:-|$)/i.test(safeModel);
 
-  async function requestJsonOutput(inputItems) {
+  async function requestJsonOutput(inputItems, modelOverride = safeModel) {
+    const selectedModel = toSafeString(modelOverride, 120) || safeModel;
+    const shouldUseLowReasoning = /^gpt-5(?:[.-]|$)/i.test(selectedModel);
+
     if (typeof fetch !== 'function') {
       throw createAiBackendError(
         AI_DIAGNOSTIC_CODES.PROVIDER_ERROR,
@@ -1513,7 +1517,7 @@ function createOpenAiResponsesProvider({
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: safeModel,
+          model: selectedModel,
           input: inputItems,
           max_output_tokens: safeMaxOutputTokens,
           ...(shouldUseLowReasoning ? { reasoning: { effort: 'minimal' } } : {}),
@@ -1694,7 +1698,7 @@ function createOpenAiResponsesProvider({
             },
           ],
         },
-      ]);
+      ], safeModel);
     },
 
     async analyzeVision({ request, contextSummary }) {
@@ -1821,7 +1825,7 @@ function createOpenAiResponsesProvider({
               : []),
           ],
         },
-      ]);
+      ], safeVisionModel);
     },
   };
 }

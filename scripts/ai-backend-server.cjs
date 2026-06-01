@@ -153,7 +153,8 @@ function resolveAiProviderConfig() {
         providerName: 'openai',
         provider: createOpenAiResponsesProvider({
           apiKey: process.env.OPENAI_API_KEY,
-          model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
+          model: process.env.OPENAI_MODEL || 'gpt-5.4-mini',
+          visionModel: process.env.OPENAI_VISION_MODEL || process.env.OPENAI_MODEL || 'gpt-5.4',
           baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
           maxOutputTokens: Number(process.env.OPENAI_MAX_OUTPUT_TOKENS || 2400),
         }),

@@ -59,6 +59,72 @@ test('OpenAI Responses provider uses low reasoning and enough output tokens for 
   }
 });
 
+test('OpenAI Responses provider can use a stronger model for vision analysis', async () => {
+  const originalFetch = global.fetch;
+  let requestBody = null;
+
+  global.fetch = async (_url, options) => {
+    requestBody = JSON.parse(String(options?.body ?? '{}'));
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          status: 'completed',
+          output: [
+            {
+              type: 'message',
+              status: 'completed',
+              content: [
+                {
+                  type: 'output_text',
+                  text: JSON.stringify({
+                    summary: 'Obraz jest czytelny.',
+                    hypotheses: [],
+                    verificationSteps: [],
+                    recommendations: ['Sprawdz parametry.'],
+                    actionPlan: [],
+                    warnings: [],
+                  }),
+                },
+              ],
+            },
+          ],
+        };
+      },
+    };
+  };
+
+  try {
+    const provider = createOpenAiResponsesProvider({
+      apiKey: 'test-key',
+      model: 'gpt-5.4-mini',
+      visionModel: 'gpt-5.4',
+    });
+
+    const result = await provider.analyzeVision({
+      request: {
+        question: 'Co widac?',
+        imageUrl: 'https://example.com/fish.jpg',
+        additionalInfo: '',
+        mode: 'photo_analysis',
+        locale: 'pl',
+      },
+      contextSummary: {},
+    });
+
+    assert.equal(result.summary, 'Obraz jest czytelny.');
+    assert.equal(requestBody.model, 'gpt-5.4');
+    assert.deepEqual(requestBody.reasoning, { effort: 'minimal' });
+    assert.equal(
+      requestBody.input[1].content.some((item) => item.type === 'input_image'),
+      true
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('OpenAI Responses provider preserves fetch failure details', async () => {
   const originalFetch = global.fetch;
 
