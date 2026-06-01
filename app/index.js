@@ -362,8 +362,15 @@ function buildDiseaseAiSuspectedDiseases({
   catalog = [],
   summary = '',
   hypotheses = [],
+  description = '',
 }) {
-  const normalizedSummary = normalizeAiMatchText(summary);
+  const normalizedSummary = normalizeAiMatchText(
+    [
+      summary,
+      description,
+      ...(Array.isArray(hypotheses) ? hypotheses : []).map((entry) => entry?.label),
+    ].join(' ')
+  );
   const items = [];
 
   catalog.forEach((disease, index) => {
@@ -378,9 +385,22 @@ function buildDiseaseAiSuspectedDiseases({
     }
 
     let score = 0;
+    const matchedSignals = [];
     if (normalizedSummary.includes(matchName)) {
       score = Math.max(score, 0.68 - index * 0.01);
+      matchedSignals.push(`nazwa "${diseaseName}" pojawia sie w analizie`);
     }
+
+    const symptomLabels = normalizeArray(disease?.symptoms)
+      .map((symptomId) => DISEASE_SYMPTOMS.find((entry) => entry.id === symptomId)?.label || symptomId)
+      .map((label) => normalizeAiMatchText(label))
+      .filter(Boolean);
+    symptomLabels.forEach((symptomLabel) => {
+      if (symptomLabel && normalizedSummary.includes(symptomLabel)) {
+        score = Math.max(score, 0.42 + Math.min(0.22, matchedSignals.length * 0.04));
+        matchedSignals.push(`pasuje objaw: ${symptomLabel}`);
+      }
+    });
 
     (Array.isArray(hypotheses) ? hypotheses : []).forEach((entry) => {
       const label = normalizeAiMatchText(entry?.label);
@@ -388,6 +408,7 @@ function buildDiseaseAiSuspectedDiseases({
         const confidence = Number(entry?.confidence);
         if (Number.isFinite(confidence)) {
           score = Math.max(score, Math.min(0.95, Math.max(0.35, confidence)));
+          matchedSignals.push('AI wskazalo podobna hipoteze');
         }
       }
     });
@@ -403,22 +424,33 @@ function buildDiseaseAiSuspectedDiseases({
       label: diseaseName,
       confidence,
       confidenceLabel,
-      reason: `Opis objawów jest zbliżony do pozycji "${diseaseName}".`,
+      reason:
+        matchedSignals.length > 0
+          ? `Najbardziej pasuje do katalogu: ${matchedSignals.slice(0, 2).join(', ')}.`
+          : `Opis objawow jest zblizony do pozycji "${diseaseName}".`,
     });
   });
 
-  const sorted = items.sort((a, b) => Number(b.confidence) - Number(a.confidence)).slice(0, 3);
+  const sorted = items.sort((a, b) => Number(b.confidence) - Number(a.confidence)).slice(0, 1);
   if (sorted.length > 0) {
     return sorted;
   }
 
+  const fallbackDisease = normalizeArray(catalog).find(
+    (disease) => String(disease?.id ?? '').trim() && String(disease?.name ?? '').trim()
+  );
+  if (!fallbackDisease) {
+    return [];
+  }
+
   return [
     {
-      diseaseId: null,
-      label: 'Niepewne objawy',
-      confidence: 0.32,
+      diseaseId: String(fallbackDisease.id),
+      label: String(fallbackDisease.name),
+      confidence: 0.25,
       confidenceLabel: 'low',
-      reason: "Brak jednoznacznego dopasowania do katalogu chorób.",
+      reason:
+        'To najblizsze wskazanie z katalogu przy bardzo ograniczonych danych. Potraktuj je jako punkt startowy do weryfikacji.',
     },
   ];
 }
@@ -18781,6 +18813,13 @@ export default function HomeScreen() {
       const waterLine = latest
         ? `Ostatnie parametry: NO2 ${latest.no2 ?? '-'}, NO3 ${latest.no3 ?? '-'}, NH3/NH4 ${latest.nh3nh4 ?? '-'}, pH ${latest.ph ?? '-'}, GH ${latest.gh ?? '-'}, KH ${latest.kh ?? '-'}, temp ${latest.temperature ?? '-'}.`
         : "Brak aktualnych parametrów wody.";
+      const diseaseAiQuestion = [
+        description || 'Przeanalizuj objawy ryby na podstawie opisu, zdjecia i katalogu chorob.',
+        '',
+        'Wybierz DOKLADNIE jedna chorobe z katalogu chorob, ktora ma najwyzsze prawdopodobienstwo.',
+        'W odpowiedzi podaj nazwe tej choroby, procent prawdopodobienstwa 0-100% i krotkie uzasadnienie.',
+        'Nie odpowiadaj ogolnie typu "niepewne objawy"; jesli pewnosc jest niska, nadal wybierz najlepsze dopasowanie i napisz, ze to hipoteza do weryfikacji.',
+      ].join('\n');
       const additionalInfo = [
         `Akwarium: ${tank.name ?? 'Akwarium'}, litraz ${tank.liters ?? '-'} l.`,
         selectedFishOption?.label
@@ -18807,9 +18846,7 @@ export default function HomeScreen() {
             idToken: String(idToken ?? ''),
             imageUrl: uploaded?.downloadUrl || '',
             imageBase64: diseaseAiSelectedImage.base64,
-            question:
-              description ||
-              "Przeanalizuj objawy ryby i podaj maksymalnie 3 możliwe podejrzenia chorob z katalogu.",
+            question: diseaseAiQuestion,
             additionalInfo,
             tankId: String(tank.id),
             mode: 'sick_fish',
@@ -18836,9 +18873,7 @@ export default function HomeScreen() {
       } else {
         const response = await requestAiChat({
           idToken: String(idToken ?? ''),
-          question:
-            description ||
-            "Przeanalizuj objawy ryby i podaj maksymalnie 3 możliwe podejrzenia chorob z katalogu.",
+          question: diseaseAiQuestion,
           additionalInfo,
           tankId: String(tank.id),
           mode: 'sick_fish',
@@ -18864,6 +18899,7 @@ export default function HomeScreen() {
         catalog: diseaseCatalog,
         summary: resultPayload?.summary,
         hypotheses: resultPayload?.hypotheses,
+        description: diseaseAiQuestion,
       });
       const warnings = dedupeTextList(
         [DISEASE_AI_VET_WARNING, ...(resultPayload?.warnings ?? [])],
@@ -23073,9 +23109,10 @@ export default function HomeScreen() {
     if (!diseaseAiSelectedTank?.id) {
       return null;
     }
-    return normalizeArray(measurements)
+    const tankMeasurements = normalizeArray(measurements)
       .filter((item) => String(item?.tankId ?? '') === String(diseaseAiSelectedTank.id))
-      .sort((left, right) => getMeasurementRecordedAtMs(right) - getMeasurementRecordedAtMs(left))[0] ?? null;
+      .sort((left, right) => getMeasurementRecordedAtMs(right) - getMeasurementRecordedAtMs(left));
+    return buildLatestMeasurementDisplaySnapshot(tankMeasurements);
   }, [diseaseAiSelectedTank?.id, measurements]);
   const plantDiseaseAiSelectedTank = useMemo(() => {
     const preferredId = String(
@@ -23339,7 +23376,7 @@ export default function HomeScreen() {
           : null}
         {result?.unreadableImageFallback ? (
           <Text style={{ color: themeWarningText, fontSize: 12, marginTop: 6 }}>
-            Zdjęcie może być nieczytelne. Dodaj wyraźniejsze ujęcie.
+            Wynik jest orientacyjny, ale AI oparlo go na tym, co widac, opisie i danych akwarium.
           </Text>
         ) : null}
       </View>
@@ -37268,12 +37305,12 @@ export default function HomeScreen() {
                     backgroundColor: themeCardBg,
                   }}>
                   <Text style={{ color: themeTextPrimary, fontWeight: '700' }}>
-                    Możliwe podejrzenia
+                    Najbardziej prawdopodobne podejrzenie
                   </Text>
                   <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 6 }}>
                     {String(diseaseAiResult?.summary ?? '').trim()}
                   </Text>
-                  {normalizeArray(diseaseAiResult?.suspectedDiseases).slice(0, 3).map((item, index) => {
+                  {normalizeArray(diseaseAiResult?.suspectedDiseases).slice(0, 1).map((item, index) => {
                     const confidenceLabel = String(item?.confidenceLabel ?? 'medium');
                     const hasCatalogLink = Boolean(String(item?.diseaseId ?? '').trim());
                     return (
@@ -37291,7 +37328,7 @@ export default function HomeScreen() {
                           {String(item?.label ?? 'Niepewne objawy')}
                         </Text>
                         <Text style={{ color: themeWarningText, fontSize: 12, marginTop: 2 }}>
-                          Podejrzenie AI - pewnosc {mapDiseaseAiConfidenceBadge(confidenceLabel)}
+                          Podejrzenie AI - pewnosc {Math.round(Number(item?.confidence ?? 0) * 100)}% ({mapDiseaseAiConfidenceBadge(confidenceLabel)})
                         </Text>
                         <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
                           {String(item?.reason ?? '')}
@@ -37354,15 +37391,7 @@ export default function HomeScreen() {
                                 suspectedDiseases:
                                   nextSuspected.length > 0
                                     ? nextSuspected
-                                    : [
-                                        {
-                                          diseaseId: null,
-                                          label: 'Niepewne objawy',
-                                          confidence: 0.32,
-                                          confidenceLabel: 'low',
-                                          reason: 'Brak jednoznacznego dopasowania do katalogu chorob.',
-                                        },
-                                      ],
+                                    : prev.suspectedDiseases,
                               };
                             })
                           }
@@ -37814,7 +37843,7 @@ export default function HomeScreen() {
                             {String(item?.label ?? 'Niepewny problem')}
                           </Text>
                           <Text style={{ color: themeWarningText, fontSize: 12, marginTop: 2 }}>
-                            Podejrzenie AI - pewnosc {mapDiseaseAiConfidenceBadge(confidenceLabel)}
+                            Podejrzenie AI - pewnosc {Math.round(Number(item?.confidence ?? 0) * 100)}% ({mapDiseaseAiConfidenceBadge(confidenceLabel)})
                           </Text>
                           <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
                             {String(item?.reason ?? '')}
@@ -38307,7 +38336,7 @@ export default function HomeScreen() {
                           {String(item?.label ?? 'Niepewny typ glonu')}
                         </Text>
                         <Text style={{ color: themeWarningText, fontSize: 12, marginTop: 2 }}>
-                          Podejrzenie AI - pewnosc {mapDiseaseAiConfidenceBadge(confidenceLabel)}
+                          Podejrzenie AI - pewnosc {Math.round(Number(item?.confidence ?? 0) * 100)}% ({mapDiseaseAiConfidenceBadge(confidenceLabel)})
                         </Text>
                         <Text style={{ color: themeTextSecondary, fontSize: 12, marginTop: 4 }}>
                           {String(item?.reason ?? '')}

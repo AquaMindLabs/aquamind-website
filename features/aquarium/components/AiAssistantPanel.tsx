@@ -308,6 +308,9 @@ export function AiAssistantPanel({
     null
   );
   const [history, setHistory] = useState<AiAssistantEntry[]>([]);
+  const [isAskSectionOpen, setIsAskSectionOpen] = useState(false);
+  const [isHistorySectionOpen, setIsHistorySectionOpen] = useState(false);
+  const [pendingResultEntry, setPendingResultEntry] = useState<AiAssistantEntry | null>(null);
   const [selectedHistoryEntryId, setSelectedHistoryEntryId] = useState<string | null>(null);
   const [deletingHistoryEntryId, setDeletingHistoryEntryId] = useState<string | null>(null);
   const [historyStatusMessage, setHistoryStatusMessage] = useState('');
@@ -347,6 +350,9 @@ export function AiAssistantPanel({
     () => historyItems.find((entry) => entry.id === selectedHistoryEntryId) ?? null,
     [historyItems, selectedHistoryEntryId]
   );
+  const pendingResultTitle = pendingResultEntry
+    ? buildHistoryEntryTitle(pendingResultEntry)
+    : '';
   const pushHistoryEntry = useCallback((entry: AiAssistantEntry) => {
     setHistory((previous) => [entry, ...previous].slice(0, MAX_HISTORY_ITEMS));
   }, []);
@@ -375,6 +381,24 @@ export function AiAssistantPanel({
     },
     [user?.uid]
   );
+
+  const savePendingResultToHistory = useCallback(() => {
+    if (!pendingResultEntry) {
+      return;
+    }
+    pushHistoryEntry(pendingResultEntry);
+    void saveHistoryEntry(pendingResultEntry);
+    setPendingResultEntry(null);
+    setQuestion('');
+    setPendingChatMode('');
+    setSelectedVisionImage(null);
+    setIsHistorySectionOpen(true);
+    setSelectedHistoryEntryId(pendingResultEntry.id);
+  }, [pendingResultEntry, pushHistoryEntry, saveHistoryEntry]);
+
+  const discardPendingResult = useCallback(() => {
+    setPendingResultEntry(null);
+  }, []);
 
   const deleteHistoryEntry = useCallback(
     async (entryId: string) => {
@@ -566,6 +590,7 @@ export function AiAssistantPanel({
       setLastChatRequest(nextRequest);
       setLastRetryKind('chat');
       setIsLoading(true);
+      setPendingResultEntry(null);
       clearErrorState();
       const startedAt = Date.now();
 
@@ -611,10 +636,7 @@ export function AiAssistantPanel({
           warnings: response.warnings.slice(0, 3),
           hadEmptyDataFallback: hasMinimalData,
         };
-        pushHistoryEntry(historyEntry);
-        void saveHistoryEntry(historyEntry);
-        setQuestion('');
-        setPendingChatMode('');
+        setPendingResultEntry(historyEntry);
         setLastRetryKind(null);
 
         trackAiRequestSuccess({
@@ -656,10 +678,8 @@ export function AiAssistantPanel({
       clearErrorState,
       hasAiAssistantAccess,
       isLoading,
-      pushHistoryEntry,
       question,
       pendingChatMode,
-      saveHistoryEntry,
       setHandledError,
       user,
       buildMissingDataHints,
@@ -747,6 +767,7 @@ export function AiAssistantPanel({
       setLastVisionRequest(nextRequest);
       setLastRetryKind('vision');
       setIsLoading(true);
+      setPendingResultEntry(null);
       clearErrorState();
       const startedAt = Date.now();
 
@@ -802,8 +823,7 @@ export function AiAssistantPanel({
           hadEmptyDataFallback: hasMinimalData,
           unreadableImageFallback: response.unreadableImageFallback,
         };
-        pushHistoryEntry(historyEntry);
-        void saveHistoryEntry(historyEntry);
+        setPendingResultEntry(historyEntry);
         setLastRetryKind(null);
 
         trackAiRequestSuccess({
@@ -846,9 +866,7 @@ export function AiAssistantPanel({
       clearErrorState,
       hasAiAssistantAccess,
       isLoading,
-      pushHistoryEntry,
       question,
-      saveHistoryEntry,
       selectedVisionImage,
       setHandledError,
       user,
@@ -964,7 +982,7 @@ export function AiAssistantPanel({
         onboarding i zdjęcia.
       </Text>
 
-      {hasAiAssistantAccess && aiUsage ? (
+      {hasAiAssistantAccess ? (
         <View
           style={{
             borderWidth: 1,
@@ -975,12 +993,18 @@ export function AiAssistantPanel({
             marginBottom: 10,
           }}>
           <Text style={{ color: theme.themeTextPrimary, fontSize: 12, fontWeight: '700' }}>
-            Limity AI w tym miesiacu
+            Limity
           </Text>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
-            {renderUsagePill('Pytania', aiUsage.text)}
-            {renderUsagePill('Zdjecia', aiUsage.vision)}
-          </View>
+          {aiUsage ? (
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+              {renderUsagePill('Pytania', aiUsage.text)}
+              {renderUsagePill('Zdjecia', aiUsage.vision)}
+            </View>
+          ) : (
+            <Text style={{ color: theme.themeTextSecondary, fontSize: 11, marginTop: 8 }}>
+              Ladowanie limitow AI...
+            </Text>
+          )}
           <Text style={{ color: theme.themeTextSecondary, fontSize: 11, marginTop: 6 }}>
             Limity odnawiaja sie co miesiac. Uzywaj zdjec, gdy obraz realnie pomaga w diagnozie.
           </Text>
@@ -1057,10 +1081,43 @@ export function AiAssistantPanel({
               borderRadius: 8,
               padding: 10,
               backgroundColor: theme.themeCardBgAlt,
-              marginBottom: 8,
+              marginBottom: 10,
             }}>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setIsAskSectionOpen((previous) => !previous)}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 10,
+              }}>
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: theme.themeTextPrimary, fontWeight: '800', fontSize: 14 }}>
+                  Zadaj pytanie
+                </Text>
+                <Text style={{ color: theme.themeTextSecondary, fontSize: 11, marginTop: 3 }}>
+                  Podpowiedzi, pytanie tekstowe, zdjecie z galerii albo aparat.
+                </Text>
+              </View>
+              <MaterialIcons
+                name={isAskSectionOpen ? 'expand-less' : 'expand-more'}
+                size={22}
+                color={theme.themeTextSecondary}
+              />
+            </Pressable>
+
+            {isAskSectionOpen ? (
+              <>
+                <View
+                  style={{
+                    borderTopWidth: 1,
+                    borderTopColor: theme.themeBorder,
+                    paddingTop: 10,
+                    marginTop: 10,
+                  }}>
             <Text style={{ color: theme.themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
-              Szybkie akcje AI
+              Podpowiedzi
             </Text>
             <Text style={{ color: theme.themeTextSecondary, fontSize: 11, marginTop: 4 }}>
               Klikniecie tylko uzupelnia pole pytania. Wysylka nastapi dopiero po recznym kliknieciu
@@ -1283,6 +1340,214 @@ export function AiAssistantPanel({
               </Text>
             </Pressable>
 
+          {isLoading || pendingResultEntry ? (
+            <View
+              style={{
+                marginTop: 10,
+                borderWidth: 1,
+                borderColor: pendingResultEntry ? theme.themeAccent : theme.themeBorderStrong,
+                borderRadius: 10,
+                padding: 12,
+                backgroundColor: theme.themeCardBg,
+              }}>
+              {isLoading ? (
+                <>
+                  <Text
+                    style={{
+                      color: theme.themeTextPrimary,
+                      fontWeight: '800',
+                      fontSize: 14,
+                    }}>
+                    Czekanie na odpowiedz AI
+                  </Text>
+                  <Text style={{ color: theme.themeTextSecondary, fontSize: 12, marginTop: 6 }}>
+                    Asystent analizuje dane akwarium
+                    {selectedVisionImage?.uri ? ' i zdjecie' : ''}. To moze potrwac chwile.
+                  </Text>
+                </>
+              ) : pendingResultEntry ? (
+                <>
+                  <Text
+                    style={{
+                      color: theme.themeTextPrimary,
+                      fontWeight: '800',
+                      fontSize: 14,
+                    }}>
+                    Odpowiedz AI
+                  </Text>
+                  <Text style={{ color: theme.themeTextSecondary, fontSize: 11, marginTop: 3 }}>
+                    {pendingResultTitle}
+                  </Text>
+                  <View style={{ marginTop: 10 }}>
+                    <Text
+                      style={{ color: theme.themeTextPrimary, fontWeight: '700', fontSize: 12 }}>
+                      Pytanie
+                    </Text>
+                    <Text style={{ color: theme.themeTextPrimary, marginTop: 4, lineHeight: 19 }}>
+                      {pendingResultEntry.question}
+                    </Text>
+                  </View>
+                  {pendingResultEntry.type === 'chat' ? (
+                    <>
+                      <View style={{ marginTop: 12 }}>
+                        <Text
+                          style={{
+                            color: theme.themeTextPrimary,
+                            fontWeight: '700',
+                            fontSize: 12,
+                          }}>
+                          Odpowiedz
+                        </Text>
+                        {buildDisplayPoints(pendingResultEntry.answer, 10).map((item, index) => (
+                          <Text
+                            key={`pending-chat-answer-${index}`}
+                            style={{ color: theme.themeTextPrimary, marginTop: 5, lineHeight: 19 }}>
+                            {index + 1}. {item}
+                          </Text>
+                        ))}
+                      </View>
+                      {pendingResultEntry.recommendations.length > 0 ? (
+                        <View style={{ marginTop: 12 }}>
+                          <Text
+                            style={{
+                              color: theme.themeTextPrimary,
+                              fontWeight: '700',
+                              fontSize: 12,
+                            }}>
+                            Sugestie
+                          </Text>
+                          {pendingResultEntry.recommendations.map((item, index) => (
+                            <Text
+                              key={`pending-chat-rec-${index}`}
+                              style={{
+                                color: theme.themeTextSecondary,
+                                fontSize: 12,
+                                marginTop: 5,
+                                lineHeight: 18,
+                              }}>
+                              {index + 1}. {item}
+                            </Text>
+                          ))}
+                        </View>
+                      ) : null}
+                    </>
+                  ) : (
+                    <>
+                      <Image
+                        source={{ uri: pendingResultEntry.imageUri }}
+                        style={{
+                          width: '100%',
+                          height: 150,
+                          borderRadius: 8,
+                          marginTop: 12,
+                          backgroundColor: '#00000022',
+                        }}
+                        resizeMode="cover"
+                      />
+                      <View style={{ marginTop: 12 }}>
+                        <Text
+                          style={{
+                            color: theme.themeTextPrimary,
+                            fontWeight: '700',
+                            fontSize: 12,
+                          }}>
+                          Odpowiedz
+                        </Text>
+                        <Text
+                          style={{ color: theme.themeTextPrimary, marginTop: 5, lineHeight: 19 }}>
+                          {pendingResultEntry.summary}
+                        </Text>
+                      </View>
+                      {pendingResultEntry.actionPlan.length > 0 ? (
+                        <View style={{ marginTop: 12 }}>
+                          <Text
+                            style={{
+                              color: theme.themeTextPrimary,
+                              fontWeight: '700',
+                              fontSize: 12,
+                            }}>
+                            Sugestie
+                          </Text>
+                          {pendingResultEntry.actionPlan.map((item, index) => (
+                            <Text
+                              key={`pending-vision-plan-${index}`}
+                              style={{
+                                color: theme.themeTextSecondary,
+                                fontSize: 12,
+                                marginTop: 5,
+                                lineHeight: 18,
+                              }}>
+                              {index + 1}. {item}
+                            </Text>
+                          ))}
+                        </View>
+                      ) : null}
+                    </>
+                  )}
+                  {pendingResultEntry.warnings.length > 0 ? (
+                    <View style={{ marginTop: 12 }}>
+                      <Text
+                        style={{
+                          color: theme.themeWarningText,
+                          fontWeight: '700',
+                          fontSize: 12,
+                        }}>
+                        Ostrzezenia
+                      </Text>
+                      {pendingResultEntry.warnings.map((warning, index) => (
+                        <Text
+                          key={`pending-warning-${index}`}
+                          style={{ color: theme.themeWarningText, fontSize: 12, marginTop: 4 }}>
+                          {index + 1}. {warning}
+                        </Text>
+                      ))}
+                    </View>
+                  ) : null}
+                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+                    <Pressable
+                      onPress={savePendingResultToHistory}
+                      style={{
+                        flex: 1,
+                        borderWidth: 1,
+                        borderColor: theme.themeAccent,
+                        borderRadius: 8,
+                        paddingVertical: 9,
+                        backgroundColor: theme.themeAccent,
+                      }}>
+                      <Text
+                        style={{
+                          color: theme.themeAccentOnStrong,
+                          textAlign: 'center',
+                          fontWeight: '700',
+                        }}>
+                        Zapisz
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={discardPendingResult}
+                      style={{
+                        flex: 1,
+                        borderWidth: 1,
+                        borderColor: theme.themeDangerText,
+                        borderRadius: 8,
+                        paddingVertical: 9,
+                        backgroundColor: theme.themeCardBg,
+                      }}>
+                      <Text
+                        style={{
+                          color: theme.themeDangerText,
+                          textAlign: 'center',
+                          fontWeight: '700',
+                        }}>
+                        Usun
+                      </Text>
+                    </Pressable>
+                  </View>
+                </>
+              ) : null}
+            </View>
+          ) : null}
+
           <Pressable
             onPress={onToggleAiConsentDataProcessing}
             style={{
@@ -1386,19 +1651,64 @@ export function AiAssistantPanel({
               )}
             </View>
           ) : null}
+              </>
+            ) : null}
+          </View>
         </>
       )}
 
-      <View style={{ marginTop: 12 }}>
-        <Text
+      <View
+        style={{
+          marginTop: 12,
+          borderWidth: 1,
+          borderColor: theme.themeBorder,
+          borderRadius: 8,
+          padding: 10,
+          backgroundColor: theme.themeCardBgAlt,
+        }}>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => {
+            setIsHistorySectionOpen((previous) => !previous);
+            if (isHistorySectionOpen) {
+              setSelectedHistoryEntryId(null);
+            }
+          }}
           style={{
-            color: theme.themeTextPrimary,
-            fontWeight: '700',
-            fontSize: 14,
-            marginBottom: 8,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 10,
           }}>
-          Historia rozmowy i analiz
-        </Text>
+          <View style={{ flex: 1 }}>
+            <Text
+              style={{
+                color: theme.themeTextPrimary,
+                fontWeight: '800',
+                fontSize: 14,
+              }}>
+              Historia
+            </Text>
+            <Text style={{ color: theme.themeTextSecondary, fontSize: 11, marginTop: 3 }}>
+              {historyItems.length > 0
+                ? `${historyItems.length} wpisow. Kliknij, aby ${isHistorySectionOpen ? 'ukryc' : 'rozwinac'}.`
+                : 'Brak wpisow. Historia jest domyslnie schowana.'}
+            </Text>
+          </View>
+          <MaterialIcons
+            name={isHistorySectionOpen ? 'expand-less' : 'expand-more'}
+            size={22}
+            color={theme.themeTextSecondary}
+          />
+        </Pressable>
+        {isHistorySectionOpen ? (
+          <View
+            style={{
+              borderTopWidth: 1,
+              borderTopColor: theme.themeBorder,
+              paddingTop: 10,
+              marginTop: 10,
+            }}>
         {historyStatusMessage ? (
           <Text style={{ color: theme.themeWarningText, fontSize: 11, marginBottom: 8 }}>
             {historyStatusMessage}
@@ -1720,6 +2030,8 @@ export function AiAssistantPanel({
             );
           })
         )}
+          </View>
+        ) : null}
       </View>
       <Text style={{ color: theme.themeTextSecondary, fontSize: 11, marginTop: 8 }}>
         AI wspiera decyzje akwarystyczne, ale nie zastępuje specjalisty ani lekarza weterynarii.

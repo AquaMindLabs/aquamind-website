@@ -110,7 +110,7 @@ function mapDiagnosticCodeToUserMessage(code: string): string {
     return 'Analiza obrazu trwa zbyt długo. Spróbuj ponownie za chwilę.';
   }
   if (code === AI_DIAGNOSTIC_CODES.VALIDATION) {
-    return 'Nie udało się odczytać zdjęcia. Wybierz wyraźniejsze ujęcie.';
+    return 'Nie udalo sie wykonac pelnej analizy zdjecia, ale AI sprobuje oprzec wynik na tym, co widac oraz na opisie.';
   }
   if (code === AI_DIAGNOSTIC_CODES.PROVIDER_ERROR) {
     return 'Analiza obrazu jest chwilowo niedostępna. Spróbuj ponownie za moment.';

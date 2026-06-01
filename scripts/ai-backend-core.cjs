@@ -220,14 +220,14 @@ function getLocalizedTexts(language) {
     chatFallbackRecommendation:
       'Na podstawie dostepnych danych wykonaj bezpieczny krok kontrolny i dodaj kolejne pomiary tylko dla doprecyzowania oceny.',
     visionFallbackSummary:
-      'Nie udalo sie poprawnie przeanalizowac zdjecia. Sprobuj dodac wyrazniejsze zdjecie albo dopisz, co dokladnie chcesz sprawdzic.',
+      'Analiza obrazu jest ograniczona, ale na podstawie widocznych elementow i opisu mozna wskazac najbardziej prawdopodobna hipoteze do weryfikacji.',
     visionFallbackSteps: [
       'Zrob zdjecie w dobrym swietle.',
       'Upewnij sie, ze problematyczny obszar jest ostry i dobrze widoczny.',
       'Uzupelnij aktualne parametry wody, jesli sa dostepne.',
     ],
     noUsefulVisionSummary:
-      'Nie udalo sie poprawnie przeanalizowac zdjecia. Sprobuj dodac wyrazniejsze zdjecie albo dopisz, co dokladnie chcesz sprawdzic.',
+      'Obraz nie daje pelnej pewnosci, ale wynik mozna oprzec na widocznych elementach, opisie i danych akwarium.',
     unclearVisionSummary:
       'Brak jednoznacznej diagnozy na podstawie obrazu.',
     unknownHypothesisLabel: 'Nieokreslona hipoteza',
@@ -1246,19 +1246,25 @@ function buildRuleBasedVisionAnswer(request, summary) {
   if (looksUnreadable) {
     return {
       summary:
-        'Obraz jest nieczytelny. Zrob wyrazniejsze zdjecie (ostre, dobre swiatlo, blizszy plan) i powtorz analize.',
-      hypotheses: [],
+        'Obraz jest ograniczony jakosciowo, ale analiza opiera sie na tym, co widac, opisie i danych akwarium.',
+      hypotheses: [
+        {
+          key: 'fish_symptoms',
+          label: 'Najbardziej prawdopodobne podejrzenie objawowe do weryfikacji',
+          confidence: 0.35,
+        },
+      ],
       verificationSteps: [
-        'Wykonaj nowe zdjecie przy lepszym oswietleniu.',
-        'Sprawdz pomiary pH, NO2, NO3 i temperature, aby potwierdzic obserwacje.',
+        'Porownaj widoczne objawy z katalogiem chorob i zachowaniem ryby.',
+        'Sprawdz pomiary pH, NO2, NO3 i temperature, aby potwierdzic ryzyko stresu lub zatrucia.',
       ],
       recommendations: [
-        'Nie wprowadzaj duzych zmian na podstawie nieczytelnego obrazu.',
+        'Potraktuj wynik jako hipoteze i zacznij od bezpiecznej weryfikacji warunkow wody.',
       ],
       actionPlan: [
-        'Zrob nowe zdjecie z bliska i z boku akwarium.',
-        'Powtorz analize obrazu.',
+        'Zapisz najblizsze podejrzenie i obserwuj, czy objawy narastaja.',
         'Zweryfikuj parametry testami wody.',
+        'Jesli ryba szybko slabnie, izoluj ja tylko wtedy, gdy nie zwiekszy to stresu.',
       ],
       warnings: [texts.vetWarning],
     };
@@ -1747,7 +1753,7 @@ function createOpenAiResponsesProvider({
         '- Uzywaj ostroznych sformulowan: "moze przypominac", "warto wykluczyc", "mozliwa przyczyna".',
         '- confidence oznacza pewnosc hipotezy na podstawie zdjecia i kontekstu, nie pewnosc diagnozy.',
         '- summary ma najpierw opisac widoczne elementy, a dopiero potem ostrozna ocene.',
-        '- Jesli obraz jest nieczytelny, ciemny, rozmazany, zle skadrowany albo nie pokazuje problemu, opisz co mimo wszystko widac i dodaj bezpieczny plan weryfikacji.',
+        '- Jesli obraz jest nieczytelny, ciemny, rozmazany, zle skadrowany albo nie pokazuje problemu, nadal wskaz najlepsza hipoteze na podstawie widocznych fragmentow, opisu i kontekstu; nie odmawiaj analizy.',
         '- Nie zalecaj lekow jako pierwszego kroku bez wystarczajacych danych.',
         '- Nie zalecaj restartu akwarium jako pierwszej opcji.',
         '- Nie strasz uzytkownika bez podstaw.',
@@ -1756,6 +1762,7 @@ function createOpenAiResponsesProvider({
         '- Jesli zdjecie pokazuje rybe z objawami, ranami, kropkami, osadem, nietypowym zachowaniem, martwa rybe albo pytanie dotyczy leczenia, dodaj ostrzezenie weterynaryjne w jezyku odpowiedzi.',
         '- W verificationSteps uwzglednij sprawdzenie NO2, temperatury, zachowania innych ryb, ostatnich zmian w akwarium i filtracji.',
         '- Nie podawaj pewnej diagnozy choroby.',
+        '- Jesli pytanie prosi o identyfikacje choroby z katalogu, wybierz jedna najbardziej prawdopodobna chorobe z katalogu i podaj procent pewnosci jako hipoteze do weryfikacji.',
         '',
         'Zasady dla glonow i roslin:',
         '- Jesli zdjecie pokazuje glony lub problemy z roslinami, w verificationSteps uwzglednij swiatlo, czas swiecenia, NO3/PO4, nawozenie i CO2, jesli dostepne.',
@@ -1936,7 +1943,13 @@ function normalizeVisionProviderResponse(value, request = null, resolvedLanguage
   if (shouldUseFallback) {
     return {
       summary: texts.noUsefulVisionSummary,
-      hypotheses: [],
+      hypotheses: [
+        {
+          key: 'limited_image_best_effort',
+          label: 'Najlepsza hipoteza na podstawie ograniczonego obrazu',
+          confidence: 0.3,
+        },
+      ],
       verificationSteps: texts.visionFallbackSteps.slice(0, 6),
       recommendations: [],
       actionPlan: [],

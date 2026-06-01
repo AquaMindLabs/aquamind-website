@@ -302,9 +302,9 @@ test('POST /ai/vision/analyze returns readable fallback for unreadable image', a
     assert.equal(response.status, 200);
     assert.equal(payload.ok, true);
     assert.equal(payload.diagnosticCode, 'AIW_OK');
-    assert.match(payload.data.summary, /nie udalo sie poprawnie przeanalizowac zdjecia/i);
+    assert.match(payload.data.summary, /wynik mozna oprzec|widocznych elementach/i);
     assert.ok(Array.isArray(payload.data.hypotheses));
-    assert.equal(payload.data.hypotheses.length, 0);
+    assert.ok(payload.data.hypotheses.length > 0);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
