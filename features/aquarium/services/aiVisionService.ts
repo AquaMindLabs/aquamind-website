@@ -160,6 +160,7 @@ type AiVisionAnalyzePayload = {
   idToken: string;
   imageUrl: string;
   imageBase64?: string | null;
+  imageMimeType?: string | null;
   question?: string;
   additionalInfo?: string;
   tankId?: string | null;
@@ -303,6 +304,37 @@ function normalizeImageBase64(value: unknown): string {
   return raw.replace(/^data:image\/[a-z0-9.+-]+;base64,/i, '').replace(/\s/g, '');
 }
 
+function detectSupportedImageMimeTypeFromBase64(base64: string): string {
+  const normalized = normalizeImageBase64(base64);
+  if (!normalized) {
+    return '';
+  }
+  if (normalized.startsWith('/9j/')) {
+    return 'image/jpeg';
+  }
+  if (normalized.startsWith('iVBORw0KGgo')) {
+    return 'image/png';
+  }
+  if (normalized.startsWith('R0lGOD')) {
+    return 'image/gif';
+  }
+  if (normalized.startsWith('UklGR')) {
+    return 'image/webp';
+  }
+  return '';
+}
+
+function normalizeSupportedImageMimeType(value: unknown): string {
+  const raw = toSafeString(value, 80).toLowerCase();
+  if (raw === 'image/jpg' || raw === 'image/jpeg') {
+    return 'image/jpeg';
+  }
+  if (raw === 'image/png' || raw === 'image/gif' || raw === 'image/webp') {
+    return raw;
+  }
+  return '';
+}
+
 function pickRequestImageBase64(value: unknown): string {
   const normalized = normalizeImageBase64(value);
   if (!normalized || normalized.length > MAX_VISION_IMAGE_BASE64_CHARS) {
@@ -444,6 +476,7 @@ export async function requestAiVisionAnalyze({
   idToken,
   imageUrl,
   imageBase64 = null,
+  imageMimeType = null,
   question = '',
   additionalInfo = '',
   tankId = null,
@@ -456,6 +489,9 @@ export async function requestAiVisionAnalyze({
   const token = toSafeString(idToken, 4096);
   const safeImageUrl = toSafeString(imageUrl, 4000);
   const safeImageBase64 = pickRequestImageBase64(imageBase64);
+  const safeImageMimeType =
+    detectSupportedImageMimeTypeFromBase64(safeImageBase64) ||
+    normalizeSupportedImageMimeType(imageMimeType);
   const safeQuestion = sanitizeTextForAi(question, 4000);
   const safeTankId = toSafeString(tankId, 128);
   const safeAdditionalInfo = sanitizeTextForAi(additionalInfo, 4000);
@@ -513,6 +549,7 @@ export async function requestAiVisionAnalyze({
         tankId: safeTankId || undefined,
         imageUrl: safeImageUrl,
         imageBase64: safeImageBase64 || undefined,
+        imageMimeType: safeImageBase64 ? safeImageMimeType || undefined : undefined,
         mode: safeMode || undefined,
         locale: safeLocale || undefined,
         userLanguage: safeUserLanguage || undefined,

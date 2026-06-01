@@ -788,6 +788,7 @@ export function AiAssistantPanel({
             idToken: toSafeString(idToken, 4096),
             imageUrl: uploaded?.downloadUrl || '',
             imageBase64: nextRequest.image.base64,
+            imageMimeType: nextRequest.image.mimeType,
             question: nextRequest.question,
             additionalInfo: nextRequest.additionalInfo,
             tankId: nextRequest.tankId,

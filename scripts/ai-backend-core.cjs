@@ -708,6 +708,37 @@ function validateOptionalLanguage(value) {
   return normalizeLanguageCode(value) || '';
 }
 
+function normalizeSupportedImageMimeType(value) {
+  const raw = toSafeString(value, 80).toLowerCase();
+  if (raw === 'image/jpg' || raw === 'image/jpeg') {
+    return 'image/jpeg';
+  }
+  if (raw === 'image/png' || raw === 'image/gif' || raw === 'image/webp') {
+    return raw;
+  }
+  return '';
+}
+
+function detectSupportedImageMimeTypeFromBase64(value) {
+  const normalized = toSafeString(value, 120).replace(/\s/g, '');
+  if (!normalized) {
+    return '';
+  }
+  if (normalized.startsWith('/9j/')) {
+    return 'image/jpeg';
+  }
+  if (normalized.startsWith('iVBORw0KGgo')) {
+    return 'image/png';
+  }
+  if (normalized.startsWith('R0lGOD')) {
+    return 'image/gif';
+  }
+  if (normalized.startsWith('UklGR')) {
+    return 'image/webp';
+  }
+  return '';
+}
+
 function validateChatRequest(payload) {
   if (!isObjectRecord(payload)) {
     throw createAiBackendError(
@@ -752,6 +783,10 @@ function validateVisionRequest(payload) {
   const additionalInfo = toSafeString(payload.additionalInfo, MAX_TEXT_LENGTH);
   const imageUrl = toSafeString(payload.imageUrl, MAX_TEXT_LENGTH);
   const imageBase64 = toSafeString(payload.imageBase64, MAX_IMAGE_BASE64_LENGTH);
+  const detectedImageMimeType = detectSupportedImageMimeTypeFromBase64(imageBase64);
+  const imageMimeType =
+    detectedImageMimeType || (!imageBase64 ? normalizeSupportedImageMimeType(payload.imageMimeType) : '');
+  const supportedImageBase64 = detectedImageMimeType ? imageBase64 : '';
 
   if (!imageUrl && !imageBase64) {
     throw createAiBackendError(
@@ -773,7 +808,8 @@ function validateVisionRequest(payload) {
     question,
     additionalInfo,
     imageUrl: imageUrl || null,
-    imageBase64: imageBase64 || null,
+    imageBase64: supportedImageBase64 || null,
+    imageMimeType,
     tankId: validateOptionalTankId(payload.tankId),
     locale: validateLocale(payload.locale),
     userLanguage: validateOptionalLanguage(payload.userLanguage),
@@ -1711,7 +1747,7 @@ function createOpenAiResponsesProvider({
       const resolvedLanguage = resolveResponseLanguage(request, contextSummary);
       const contextJson = stringifyAiContext(contextSummary, MAX_AI_CONTEXT_CHARS);
       const imageInput = request.imageBase64
-        ? `data:image/jpeg;base64,${request.imageBase64}`
+        ? `data:${request.imageMimeType || 'image/jpeg'};base64,${request.imageBase64}`
         : request.imageUrl || '';
       const visionMode = toSafeString(request?.mode, 64) || 'photo_analysis';
 
