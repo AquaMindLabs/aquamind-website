@@ -1784,7 +1784,7 @@ function createOpenAiResponsesProvider({
         .filter(Boolean)
         .join('\n');
 
-      return requestJsonOutput([
+      const visionInputItems = [
         {
           role: 'developer',
           content: [
@@ -1825,7 +1825,20 @@ function createOpenAiResponsesProvider({
               : []),
           ],
         },
-      ], safeVisionModel);
+      ];
+
+      try {
+        return await requestJsonOutput(visionInputItems, safeVisionModel);
+      } catch (error) {
+        const canRetryWithTextModel =
+          safeVisionModel !== safeModel &&
+          error instanceof AiBackendError &&
+          error.code === AI_DIAGNOSTIC_CODES.PROVIDER_ERROR;
+        if (!canRetryWithTextModel) {
+          throw error;
+        }
+        return requestJsonOutput(visionInputItems, safeModel);
+      }
     },
   };
 }

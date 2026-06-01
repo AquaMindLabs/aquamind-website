@@ -9,7 +9,7 @@ import {
 } from '@/features/aquarium/services/aiChatService';
 import { logAiDiagnosticEvent } from '@/shared/services/observability';
 
-const DEFAULT_AI_TIMEOUT_MS = 90000;
+const DEFAULT_AI_TIMEOUT_MS = 120000;
 const AI_VISION_ANALYZE_PATH = '/ai/vision/analyze';
 const MAX_VISION_IMAGE_BASE64_CHARS = 7_000_000;
 
@@ -336,7 +336,7 @@ export async function pickVisionImage(
     const pickerOptions = {
       allowsEditing: false,
       base64: true,
-      quality: 0.75,
+      quality: 0.45,
       mediaTypes: ['images' as const],
     };
 
@@ -489,7 +489,7 @@ export async function requestAiVisionAnalyze({
         Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({
-        question: safeQuestion || 'Co widzisz na tym zdjęćiu akwarium?',
+        question: safeQuestion || 'Co widzisz na tym zdjeciu akwarium?',
         additionalInfo: safeAdditionalInfo,
         tankId: safeTankId || undefined,
         imageUrl: safeImageUrl,

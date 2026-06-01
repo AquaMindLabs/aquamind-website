@@ -125,6 +125,83 @@ test('OpenAI Responses provider can use a stronger model for vision analysis', a
   }
 });
 
+test('OpenAI Responses provider retries vision with text model after provider failure', async () => {
+  const originalFetch = global.fetch;
+  const requestedModels = [];
+
+  global.fetch = async (_url, options) => {
+    const requestBody = JSON.parse(String(options?.body ?? '{}'));
+    requestedModels.push(requestBody.model);
+    if (requestBody.model === 'gpt-5.4') {
+      return {
+        ok: false,
+        status: 400,
+        async json() {
+          return {
+            error: {
+              type: 'invalid_request_error',
+              code: 'unsupported_model',
+              message: 'Model does not support this input.',
+            },
+          };
+        },
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          status: 'completed',
+          output: [
+            {
+              type: 'message',
+              status: 'completed',
+              content: [
+                {
+                  type: 'output_text',
+                  text: JSON.stringify({
+                    summary: 'Analiza awaryjna dziala.',
+                    hypotheses: [],
+                    verificationSteps: [],
+                    recommendations: ['Sprawdz parametry.'],
+                    actionPlan: [],
+                    warnings: [],
+                  }),
+                },
+              ],
+            },
+          ],
+        };
+      },
+    };
+  };
+
+  try {
+    const provider = createOpenAiResponsesProvider({
+      apiKey: 'test-key',
+      model: 'gpt-5.4-mini',
+      visionModel: 'gpt-5.4',
+    });
+
+    const result = await provider.analyzeVision({
+      request: {
+        question: 'Co widac?',
+        imageUrl: 'https://example.com/fish.jpg',
+        additionalInfo: '',
+        mode: 'photo_analysis',
+        locale: 'pl',
+      },
+      contextSummary: {},
+    });
+
+    assert.equal(result.summary, 'Analiza awaryjna dziala.');
+    assert.deepEqual(requestedModels, ['gpt-5.4', 'gpt-5.4-mini']);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('OpenAI Responses provider preserves fetch failure details', async () => {
   const originalFetch = global.fetch;
 
