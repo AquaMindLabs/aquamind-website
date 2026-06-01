@@ -2111,7 +2111,7 @@ function logOperation(logger, level, message, context) {
         ? logger?.warn
         : logger?.info;
   if (typeof loggerMethod === 'function') {
-    loggerMethod(message, safeContext);
+    loggerMethod(`${message} ${JSON.stringify(safeContext)}`);
   }
 }
 
