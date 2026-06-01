@@ -52,7 +52,7 @@ test('OpenAI Responses provider uses low reasoning and enough output tokens for 
 
     assert.equal(result.answer, 'pong');
     assert.equal(requestBody.max_output_tokens, 2400);
-    assert.deepEqual(requestBody.reasoning, { effort: 'minimal' });
+    assert.deepEqual(requestBody.reasoning, { effort: 'low' });
     assert.equal(requestBody.text.format.type, 'json_object');
   } finally {
     global.fetch = originalFetch;
@@ -115,7 +115,7 @@ test('OpenAI Responses provider can use a stronger model for vision analysis', a
 
     assert.equal(result.summary, 'Obraz jest czytelny.');
     assert.equal(requestBody.model, 'gpt-5.4');
-    assert.deepEqual(requestBody.reasoning, { effort: 'minimal' });
+    assert.deepEqual(requestBody.reasoning, { effort: 'low' });
     assert.equal(
       requestBody.input[1].content.some((item) => item.type === 'input_image'),
       true

@@ -1520,7 +1520,7 @@ function createOpenAiResponsesProvider({
           model: selectedModel,
           input: inputItems,
           max_output_tokens: safeMaxOutputTokens,
-          ...(shouldUseLowReasoning ? { reasoning: { effort: 'minimal' } } : {}),
+          ...(shouldUseLowReasoning ? { reasoning: { effort: 'low' } } : {}),
           text: {
             format: {
               type: 'json_object',
