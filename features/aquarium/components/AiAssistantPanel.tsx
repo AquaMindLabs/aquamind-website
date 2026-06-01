@@ -21,7 +21,7 @@ import {
 import {
   pickVisionImage,
   requestAiVisionAnalyzeWithRetry,
-  uploadVisionImageForUser,
+  uploadVisionImageForUserBestEffort,
 } from '@/features/aquarium/services/aiVisionService';
 import {
   trackAiRequestFailure,
@@ -761,11 +761,11 @@ export function AiAssistantPanel({
       try {
         const uid = toSafeString(user?.uid, 128);
         const idToken = await user?.getIdToken?.();
-        const uploaded = await uploadVisionImageForUser(uid, nextRequest.image);
+        const uploaded = await uploadVisionImageForUserBestEffort(uid, nextRequest.image);
         const response = await requestAiVisionAnalyzeWithRetry(
           {
             idToken: toSafeString(idToken, 4096),
-            imageUrl: uploaded.downloadUrl,
+            imageUrl: uploaded?.downloadUrl || '',
             imageBase64: nextRequest.image.base64,
             question: nextRequest.question,
             additionalInfo: nextRequest.additionalInfo,
@@ -793,7 +793,7 @@ export function AiAssistantPanel({
           createdAtMs,
           createdAtLabel: new Date(createdAtMs).toLocaleString(),
           question: nextRequest.question || 'Analiza zdjecia akwarium',
-          imageUri: uploaded.downloadUrl || nextRequest.image.uri,
+          imageUri: uploaded?.downloadUrl || nextRequest.image.uri,
           summary: response.summary,
           hypotheses: response.hypotheses,
           verificationSteps: response.verificationSteps,

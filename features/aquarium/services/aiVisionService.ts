@@ -421,6 +421,25 @@ export async function uploadVisionImageForUser(
   return { storagePath, downloadUrl };
 }
 
+export async function uploadVisionImageForUserBestEffort(
+  uid: string,
+  image: PickedImage
+): Promise<{ storagePath: string; downloadUrl: string } | null> {
+  try {
+    return await uploadVisionImageForUser(uid, image);
+  } catch (error) {
+    logAiDiagnosticEvent({
+      operation: 'vision',
+      diagnosticCode: AI_DIAGNOSTIC_CODES.INTERNAL,
+      payloadKeys: ['imageUpload'],
+      hasImageBase64: Boolean(image?.base64),
+      hasImageUrl: Boolean(image?.uri),
+      httpStatus: 0,
+    });
+    return null;
+  }
+}
+
 export async function requestAiVisionAnalyze({
   idToken,
   imageUrl,

@@ -152,7 +152,7 @@ import {
 import {
   pickVisionImage,
   requestAiVisionAnalyzeWithRetry,
-  uploadVisionImageForUser,
+  uploadVisionImageForUserBestEffort,
 } from '@/features/aquarium/services/aiVisionService';
 import { evaluateEmergencyState } from '@/features/aquarium/services/emergencyService';
 import {
@@ -18380,11 +18380,11 @@ export default function HomeScreen() {
         .filter(Boolean)
         .join('\n');
       const idToken = await user.getIdToken();
-      const uploaded = await uploadVisionImageForUser(String(user.uid), catalogAiSelectedImage);
+      const uploaded = await uploadVisionImageForUserBestEffort(String(user.uid), catalogAiSelectedImage);
       const response = await requestAiVisionAnalyzeWithRetry(
         {
           idToken: String(idToken ?? ''),
-          imageUrl: uploaded.downloadUrl,
+          imageUrl: uploaded?.downloadUrl || '',
           imageBase64: catalogAiSelectedImage.base64,
           question: effectiveQuestion,
           additionalInfo,
@@ -18801,11 +18801,11 @@ export default function HomeScreen() {
 
       let resultPayload = null;
       if (hasImage) {
-        const uploaded = await uploadVisionImageForUser(String(user.uid), diseaseAiSelectedImage);
+        const uploaded = await uploadVisionImageForUserBestEffort(String(user.uid), diseaseAiSelectedImage);
         const response = await requestAiVisionAnalyzeWithRetry(
           {
             idToken: String(idToken ?? ''),
-            imageUrl: uploaded.downloadUrl,
+            imageUrl: uploaded?.downloadUrl || '',
             imageBase64: diseaseAiSelectedImage.base64,
             question:
               description ||
@@ -19175,14 +19175,14 @@ export default function HomeScreen() {
 
       let resultPayload = null;
       if (hasImage) {
-        const uploaded = await uploadVisionImageForUser(
+        const uploaded = await uploadVisionImageForUserBestEffort(
           String(user.uid),
           plantDiseaseAiSelectedImage
         );
         const response = await requestAiVisionAnalyzeWithRetry(
           {
             idToken: String(idToken ?? ''),
-            imageUrl: uploaded.downloadUrl,
+            imageUrl: uploaded?.downloadUrl || '',
             imageBase64: plantDiseaseAiSelectedImage.base64,
             question:
               description ||
@@ -19559,11 +19559,11 @@ export default function HomeScreen() {
 
       let resultPayload = null;
       if (hasImage) {
-        const uploaded = await uploadVisionImageForUser(String(user.uid), algaeAiSelectedImage);
+        const uploaded = await uploadVisionImageForUserBestEffort(String(user.uid), algaeAiSelectedImage);
         const response = await requestAiVisionAnalyzeWithRetry(
           {
             idToken: String(idToken ?? ''),
-            imageUrl: uploaded.downloadUrl,
+            imageUrl: uploaded?.downloadUrl || '',
             imageBase64: algaeAiSelectedImage.base64,
             question:
               description ||
