@@ -142,6 +142,7 @@ const QUICK_ACTIONS = Object.freeze([
       'Przeanalizuj zdjęcie akwarium i wskaz najbardziej prawdopodobne problemy.',
     additionalInfo: 'Podaj hipotezy, poziom pewnosci i plan weryfikacji pomiarami.',
     mode: 'vision',
+    aiMode: 'photo_analysis',
   },
   {
     id: 'help-algae',
@@ -150,6 +151,7 @@ const QUICK_ACTIONS = Object.freeze([
       'Mam problem z glonami. Oceń dane i zaproponuj plan ograniczania glonów.',
     additionalInfo: 'Uwzględnij światło, NO3/PO4 i obciążenie biologiczne.',
     mode: 'chat',
+    aiMode: 'algae_analysis',
   },
   {
     id: 'help-sick-fish',
@@ -158,6 +160,7 @@ const QUICK_ACTIONS = Object.freeze([
       'Ryba wyglada na chora. Co moge sprawdzic i jakie kroki wykonac najpierw?',
     additionalInfo: 'Daj ostrozny plan i oznacz, co wymaga konsultacji specjalistycznej.',
     mode: 'chat',
+    aiMode: 'sick_fish',
   },
 ]);
 
@@ -170,6 +173,31 @@ function toSafeString(value: unknown, maxLength = 4000): string {
     return normalized;
   }
   return normalized.slice(0, maxLength);
+}
+
+function inferVisionModeFromQuestion(value: unknown, fallback = 'photo_analysis'): string {
+  const text = toSafeString(value, 1200)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  if (!text) {
+    return fallback;
+  }
+  if (
+    text.includes('chor') ||
+    text.includes('objaw') ||
+    text.includes('leczen') ||
+    text.includes('ryb')
+  ) {
+    return 'sick_fish';
+  }
+  if (text.includes('glon') || text.includes('algae')) {
+    return 'algae_analysis';
+  }
+  if (text.includes('roslin') || text.includes('plant') || text.includes('lisc')) {
+    return 'plant_problem_analysis';
+  }
+  return fallback;
 }
 
 function buildHistoryEntryTitle(entry: AiAssistantEntry): string {
@@ -333,6 +361,7 @@ export function AiAssistantPanel({
     question: string;
     additionalInfo: string;
     tankId: string | null;
+    mode: string;
     image: PickedVisionImage;
   } | null>(null);
 
@@ -728,6 +757,7 @@ export function AiAssistantPanel({
         question: string;
         additionalInfo: string;
         tankId: string | null;
+        mode: string;
         image: PickedVisionImage;
       } | null = null
     ) => {
@@ -761,6 +791,10 @@ export function AiAssistantPanel({
         question: toSafeString(question, MAX_DESCRIPTION_LENGTH),
         additionalInfo: '',
         tankId: activeTankIdForRequest,
+        mode: inferVisionModeFromQuestion(
+          question,
+          toSafeString(pendingChatMode, 64) || 'photo_analysis'
+        ),
         image,
       };
 
@@ -792,6 +826,7 @@ export function AiAssistantPanel({
             question: nextRequest.question,
             additionalInfo: nextRequest.additionalInfo,
             tankId: nextRequest.tankId,
+            mode: nextRequest.mode,
           },
           { maxAttempts: 2, retryDelayMs: 450 }
         );
@@ -867,6 +902,7 @@ export function AiAssistantPanel({
       clearErrorState,
       hasAiAssistantAccess,
       isLoading,
+      pendingChatMode,
       question,
       selectedVisionImage,
       setHandledError,

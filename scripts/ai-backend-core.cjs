@@ -1315,64 +1315,118 @@ function buildRuleBasedVisionAnswer(request, summary) {
     primaryCategory = 'plant';
   }
 
+  const currentWater = isObjectRecord(summary?.currentWater)
+    ? summary.currentWater
+    : isObjectRecord(summary?.latestCoreMeasurements)
+      ? summary.latestCoreMeasurements
+      : null;
+  const measurementCount =
+    Number(summary?.measurementCount) || Number(summary?.appAnalysis?.measurementCount) || 0;
+  const activeIssueCount =
+    Number(summary?.activeIssueCount) || Number(summary?.appAnalysis?.activeIssueCount) || 0;
+  const hasMeasurements = measurementCount > 0 || Boolean(currentWater?.measuredAt);
+
   const hypotheses =
     primaryCategory === 'algae'
       ? [
           {
             key: 'algae_growth',
-            label: 'Mozliwy problem glonowy',
-            confidence: 0.62,
+            label: 'Mozliwy problem glonowy widoczny na zdjeciu',
+            confidence: 0.58,
           },
         ]
       : primaryCategory === 'fish'
         ? [
             {
-              key: 'fish_stress',
-              label: 'Mozliwe objawy stresu ryb',
-              confidence: 0.58,
+              key: 'fish_symptoms',
+              label: 'Najbardziej prawdopodobne objawy ryby do weryfikacji',
+              confidence: 0.52,
             },
           ]
         : primaryCategory === 'plant'
           ? [
               {
-                key: 'plant_deficiency',
-                label: 'Mozliwe oznaki niedoboru u roslin',
-                confidence: 0.56,
+                key: 'plant_condition',
+                label: 'Mozliwy problem kondycji roslin',
+                confidence: 0.5,
               },
             ]
           : [
               {
-                key: 'general_observation',
-                label: 'Wymagana dodatkowa weryfikacja pomiarami',
-                confidence: 0.51,
+                key: 'no_clear_alarm',
+                label: 'Brak jednoznacznego alarmu na podstawie dostepnych informacji',
+                confidence: 0.46,
               },
             ];
 
-  const verificationSteps = [
-    'Sprawdz aktualny pomiar pH, NO2, NO3 i temperatury.',
-    'Porownaj wynik z historia z ostatnich 7 dni.',
-    'Obserwuj zmiany po 24h i unikaj wielu modyfikacji naraz.',
-  ];
+  const verificationSteps = [];
+  if (primaryCategory === 'algae') {
+    verificationSteps.push(
+      'Porownaj miejsca glonow ze zdjecia z czasem swiecenia, NO3/PO4 i dawkowaniem nawozow.'
+    );
+  } else if (primaryCategory === 'fish') {
+    verificationSteps.push(
+      'Zweryfikuj, czy objaw dotyczy jednej ryby czy kilku oraz czy zachowanie zmienilo sie nagle.'
+    );
+  } else if (primaryCategory === 'plant') {
+    verificationSteps.push(
+      'Sprawdz, czy problem dotyczy starych czy nowych lisci oraz porownaj to ze swiatlem, CO2 i nawozeniem.'
+    );
+  } else {
+    verificationSteps.push(
+      'Porownaj to, co widac na zdjeciu, z realnym problemem: klarownosc wody, glony, rosliny i zachowanie ryb.'
+    );
+  }
+  verificationSteps.push(
+    hasMeasurements
+      ? 'Odnies sugestie do ostatnich dostepnych pomiarow, zamiast wykonywac duze zmiany na podstawie samego zdjecia.'
+      : 'Doprecyzuj tylko podstawowe pomiary pH, NO2, NO3 i temperature, bo bez nich zdjecie daje ograniczona pewnosc.'
+  );
+  if (activeIssueCount > 0) {
+    verificationSteps.push('Uwzglednij aktywne przypadki w aplikacji, bo moga tlumaczyc widoczne objawy.');
+  }
 
   const recommendations = [];
-  if ((Number(summary?.activeIssueCount) || Number(summary?.appAnalysis?.activeIssueCount) || 0) > 0) {
-    recommendations.push('Najpierw domknij aktywne przypadki leczenia/ograniczania glonow.');
+  if (primaryCategory === 'algae') {
+    recommendations.push(
+      'Nie zaczynaj od chemii; najpierw dopasuj czas swiecenia, karmienie i podmiany do tego, gdzie glony faktycznie wystepuja.'
+    );
+  } else if (primaryCategory === 'fish') {
+    recommendations.push(
+      'Nie podawaj lekow bez potwierdzenia; najpierw ocen wode, tlenienie i czy objawy rozprzestrzeniaja sie na inne ryby.'
+    );
+  } else if (primaryCategory === 'plant') {
+    recommendations.push(
+      'Nie zmieniaj naraz calego nawozenia; wybierz jedna korekte zwiazana z objawem lisci i obserwuj nowe przyrosty.'
+    );
+  } else {
+    recommendations.push(
+      'Jesli na zdjeciu nie widac wyraznego problemu, nie wprowadzaj zmian profilaktycznie; obserwuj zbiornik i porownuj z pomiarami.'
+    );
   }
-  recommendations.push('Wykonaj dokumentacje zdjeciowa przed i po zmianach.');
+  if (activeIssueCount > 0) {
+    recommendations.push('Nie mieszaj kilku napraw naraz, dopoki aktywny problem nie jest domkniety.');
+  }
+
   const actionPlan = [
-    'Wykonaj pomiar pH, NO2, NO3 i temperatury.',
-    'Porownaj wynik z historia z 7 dni.',
-    'Wprowadz 1 mala zmiane i ocen efekt po 24h.',
+    'Zanotuj jedna glowna obserwacje ze zdjecia, ktora realnie budzi watpliwosc.',
+    hasMeasurements
+      ? 'Porownaj ja z ostatnimi dostepnymi pomiarami i historia akwarium.'
+      : 'Uzupelnij brakujace podstawowe pomiary przed mocniejsza ingerencja.',
+    'Wprowadz najwyzej jedna mala zmiane i ocen efekt po 24-48 godzinach.',
   ];
 
   return {
     summary:
-      'Analiza obrazu ma charakter wspierajacy i wymaga potwierdzenia pomiarami.',
+      primaryCategory === 'general'
+        ? 'Analiza zdjecia nie wskazuje automatycznie jednego alarmowego problemu; najlepszy wniosek trzeba oprzec na widocznych elementach i danych akwarium.'
+        : 'Analiza zdjecia wskazuje najbardziej prawdopodobny kierunek do weryfikacji, ale bez pewnej diagnozy.',
     hypotheses,
     verificationSteps,
     recommendations,
     actionPlan,
-    warnings: [texts.vetWarning],
+    warnings:
+      primaryCategory === 'fish' || hasVeterinaryRiskKeywords(text) ? [texts.vetWarning] : [],
   };
 }
 
@@ -1789,6 +1843,12 @@ function createOpenAiResponsesProvider({
         '- Uzywaj ostroznych sformulowan: "moze przypominac", "warto wykluczyc", "mozliwa przyczyna".',
         '- confidence oznacza pewnosc hipotezy na podstawie zdjecia i kontekstu, nie pewnosc diagnozy.',
         '- summary ma najpierw opisac widoczne elementy, a dopiero potem ostrozna ocene.',
+        '- Kazda pozycja w recommendations i actionPlan musi miec jasna podstawe w zdjeciu, pytaniu uzytkownika albo kontekscie akwarium.',
+        '- Nie podawaj ogolnych porad typu "zrob wszystkie testy", "popraw filtracje", "zmien oswietlenie", jesli nie wynika to ze zdjecia lub danych.',
+        '- Jesli brakuje konkretnego pomiaru, popros tylko o ten pomiar, ktory realnie pomoze zweryfikowac hipoteze.',
+        '- Jesli zdjecie nie pokazuje wyraznego problemu, napisz to wprost i nie tworz alarmistycznego planu; zaproponuj tylko spokojna obserwacje i 1-2 kontrole wynikajace z kontekstu.',
+        '- W actionPlan uloz maksymalnie 4 kroki od najmniej inwazyjnych do bardziej stanowczych.',
+        '- Nie zalecaj jednoczesnie wielu zmian, jesli nie ma na to mocnych przeslanek.',
         '- Jesli obraz jest nieczytelny, ciemny, rozmazany, zle skadrowany albo nie pokazuje problemu, nadal wskaz najlepsza hipoteze na podstawie widocznych fragmentow, opisu i kontekstu; nie odmawiaj analizy.',
         '- Nie zalecaj lekow jako pierwszego kroku bez wystarczajacych danych.',
         '- Nie zalecaj restartu akwarium jako pierwszej opcji.',
@@ -1814,6 +1874,13 @@ function createOpenAiResponsesProvider({
         '- Wskaz maksymalnie 3 mozliwe typy glonow lub przyczyny, nigdy jako pewna diagnoza.',
         '- Priorytetowo zaproponuj bezpieczna weryfikacje: NO3/PO4, czas i intensywnosc swiatla, CO2, cyrkulacja i podmiany.',
         '- Nie zalecaj chemii ani restartu akwarium jako pierwszego kroku.',
+        '',
+        'Jesli tryb analizy to photo_analysis:',
+        '- Najpierw opisz 2-4 konkretne obserwacje ze zdjecia, np. klarownosc wody, widoczne glony, kondycje roslin, zachowanie ryb, zabrudzenia szyb albo brak widocznych niepokojacych objawow.',
+        '- Jesli widac normalnie wygladajacy zbiornik, glowna hipoteza moze brzmiec "brak widocznego alarmu" z umiarkowana pewnoscia.',
+        '- Nie generuj listy problemow tylko dlatego, ze uzytkownik prosi o analize; wskaz problem tylko wtedy, gdy cos go sugeruje.',
+        '- Recommendations maja byc dopasowane do tego, co widac: np. metna woda -> filtracja/karmienie/podmiana, glony -> swiatlo/NO3/PO4, blade rosliny -> nawozenie/CO2/swiatlo.',
+        '- Jesli z kontekstu akwarium wynikaja najnowsze pomiary, wykorzystaj je jako dodatkowa podstawe, ale nie ignoruj braku widocznego problemu na zdjeciu.',
         '',
         'Pytanie uzytkownika:',
         request.question || '(brak)',
@@ -1842,6 +1909,8 @@ function createOpenAiResponsesProvider({
                 'Nie dodawaj pol spoza schematu.',
                 'Opisuj tylko to, co widac na zdjeciu oraz wynika z kontekstu.',
                 'Zawsze najpierw podaj ostrozny wniosek z dostepnych informacji; nie zaczynaj od braku danych.',
+                'Kazda sugestia musi wynikac z widocznych cech obrazu, pytania albo danych akwarium.',
+                'Jesli nie widzisz problemu, powiedz to wprost i nie wymyslaj alarmowych zalecen.',
                 'Nie stawiaj pewnej diagnozy na podstawie samego zdjecia.',
                 'Mozesz wskazywac hipotezy, ale musza byc ostrozne i mozliwe do zweryfikowania.',
                 'Nie oceniaj dokladnych parametrow wody na podstawie zdjecia.',

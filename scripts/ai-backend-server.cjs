@@ -13,7 +13,7 @@ const {
   createRuleBasedAiProvider,
 } = require('./ai-backend-core.cjs');
 
-const AI_BACKEND_RUNTIME_VERSION = 'ai-backend-disease-vision-best-effort-v10';
+const AI_BACKEND_RUNTIME_VERSION = 'ai-backend-grounded-vision-guidance-v11';
 
 function loadEnvFile() {
   const envPath = path.resolve(process.cwd(), '.env');
