@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="pl">
   <head>
     <meta charset="UTF-8" />
@@ -107,6 +107,12 @@
             Dane techniczne i diagnostyczne: logi bledow, zdarzenia telemetryczne,
             informacje o wersji aplikacji i platformie.
           </li>
+          <li>
+            Dane reklamowe w planie darmowym: identyfikatory urzadzenia lub
+            identyfikator reklamowy, przyblizona lokalizacja wynikajaca z adresu IP,
+            interakcje z reklamami, diagnostyka oraz informacje potrzebne do
+            wyswietlania i mierzenia reklam.
+          </li>
         </ul>
       </section>
 
@@ -117,6 +123,11 @@
           <li>Zapis i synchronizacja danych akwarium pomiedzy urzadzeniami.</li>
           <li>Dostarczanie analiz, historii i funkcji aplikacji.</li>
           <li>Zapewnienie bezpieczenstwa i stabilnosci (monitoring bledow, diagnostyka).</li>
+          <li>
+            Wyswietlanie delikatnych banerow reklamowych uzytkownikom planu
+            darmowego oraz mierzenie skutecznosci, zapobieganie naduzyciom i
+            zapewnienie zgodnosci reklam.
+          </li>
         </ul>
       </section>
 
@@ -125,6 +136,8 @@
         <p>
           Dane sa przechowywane w infrastrukturze chmurowej (Firebase/Google Cloud).
           Dostep do danych jest ograniczony regulami bezpieczenstwa na poziomie uzytkownika.
+          Dane reklamowe moga byc przetwarzane przez uslugi Google AdMob / Google
+          Mobile Ads zgodnie z ustawieniami zgody uzytkownika i zasadami Google.
         </p>
       </section>
 
@@ -133,12 +146,34 @@
         <p>
           Nie sprzedajemy danych osobowych. Dane moga byc przetwarzane przez
           zaufanych dostawcow technologicznych tylko w zakresie niezbednym do
-          dzialania aplikacji (np. hosting, analityka techniczna, logowanie bledow).
+          dzialania aplikacji (np. hosting, analityka techniczna, logowanie bledow,
+          platnosci/subskrypcje oraz reklamy w planie darmowym).
         </p>
       </section>
 
       <section class="card">
-        <h2>6. Okres przechowywania</h2>
+        <h2>6. Reklamy w planie darmowym</h2>
+        <p>
+          Aplikacja moze wyswietlac reklamy wylacznie uzytkownikom planu darmowego.
+          Reklamy maja forme dolnego banera. Nie stosujemy reklam pelnoekranowych,
+          wyskakujacych okien reklamowych, reklam typu rewarded ani reklam przy
+          uruchomieniu aplikacji.
+        </p>
+        <p>
+          Do obslugi reklam uzywamy Google AdMob / Google Mobile Ads. Google moze
+          przetwarzac identyfikatory urzadzenia, identyfikator reklamowy, przyblizona
+          lokalizacje, dane diagnostyczne oraz informacje o interakcjach z reklamami
+          w celu wyswietlania reklam, pomiaru ich skutecznosci, ograniczania naduzyc
+          i zapewnienia bezpieczenstwa.
+        </p>
+        <p>
+          Uzytkownicy z Europejskiego Obszaru Gospodarczego moga zobaczyc komunikat
+          zgody na reklamy i zarzadzac swoimi wyborami zgodnie z wymaganiami RODO.
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>7. Okres przechowywania</h2>
         <p>
           Dane konta i dane akwarium sa przechowywane do czasu usuniecia konta przez
           uzytkownika lub do czasu trwalego zamkniecia konta. Czesc danych technicznych
@@ -147,7 +182,7 @@
       </section>
 
       <section class="card">
-        <h2>7. Twoje prawa</h2>
+        <h2>8. Twoje prawa</h2>
         <ul>
           <li>Prawo dostepu do danych.</li>
           <li>Prawo sprostowania danych.</li>
@@ -160,7 +195,7 @@
       </section>
 
       <section class="card">
-        <h2>8. Usuniecie konta</h2>
+        <h2>9. Usuniecie konta</h2>
         <p>
           Konto mozna usunac bezposrednio w aplikacji: <code>Ustawienia -> Usun konto</code>.
           Szczegoly procesu: <a href="./delete-account.html">strona usuwania konta</a>.
@@ -168,14 +203,14 @@
       </section>
 
       <section class="card">
-        <h2>9. Zmiany polityki</h2>
+        <h2>10. Zmiany polityki</h2>
         <p>
           Mozemy aktualizowac polityke wraz z rozwojem aplikacji i zmianami prawnymi.
           Aktualna wersja jest zawsze dostepna pod tym adresem.
         </p>
       </section>
 
-      <p class="foot">Ostatnia aktualizacja: 7 maja 2026</p>
+      <p class="foot">Ostatnia aktualizacja: 10 czerwca 2026</p>
     </main>
   </body>
   </html>
